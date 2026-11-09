@@ -1233,3 +1233,296 @@ fn default_theme_keeps_the_builtin_colors() {
     assert_eq!(buf[(0, 0)].fg, Color::Reset, "odaksız çerçeve");
     assert_eq!(buf[(31, 0)].bg, Color::Reset);
 }
+
+// ------------------------------------------------------------------ thread'ler
+
+const THREAD_SOHBET: u64 = 30;
+const THREAD_LOCKED: u64 = 31;
+const FORUM: u64 = 20;
+const BUSY: u64 = 12;
+
+fn thread_json(
+    id: u64,
+    parent: u64,
+    name: &str,
+    archived: bool,
+    locked: bool,
+) -> serde_json::Value {
+    serde_json::json!({"id": id.to_string(), "type": 11, "guild_id": GUILD.to_string(),
+        "parent_id": parent.to_string(), "name": name, "last_message_id": id.to_string(),
+        "thread_metadata": {"archived": archived, "locked": locked}})
+}
+
+/// #sohbet (2 aktif + 1 arşivli thread), #kalabalik (5 thread), forum (thread'siz).
+fn threads_shared() -> Arc<Shared> {
+    let mut r = serde_json::to_value(serde_json::json!({
+        "v": 9,
+        "user": {"id": ME.to_string(), "username": "ben", "global_name": "Ben"},
+        "session_id": "s", "resume_gateway_url": "wss://x",
+        "guilds": [{
+            "id": GUILD.to_string(), "large": false,
+            "properties": {"name": "Test Sunucusu", "owner_id": "999"},
+            // VIEW + SEND + SEND_MESSAGES_IN_THREADS + ADD_REACTIONS + ATTACH_FILES
+            "roles": [{"id": GUILD.to_string(), "name": "@everyone", "permissions": "274877942848", "position": 0}],
+            "channels": [
+                {"id": "10", "type": 4, "name": "Genel", "position": 0},
+                {"id": SOHBET.to_string(), "type": 0, "name": "sohbet", "parent_id": "10", "position": 0},
+                {"id": BUSY.to_string(), "type": 0, "name": "kalabalik", "parent_id": "10", "position": 1},
+                {"id": FORUM.to_string(), "type": 15, "name": "forum", "parent_id": "10", "position": 2}
+            ],
+            "threads": [
+                thread_json(THREAD_SOHBET, SOHBET, "konu bir", false, false),
+                thread_json(THREAD_LOCKED, SOHBET, "kilitli konu", false, true),
+                thread_json(32, SOHBET, "arşivli", true, false),
+                thread_json(40, BUSY, "a", false, false),
+                thread_json(41, BUSY, "b", false, false),
+                thread_json(42, BUSY, "c", false, false),
+                thread_json(43, BUSY, "d", false, false),
+                thread_json(44, BUSY, "e", false, false)
+            ]
+        }],
+        "private_channels": [],
+        "merged_members": [[{"user_id": ME.to_string(), "roles": []}]],
+        "read_state": {"entries": [
+            {"id": BUSY.to_string(), "last_message_id": "0", "mention_count": 0},
+            {"id": "43", "last_message_id": "1", "mention_count": 2}
+        ]}
+    }))
+    .expect("json");
+    // Okunma kaydı: kalabalık kanalın 43 numaralı thread'i okunmamış (son mesaj 43 > 1).
+    r["v"] = serde_json::json!(9);
+    let ready: Ready = serde_json::from_value(r).expect("ready");
+    let shared = Arc::new(Shared::default());
+    shared.state.write().expect("kilit").load_ready(&ready);
+    shared
+}
+
+fn labels(app: &App) -> Vec<String> {
+    app.entries().into_iter().map(|e| e.label).collect()
+}
+
+fn to_channels(app: &mut App) {
+    press(app, &[KeyCode::Char('j'), KeyCode::Enter]);
+}
+
+#[test]
+fn threads_nest_under_parent_with_auto_collapse() {
+    let mut app = test_app(threads_shared());
+    to_channels(&mut app);
+    // #sohbet: 2 aktif thread (≤3) açık, arşivli gizli. #kalabalik: 5 thread → kapalı, sayı ipucu.
+    assert_eq!(
+        labels(&app),
+        [
+            "▾ GENEL",
+            "# sohbet",
+            "└ kilitli konu 🔒",
+            "└ konu bir",
+            "# kalabalik ▸5 ",
+            "≡ forum ▸",
+        ]
+        .map(|l| l.trim_end().to_owned())
+    );
+    let entries = app.entries();
+    assert_eq!(entries[2].depth, 2);
+    assert!(entries[2].dim && !entries[3].dim);
+    // Kapalı üst satırda okunmamış/bahsetme toplanır.
+    assert!(entries[4].unread);
+    assert_eq!(entries[4].mentions, 2);
+    // `:threads` kalabalık kanala geçince açar, tekrar kapatır.
+    app.chan_sel = 4;
+    assert!(run_command(&mut app, "threads").is_empty());
+    assert_eq!(labels(&app).len(), 6 + 5);
+    run_command(&mut app, "threads");
+    assert_eq!(labels(&app).len(), 6);
+    // Açıkken üst satır okunmamışı kendi durumundan alır.
+    run_command(&mut app, "threads");
+    assert!(!app.entries()[4].unread || app.entries()[4].mentions == 0);
+    // Metin kanalında da kapatılabilir.
+    app.chan_sel = 1;
+    run_command(&mut app, "threads");
+    assert!(labels(&app).contains(&"# sohbet ▸2".to_owned()));
+}
+
+#[test]
+fn opening_thread_emits_open_channel_and_reveals_it() {
+    let mut app = test_app(threads_shared());
+    to_channels(&mut app);
+    // chan_sel 3 = "└ konu bir"
+    let actions = press(
+        &mut app,
+        &[
+            KeyCode::Char('j'),
+            KeyCode::Char('j'),
+            KeyCode::Char('j'),
+            KeyCode::Enter,
+        ],
+    );
+    assert_eq!(
+        actions,
+        [Action::OpenChannel {
+            guild: Some(Snowflake(GUILD)),
+            channel: Snowflake(THREAD_SOHBET),
+            previous: None
+        }]
+    );
+    // Kalabalık kanalın kapalı thread'i dışarıdan (Alt+↓ gibi) açılırsa liste açılır.
+    let action = app.open_channel(Some(Snowflake(GUILD)), Snowflake(42));
+    assert!(matches!(action, Action::OpenChannel { .. }));
+    assert!(labels(&app).contains(&"└ c".to_owned()));
+    assert_eq!(app.entries()[app.chan_sel].id, Snowflake(42));
+}
+
+#[test]
+fn forum_activation_fetches_then_lists_threads() {
+    let shared = threads_shared();
+    let mut app = test_app(shared.clone());
+    to_channels(&mut app);
+    app.chan_sel = 5; // forum
+    let actions = press(&mut app, &[KeyCode::Enter]);
+    assert_eq!(
+        actions,
+        [Action::LoadThreads {
+            guild: Some(Snowflake(GUILD)),
+            channel: Snowflake(FORUM),
+            archived: false
+        }]
+    );
+    assert_eq!(labels(&app).last().map(String::as_str), Some("≡ forum"));
+    // Yanıt gelir: gönderiler forumun altında.
+    let threads: Vec<digcord_model::Channel> = serde_json::from_value(serde_json::json!([
+        thread_json(60, FORUM, "ilk gönderi", false, false),
+        thread_json(61, FORUM, "ikinci", false, false)
+    ]))
+    .expect("threads");
+    shared
+        .state
+        .write()
+        .expect("kilit")
+        .threads_loaded(Snowflake(FORUM), &threads, false);
+    let l = labels(&app);
+    assert_eq!(&l[l.len() - 3..], ["≡ forum", "└ ikinci", "└ ilk gönderi"]);
+    // Kapat/aç: artık alınmış, yeni istek yok.
+    assert!(press(&mut app, &[KeyCode::Enter]).is_empty());
+    assert_eq!(labels(&app).len(), 6);
+    assert!(press(&mut app, &[KeyCode::Enter]).is_empty());
+    assert_eq!(labels(&app).len(), 8);
+    // Forum gönderisi normal kanal gibi açılır.
+    app.chan_sel = 6;
+    let actions = press(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(
+        actions[..],
+        [Action::OpenChannel {
+            channel: Snowflake(61),
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn archived_command_targets_parent_channel() {
+    let mut app = test_app(threads_shared());
+    to_channels(&mut app);
+    app.chan_sel = 1; // #sohbet
+    let actions = run_command(&mut app, "archived");
+    assert_eq!(
+        actions,
+        [Action::LoadThreads {
+            guild: Some(Snowflake(GUILD)),
+            channel: Snowflake(SOHBET),
+            archived: true
+        }]
+    );
+    // Thread'deyken üst kanalı hedefler.
+    app.open_channel(Some(Snowflake(GUILD)), Snowflake(THREAD_SOHBET));
+    app.focus = Focus::Messages;
+    let actions = run_command(&mut app, "archived");
+    assert!(matches!(
+        actions[..],
+        [Action::LoadThreads {
+            channel: Snowflake(SOHBET),
+            archived: true,
+            ..
+        }]
+    ));
+    // Kategori / thread'siz hedef: bildirim, eylem yok.
+    app.focus = Focus::Channels;
+    app.open = None;
+    app.chan_sel = 0;
+    assert!(run_command(&mut app, "archived").is_empty());
+    assert!(app.notice.as_deref().unwrap_or("").contains(":archived"));
+}
+
+#[test]
+fn archived_threads_appear_dim_after_load() {
+    let shared = threads_shared();
+    let mut app = test_app(shared.clone());
+    to_channels(&mut app);
+    let old: Vec<digcord_model::Channel> =
+        serde_json::from_value(serde_json::json!([thread_json(
+            50,
+            SOHBET,
+            "çok eski",
+            true,
+            false
+        )]))
+        .expect("threads");
+    shared
+        .state
+        .write()
+        .expect("kilit")
+        .threads_loaded(Snowflake(SOHBET), &old, true);
+    let entries = app.entries();
+    let e = entries
+        .iter()
+        .find(|e| e.id == Snowflake(50))
+        .expect("arşivli");
+    assert!(e.dim);
+    // Önceden gizli olan arşivli thread de artık listede.
+    assert!(entries.iter().any(|e| e.id == Snowflake(32) && e.dim));
+}
+
+#[test]
+fn locked_thread_cannot_send_and_shows_notice() {
+    let mut app = test_app(threads_shared());
+    to_channels(&mut app);
+    // "└ kilitli konu 🔒" (chan_sel 2)
+    let actions = press(
+        &mut app,
+        &[KeyCode::Char('j'), KeyCode::Char('j'), KeyCode::Enter],
+    );
+    assert!(matches!(
+        actions[..],
+        [Action::OpenChannel {
+            channel: Snowflake(THREAD_LOCKED),
+            ..
+        }]
+    ));
+    press(&mut app, &[KeyCode::Char('i')]);
+    assert_eq!(app.mode, compose::Mode::Normal);
+    assert_eq!(app.notice.as_deref(), Some("Bu thread kilitli; yazamazsın"));
+    let text = format!("{}", draw(&app, 100, 16));
+    assert!(text.contains("bu thread kilitli"), "{text}");
+
+    // Kilitsiz thread'e yazılabilir.
+    app.open_channel(Some(Snowflake(GUILD)), Snowflake(THREAD_SOHBET));
+    press(&mut app, &[KeyCode::Char('i')]);
+    assert_eq!(app.mode, compose::Mode::Insert);
+    let mut sent = press(
+        &mut app,
+        &[KeyCode::Char('h'), KeyCode::Char('i'), KeyCode::Enter],
+    );
+    assert!(matches!(
+        sent.pop(),
+        Some(Action::SendMessage {
+            channel: Snowflake(THREAD_SOHBET),
+            ..
+        })
+    ));
+}
+
+#[test]
+fn thread_channel_panel_snapshot() {
+    let mut app = test_app(threads_shared());
+    to_channels(&mut app);
+    insta::assert_snapshot!(draw(&app, 60, 12));
+}

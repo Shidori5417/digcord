@@ -32,7 +32,7 @@ fn readable(kind: u8) -> bool {
     matches!(
         kind,
         channel_kind::TEXT | channel_kind::ANNOUNCEMENT | channel_kind::DM | channel_kind::GROUP_DM
-    )
+    ) || channel_kind::is_thread(kind)
 }
 
 /// Sessize alma şu an geçerli mi (süreli ise bitişi geçmemiş mi).
@@ -117,10 +117,14 @@ impl State {
         if guild.is_some() && mute_active(s.muted, s.mute_config.as_ref(), now_unix) {
             return true;
         }
-        s.channel_overrides
-            .iter()
-            .find(|o| o.channel_id == channel)
-            .is_some_and(|o| mute_active(o.muted, o.mute_config.as_ref(), now_unix))
+        // Thread'in kendi ayarı yoksa üst kanalın sessize alması geçerli (doğrulanmadı).
+        let parent = self.thread_parent(channel);
+        [Some(channel), parent].into_iter().flatten().any(|id| {
+            s.channel_overrides
+                .iter()
+                .find(|o| o.channel_id == id)
+                .is_some_and(|o| mute_active(o.muted, o.mute_config.as_ref(), now_unix))
+        })
     }
 
     pub fn is_guild_muted(&self, guild: Snowflake, now_unix: i64) -> bool {
@@ -139,6 +143,10 @@ impl State {
             }
             mentions += self.mention_count(item.id);
             unread |= self.is_unread(item.id) && !self.is_muted(item.id, now_unix);
+            for t in self.threads_of(item.id, None) {
+                mentions += self.mention_count(t.id);
+                unread |= self.is_unread(t.id) && !self.is_muted(t.id, now_unix);
+            }
         }
         (unread && !self.is_guild_muted(guild, now_unix), mentions)
     }
@@ -215,14 +223,19 @@ impl State {
         }
         let dm = self.is_dm_channel(msg.channel_id);
         let settings = self.settings_for(if dm { None } else { msg.guild_id });
+        let parent = self.thread_parent(msg.channel_id);
         let channel_level = settings
             .and_then(|s| {
-                s.channel_overrides
-                    .iter()
-                    .find(|o| o.channel_id == msg.channel_id)
+                [Some(msg.channel_id), parent]
+                    .into_iter()
+                    .flatten()
+                    .find_map(|id| {
+                        s.channel_overrides.iter().find(|o| {
+                            o.channel_id == id && o.message_notifications != NOTIFY_INHERIT
+                        })
+                    })
             })
-            .map(|o| o.message_notifications)
-            .filter(|l| *l != NOTIFY_INHERIT);
+            .map(|o| o.message_notifications);
         // Kullanıcı ayarı yoksa: DM'de tümü, sunucuda sadece bahsetmeler.
         let default = if dm { NOTIFY_ALL } else { NOTIFY_MENTIONS };
         let level = channel_level
@@ -259,6 +272,13 @@ impl State {
                     && !self.is_muted(item.id, now_unix)
                 {
                     out.push((Some(g.id), item.id));
+                }
+                if item.kind == TreeKind::Channel {
+                    for t in self.threads_of(item.id, None) {
+                        if !t.archived && self.is_unread(t.id) && !self.is_muted(t.id, now_unix) {
+                            out.push((Some(g.id), t.id));
+                        }
+                    }
                 }
             }
         }

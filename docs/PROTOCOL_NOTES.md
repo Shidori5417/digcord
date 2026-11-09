@@ -195,6 +195,40 @@ resmi web istemcisinin trafiğiyle karşılaştırılacak (kullanıcı kararı: 
 - ⚠️ Kullanıcı bildirim ayarı olmayan sunucuda sunucunun varsayılan bildirim seviyesi yerine
   "sadece bahsetmeler" varsayılıyor.
 
+### 4.4 Aşama 7 — thread'ler ve forum kanalları (⚠️ kullanıcı-hesabı davranışı doğrulanmadı)
+
+Thread tipleri (belgeli): 10 duyuru thread'i, 11 herkese açık thread, 12 özel thread; 15 forum,
+16 medya kanalı. Thread nesnesi kanal nesnesidir: `parent_id` (üst kanal), `owner_id`,
+`thread_metadata{archived, locked, archive_timestamp, auto_archive_duration}`, `message_count`,
+`member_count`, `member` (yalnızca benim üyeliğim varsa), `applied_tags`; forumda `available_tags[]`.
+Thread'in kendi izin overwrite'ı yoktur; izinler üst kanaldan hesaplanır, yazmak için
+`SEND_MESSAGES_IN_THREADS` (1<<38) gerekir, kilitli thread'e `MANAGE_THREADS` (1<<34) olmadan yazılamaz.
+
+- ⚠️ doğrulanmadı: kullanıcı hesabı READY'sinde guild nesnesinin `threads[]` alanı (bot biçimi
+  GUILD_CREATE'teki `threads` ile aynı varsayıldı). Alan yoksa/boşsa thread listesi olayların ve
+  REST'in doldurduğu kadardır; op 37'deki `threads: true` aboneliği zaten gönderiliyor.
+- ⚠️ doğrulanmadı: `THREAD_CREATE`, `THREAD_UPDATE` (tam thread nesnesi, `member` yok),
+  `THREAD_DELETE` (`{id, guild_id, parent_id, type}`), `THREAD_LIST_SYNC`
+  (`{guild_id, channel_ids?, threads[], members[]}`; `channel_ids` yoksa tüm guild) kullanıcı
+  hesabında bot belgelerindeki biçimle geliyor varsayıldı. `THREAD_MEMBERS_UPDATE`,
+  `THREAD_MEMBER_UPDATE` ve `THREAD_MEMBER_LIST_UPDATE` yok sayılır.
+- ⚠️ doğrulanmadı: forumun aktif gönderileri
+  `GET /channels/{forum}/threads/search?archived=false&sort_by=last_message_time&sort_order=desc&limit=25`
+  (belgesiz kullanıcı-istemcisi uç noktası; parametre adları/değerleri topluluk bilgisi). Yanıt
+  `{threads[], members[], has_more, total_results, first_messages[]}`; yalnızca `threads` ve
+  `has_more` okunur. Sayfalama (`offset`) yok: ilk 25.
+- Belgeli ama kullanıcı hesabında denenmedi: `GET /channels/{c}/threads/archived/public?limit=25`
+  (`{threads[], members[], has_more}`); `before` sayfalaması uygulanmadı. Bot belgesi
+  `READ_MESSAGE_HISTORY` ister.
+- ⚠️ Özel thread'ler: sunucu bunları yalnızca üyelere / `MANAGE_THREADS` sahiplerine gönderir
+  varsayıldığından gelen her thread gösterilir; üyelik (`member`) ile ayrıca süzülmez.
+- ⚠️ Thread okunma durumu `read_state.entries[]` içinde thread id'siyle geliyor varsayıldı;
+  sessize alma/bildirim düzeyi thread'in kendi `channel_overrides` kaydı yoksa üst kanalınkinden
+  alınır (resmi davranış doğrulanmadı).
+- Thread'e mesaj: normal `POST /channels/{thread_id}/messages` (Referer: `/channels/{guild}/{thread}`).
+  Arşivli (kilitsiz) thread'e yazmak onu sunucuda açar, istemci ayrıca bir şey göndermez (doğrulanmadı).
+- Kapsam dışı: thread/forum gönderisi **oluşturma**, thread'e katılma/ayrılma, etiket filtreleme.
+
 ## 5. Davranış kuralları (ban riskini azaltmak için)
 
 - Resmi istemcinin **yapmadığı** şeyi yapma: toplu geçmiş indirme, otomatik yanıt, çok hızlı

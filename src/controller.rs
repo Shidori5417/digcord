@@ -11,7 +11,7 @@ use digcord_http::{Http, HttpError, NewMessage, Page};
 use digcord_media::{Fetcher, MediaError};
 use digcord_model::{
     ClientProperties, DEFAULT_BUILD_NUMBER, DEFAULT_CHROME_MAJOR, Message, MessageDelete,
-    ReactionEmoji, Ready, Snowflake, Token,
+    ReactionEmoji, Ready, Snowflake, Token, channel_kind,
 };
 use digcord_store::{NotifyFilter, State, VoiceCall, VoicePhase};
 use digcord_tui::{Action, ImageJob, SettingValue, Shared, Status, UiEvent};
@@ -193,6 +193,8 @@ struct Controller {
     subscribed: HashSet<Snowflake>,
     /// Geçmiş isteği sürmekte olan kanallar.
     loading: HashSet<Snowflake>,
+    /// Thread listesi isteği sürmekte olan (üst kanal, arşivli mi) çiftleri.
+    loading_threads: HashSet<(Snowflake, bool)>,
     /// op 8 ile zaten istenmiş (guild, kullanıcı) çiftleri.
     requested_members: HashSet<(Snowflake, Snowflake)>,
     /// Terminal odakta mı (odak olayları desteklenmiyorsa hep `true`).
@@ -948,6 +950,54 @@ impl Controller {
         }
     }
 
+    /// Üst kanalın thread listesi: forumun aktif gönderileri (arama uç noktası) ya da
+    /// arşivli herkese açık thread'ler. Sonuç store'a yazılır, panel kendiliğinden güncellenir.
+    fn load_threads(&mut self, page: Page, archived: bool) {
+        let forum = self.shared.read_state(|st| {
+            st.channel(page.channel)
+                .is_some_and(|c| channel_kind::is_forum(c.kind))
+        });
+        if !forum && !archived {
+            return;
+        }
+        let Some(http) = self.http() else { return };
+        let channel = page.channel;
+        if !self.loading_threads.insert((channel, archived)) {
+            return;
+        }
+        self.spawn(
+            async move {
+                if archived {
+                    http.archived_threads(page).await
+                } else {
+                    http.search_forum_threads(page).await
+                }
+            },
+            move |c, result| {
+                c.loading_threads.remove(&(channel, archived));
+                match result {
+                    Ok(list) => {
+                        let n = list.threads.len();
+                        c.write(|st| st.threads_loaded(channel, &list.threads, archived));
+                        match (archived, n) {
+                            (true, 0) => c.notice("Arşivli thread yok"),
+                            (true, n) if list.has_more => c.notice(format!(
+                                "{n} arşivli thread yüklendi (en yenileri; daha fazlası var)"
+                            )),
+                            (true, n) => c.notice(format!("{n} arşivli thread yüklendi")),
+                            (false, 0) => c.notice("Bu forumda aktif gönderi yok"),
+                            _ => {}
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("thread listesi alınamadı: {e}");
+                        c.notice(format!("Thread'ler alınamadı: {e}"));
+                    }
+                }
+            },
+        );
+    }
+
     /// Görünen yazarlardan üye bilgisi bilinmeyenler için op 8.
     fn request_members(&mut self, open: Open) {
         let Some(gid) = open.guild else { return };
@@ -996,6 +1046,7 @@ impl Controller {
                 self.subscribed.clear();
                 self.requested_members.clear();
                 self.loading.clear();
+                self.loading_threads.clear();
                 if let Some(open) = self.open {
                     self.open_channel(open);
                 }
@@ -1049,6 +1100,9 @@ impl Controller {
             E::MessageDelete(d) => self.write(|st| st.message_delete(&d)),
             E::ChannelCreate(c) | E::ChannelUpdate(c) => self.write(|st| st.upsert_channel(&c)),
             E::ChannelDelete(c) => self.write(|st| st.remove_channel(c.id)),
+            E::ThreadCreate(c) | E::ThreadUpdate(c) => self.write(|st| st.upsert_channel(&c)),
+            E::ThreadDelete(c) => self.write(|st| st.remove_channel(c.id)),
+            E::ThreadListSync(sync) => self.write(|st| st.thread_list_sync(&sync)),
             E::GuildCreate(g) => self.write(|st| st.upsert_guild(&g)),
             E::GuildMembersChunk(c) => self.write(|st| st.add_members(&c)),
             E::ReactionAdd(r) => self.write(|st| st.reaction_add(&r)),
@@ -1147,6 +1201,11 @@ impl Controller {
                 self.open_channel(Open { guild, channel });
             }
             Action::LoadOlder { channel } => self.load_older(channel),
+            Action::LoadThreads {
+                guild,
+                channel,
+                archived,
+            } => self.load_threads(Page { guild, channel }, archived),
             Action::SendMessage {
                 guild,
                 channel,
@@ -1305,6 +1364,7 @@ pub async fn run(
         open: None,
         subscribed: HashSet::new(),
         loading: HashSet::new(),
+        loading_threads: HashSet::new(),
         requested_members: HashSet::new(),
         focused: true,
         last_ack: std::collections::HashMap::new(),

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use digcord_model::{
     Channel, ClientProperties, Guild, GuildMembersChunk, Message, MessageAck, MessageDelete,
-    ReactionEvent, Ready, Snowflake, Token, TypingStart, VoiceServer, VoiceState,
+    ReactionEvent, Ready, Snowflake, ThreadListSync, Token, TypingStart, VoiceServer, VoiceState,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -84,6 +84,12 @@ pub enum GatewayEvent {
     ChannelCreate(Box<Channel>),
     ChannelUpdate(Box<Channel>),
     ChannelDelete(Box<Channel>),
+    /// Thread olayları: biçim kanal nesnesidir (silmede sadece `id`, `guild_id`, `parent_id`,
+    /// `type`). Kullanıcı hesabı davranışı doğrulanmadı (PROTOCOL_NOTES §4.4).
+    ThreadCreate(Box<Channel>),
+    ThreadUpdate(Box<Channel>),
+    ThreadDelete(Box<Channel>),
+    ThreadListSync(ThreadListSync),
     GuildCreate(Box<Guild>),
     GuildMembersChunk(GuildMembersChunk),
     ReactionAdd(ReactionEvent),
@@ -161,6 +167,10 @@ fn parse_event(t: &str, d: &str) -> Dispatch {
         "CHANNEL_CREATE" => de(t, d).map(|c| E::ChannelCreate(Box::new(c))),
         "CHANNEL_UPDATE" => de(t, d).map(|c| E::ChannelUpdate(Box::new(c))),
         "CHANNEL_DELETE" => de(t, d).map(|c| E::ChannelDelete(Box::new(c))),
+        "THREAD_CREATE" => de(t, d).map(|c| E::ThreadCreate(Box::new(c))),
+        "THREAD_UPDATE" => de(t, d).map(|c| E::ThreadUpdate(Box::new(c))),
+        "THREAD_DELETE" => de(t, d).map(|c| E::ThreadDelete(Box::new(c))),
+        "THREAD_LIST_SYNC" => de(t, d).map(E::ThreadListSync),
         "GUILD_CREATE" => de(t, d).map(|g| E::GuildCreate(Box::new(g))),
         "GUILD_MEMBERS_CHUNK" => de(t, d).map(E::GuildMembersChunk),
         "MESSAGE_REACTION_ADD" => de(t, d).map(E::ReactionAdd),
@@ -576,6 +586,67 @@ mod tests {
             parse(chunk).expect("chunk"),
             Event::Dispatch { dispatch: Dispatch::Event(GatewayEvent::GuildMembersChunk(c)), .. } if c.members[0].nick.as_deref() == Some("N")
         ));
+    }
+
+    #[test]
+    fn parses_thread_events_and_survives_bad_shape() {
+        let create = r#"{"t":"THREAD_CREATE","s":1,"op":0,"d":{"id":"30","type":11,"guild_id":"9","parent_id":"2","owner_id":"1","name":"konu","message_count":0,"member_count":1,"thread_metadata":{"archived":false,"locked":false,"archive_timestamp":"2026-01-01T00:00:00.000000+00:00","auto_archive_duration":1440},"member":{"id":"30","user_id":"1","flags":1}}}"#;
+        match parse(create).expect("create") {
+            Event::Dispatch {
+                dispatch: Dispatch::Event(GatewayEvent::ThreadCreate(c)),
+                ..
+            } => {
+                assert_eq!(c.parent_id, Some(Snowflake(2)));
+                assert!(c.is_thread() && !c.is_archived() && !c.is_locked());
+                assert!(c.member.is_some());
+            }
+            other => panic!("beklenmeyen: {other:?}"),
+        }
+        let update = r#"{"t":"THREAD_UPDATE","s":2,"op":0,"d":{"id":"30","type":11,"guild_id":"9","parent_id":"2","name":"konu","thread_metadata":{"archived":true,"locked":true}}}"#;
+        assert!(matches!(
+            parse(update).expect("update"),
+            Event::Dispatch { dispatch: Dispatch::Event(GatewayEvent::ThreadUpdate(c)), .. } if c.is_archived() && c.is_locked()
+        ));
+        let delete = r#"{"t":"THREAD_DELETE","s":3,"op":0,"d":{"id":"30","guild_id":"9","parent_id":"2","type":11}}"#;
+        assert!(matches!(
+            parse(delete).expect("delete"),
+            Event::Dispatch { dispatch: Dispatch::Event(GatewayEvent::ThreadDelete(c)), .. } if c.id == Snowflake(30)
+        ));
+        let sync = r#"{"t":"THREAD_LIST_SYNC","s":4,"op":0,"d":{"guild_id":"9","channel_ids":["2"],"threads":[{"id":"30","type":11,"parent_id":"2","name":"a"}],"members":[]}}"#;
+        assert!(matches!(
+            parse(sync).expect("sync"),
+            Event::Dispatch { dispatch: Dispatch::Event(GatewayEvent::ThreadListSync(s)), .. } if s.threads.len() == 1 && s.channel_ids.as_deref() == Some(&[Snowflake(2)][..])
+        ));
+        // Bozuk biçim: id yok / tip yanlış → atlanır, hata değil.
+        for bad in [
+            r#"{"t":"THREAD_CREATE","s":5,"op":0,"d":{"type":11}}"#,
+            r#"{"t":"THREAD_UPDATE","s":6,"op":0,"d":{"id":"30","type":"x"}}"#,
+            r#"{"t":"THREAD_LIST_SYNC","s":7,"op":0,"d":{"threads":[]}}"#,
+            r#"{"t":"THREAD_DELETE","s":8,"op":0,"d":null}"#,
+        ] {
+            assert!(matches!(
+                parse(bad).expect("bozuk"),
+                Event::Dispatch {
+                    dispatch: Dispatch::Other,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn ready_carries_threads() {
+        let ready = r#"{"t":"READY","s":1,"op":0,"d":{"v":9,"user":{"id":"1","username":"a","global_name":null},"session_id":"s","resume_gateway_url":"wss://x","guilds":[{"id":"9","channels":[],"threads":[{"id":"30","type":12,"parent_id":"2","name":"x"},{"id":"31","type":15}]}]}}"#;
+        match parse(ready).expect("ready") {
+            Event::Dispatch {
+                dispatch: Dispatch::Ready(r),
+                ..
+            } => {
+                assert_eq!(r.guilds[0].threads.len(), 2);
+                assert_eq!(r.guilds[0].threads[0].kind, 12);
+            }
+            other => panic!("beklenmeyen: {other:?}"),
+        }
     }
 
     #[test]

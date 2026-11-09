@@ -1,0 +1,16 @@
+---
+source: crates/digcord-tui/src/tests.rs
+expression: "draw(&app, 60, 12)"
+---
+"┌────┐┌ Test Sunucusu ───────┐┌ Mesajlar ──────────────────┐"
+"│DM  ││▾ GENEL               ││Bir kanal seç (Tab: panel, j│"
+"│TS 2││  # sohbet            ││                            │"
+"│    ││    └ kilitli konu 🔒 ││                            │" Hidden by multi-width symbols: [(27, " ")]
+"│    ││    └ konu bir        ││                            │"
+"│    ││  # kalabalik ▸5 (2)  ││                            │"
+"│    ││  ≡ forum ▸           ││                            │"
+"│    ││                      ││                            │"
+"│    ││                      ││                            │"
+"│    ││                      ││                            │"
+"└────┘└──────────────────────┘└────────────────────────────┘"
+" [NORMAL] Digcord · başlatılıyor…                           "

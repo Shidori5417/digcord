@@ -78,7 +78,14 @@ impl App {
 
     fn enter_insert(&mut self, target: Target) {
         if !self.can_send() {
-            self.notice = Some("Bu kanala yazma iznin yok".into());
+            let locked = self
+                .open
+                .is_some_and(|o| self.shared.read().is_thread_locked(o.channel));
+            self.notice = Some(if locked {
+                "Bu thread kilitli; yazamazsın".into()
+            } else {
+                "Bu kanala yazma iznin yok".into()
+            });
             return;
         }
         if let Target::Edit(id) = target {
@@ -500,6 +507,36 @@ impl App {
                     Some(Action::LoadTheme(theme.to_owned()))
                 }
             }
+            "threads" => match self.thread_parent_target() {
+                Some(parent) => self.toggle_threads(parent),
+                None => {
+                    self.notice = Some(":threads için thread'li bir kanal seç".into());
+                    None
+                }
+            },
+            "archived" => match self.thread_parent_target() {
+                Some(channel) => {
+                    let guild = self.open.and_then(|o| o.guild).or_else(|| {
+                        let st = self.shared.read();
+                        self.selected_guild(&st)
+                    });
+                    // Sonuç görünsün diye liste kapalıysa açılır.
+                    let collapsed = !self.threads_expanded(&self.shared.read(), channel);
+                    if collapsed {
+                        self.flip_threads(channel);
+                    }
+                    self.notice = Some("Arşivli thread'ler yükleniyor…".into());
+                    Some(Action::LoadThreads {
+                        guild,
+                        channel,
+                        archived: true,
+                    })
+                }
+                None => {
+                    self.notice = Some(":archived için thread'li bir kanal seç".into());
+                    None
+                }
+            },
             "leave" => Some(Action::LeaveVoice),
             "devices" => Some(Action::ListDevices),
             "vol" => self.volume_command(rest.trim()),

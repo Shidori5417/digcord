@@ -15,8 +15,9 @@ pub use message::{
 };
 pub use permissions::{MemberContext, Overwrite, OverwriteKind, Permissions, Role};
 pub use ready::{
-    Channel, ChannelOverride, CustomEmoji, Entries, Guild, GuildMembersChunk, GuildProperties,
-    GuildSettings, Member, MuteConfig, ReadStateEntry, Ready, Relationship, User, channel_kind,
+    Channel, ChannelOverride, CustomEmoji, Entries, ForumTag, Guild, GuildMembersChunk,
+    GuildProperties, GuildSettings, Member, MuteConfig, ReadStateEntry, Ready, Relationship,
+    ThreadList, ThreadListSync, ThreadMember, ThreadMetadata, User, channel_kind,
 };
 pub use snowflake::Snowflake;
 pub use token::Token;

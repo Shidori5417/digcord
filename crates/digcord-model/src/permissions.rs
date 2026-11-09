@@ -22,6 +22,8 @@ impl Permissions {
     pub const MANAGE_MESSAGES: Self = Self(1 << 13);
     pub const ATTACH_FILES: Self = Self(1 << 15);
     pub const CONNECT: Self = Self(1 << 20);
+    pub const MANAGE_THREADS: Self = Self(1 << 34);
+    pub const SEND_MESSAGES_IN_THREADS: Self = Self(1 << 38);
     pub const ALL: Self = Self(u64::MAX);
 
     pub fn contains(self, other: Self) -> bool {

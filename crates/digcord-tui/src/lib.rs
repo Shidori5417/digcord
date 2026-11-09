@@ -150,6 +150,13 @@ pub enum Action {
         content: String,
         max_bytes: u64,
     },
+    /// Üst kanalın thread listesini REST'ten iste. `archived == false`: forumun aktif
+    /// gönderileri; `true`: arşivli herkese açık thread'ler (`:archived`).
+    LoadThreads {
+        guild: Option<Snowflake>,
+        channel: Snowflake,
+        archived: bool,
+    },
     /// Panoya kopyala.
     Copy(String),
     /// Terminal penceresi odak kazandı/kaybetti (bildirim ve okundu kararları için).
@@ -318,7 +325,12 @@ struct Entry {
     unread: bool,
     mentions: u32,
     muted: bool,
+    /// Arşivli veya kilitli thread: soluk çizilir.
+    dim: bool,
 }
+
+/// Bu sayıya kadar thread'i olan metin kanalının thread listesi başta açık gelir.
+const AUTO_EXPAND_THREADS: usize = 3;
 
 /// DM panelindeki "ARKADAŞLAR" başlığının sahte id'si (gerçek snowflake'ler hep > 0).
 const FRIENDS_HEADER: Snowflake = Snowflake(0);
@@ -336,7 +348,11 @@ enum EntryKind {
     VoiceMember {
         speaking: bool,
     },
-    /// Bu aşamada açılmayan kanal (ses, forum...).
+    /// Forum / medya kanalı: Enter gönderilerini (thread) açıp kapatır; mesajı yoktur.
+    Forum {
+        expanded: bool,
+    },
+    /// Açılmayan kanal (sahne...).
     Other,
 }
 
@@ -352,6 +368,8 @@ pub struct App {
     guild_sel: usize,
     chan_sel: usize,
     collapsed: HashSet<Snowflake>,
+    /// Thread listesinin varsayılan açık/kapalı durumunu tersine çeviren üst kanallar.
+    thread_flip: HashSet<Snowflake>,
     open: Option<Open>,
     scroll: Scroll,
     /// Son çizimde mesaj alanının boyutu (kaydırma hesapları için).
@@ -394,6 +412,7 @@ impl App {
             guild_sel: 0,
             chan_sel: 0,
             collapsed: HashSet::new(),
+            thread_flip: HashSet::new(),
             open: None,
             scroll: Scroll::default(),
             msg_area: Cell::new((0, 0)),
@@ -694,11 +713,72 @@ impl App {
                             channel: entry.id,
                         })
                     }
+                    EntryKind::Forum { .. } => self.toggle_threads(entry.id),
                     EntryKind::VoiceMember { .. } | EntryKind::Other => None,
                 }
             }
             Focus::Messages => None,
         }
+    }
+
+    /// Üst kanalın thread listesi açık mı. Varsayılan: metin/duyuru kanalında en çok 3 aktif thread
+    /// varsa açık, daha fazlaysa kapalı (panel şişmesin); forumda kapalı. `thread_flip` ile tersine çevrilir.
+    fn threads_expanded(&self, st: &State, parent: Snowflake) -> bool {
+        let forum = st
+            .channel(parent)
+            .is_some_and(|c| channel_kind::is_forum(c.kind));
+        let active = st
+            .threads_of(parent, None)
+            .iter()
+            .filter(|t| !t.archived)
+            .count();
+        let default = !forum && active <= AUTO_EXPAND_THREADS;
+        default != self.thread_flip.contains(&parent)
+    }
+
+    fn flip_threads(&mut self, parent: Snowflake) {
+        if !self.thread_flip.remove(&parent) {
+            self.thread_flip.insert(parent);
+        }
+    }
+
+    /// Thread listesini açıp kapatır. Forum açılırken gönderileri henüz REST'ten alınmadıysa
+    /// [`Action::LoadThreads`] döner.
+    fn toggle_threads(&mut self, parent: Snowflake) -> Option<Action> {
+        let st = self.shared.read();
+        let was_expanded = self.threads_expanded(&st, parent);
+        let fetch = !was_expanded
+            && st
+                .channel(parent)
+                .is_some_and(|c| channel_kind::is_forum(c.kind))
+            && !st.threads_fetched(parent);
+        let guild = self.selected_guild(&st);
+        drop(st);
+        self.flip_threads(parent);
+        fetch.then_some(Action::LoadThreads {
+            guild,
+            channel: parent,
+            archived: false,
+        })
+    }
+
+    /// `:threads` / `:archived` hedefi: seçili kanal satırı (kanal panelindeyken) ya da açık
+    /// kanal; thread ise üst kanalı.
+    fn thread_parent_target(&self) -> Option<Snowflake> {
+        let st = self.shared.read();
+        let pick = |id: Snowflake| {
+            let ch = st.channel(id)?;
+            if ch.is_thread() {
+                ch.parent_id
+            } else {
+                channel_kind::has_threads(ch.kind).then_some(id)
+            }
+        };
+        let from_list = (self.focus == Focus::Channels)
+            .then(|| self.entries().get(self.chan_sel).map(|e| e.id))
+            .flatten()
+            .and_then(pick);
+        from_list.or_else(|| self.open.and_then(|o| pick(o.channel)))
     }
 
     /// Kanalı açar: şerit ve liste seçimini ona taşır, mesaj görünümünü sıfırlar.
@@ -716,7 +796,17 @@ impl App {
             .channel(channel)
             .and_then(|c| c.parent_id)
         {
+            // Thread'de bu, üst kanalın kategorisi değil üst kanalın kendisidir (zararsız).
             self.collapsed.remove(&cat);
+        }
+        // Açılan thread'in listesi kapalıysa görünür kıl.
+        let hidden_parent = {
+            let st = self.shared.read();
+            st.thread_parent(channel)
+                .filter(|p| !self.threads_expanded(&st, *p))
+        };
+        if let Some(parent) = hidden_parent {
+            self.flip_threads(parent);
         }
         self.chan_sel = self
             .entries()
@@ -772,6 +862,7 @@ impl App {
                     unread: st.is_unread(*id),
                     mentions: st.mention_count(*id),
                     muted: st.is_muted(*id, now),
+                    dim: false,
                 })
                 .collect();
             let friends = st.friends();
@@ -789,6 +880,7 @@ impl App {
                     unread: false,
                     mentions: 0,
                     muted: false,
+                    dim: false,
                 });
                 if !collapsed {
                     for (uid, name) in friends {
@@ -810,6 +902,7 @@ impl App {
                             unread: false,
                             mentions: 0,
                             muted: false,
+                            dim: false,
                         });
                     }
                 }
@@ -832,6 +925,7 @@ impl App {
                         unread: false,
                         mentions: 0,
                         muted: false,
+                        dim: false,
                     });
                 }
                 TreeKind::Channel => {
@@ -847,18 +941,60 @@ impl App {
                         }
                         channel_kind::VOICE => ("🔊", EntryKind::Voice),
                         channel_kind::STAGE => ("🔊", EntryKind::Other),
-                        channel_kind::FORUM => ("≡", EntryKind::Other),
+                        channel_kind::FORUM | channel_kind::MEDIA => ("≡", EntryKind::Other),
                         _ => ("·", EntryKind::Other),
+                    };
+                    let forum = channel_kind::is_forum(item.channel_kind);
+                    let threads = if forum || channel_kind::has_threads(item.channel_kind) {
+                        st.threads_of(item.id, self.open.map(|o| o.channel))
+                    } else {
+                        Vec::new()
+                    };
+                    let expanded =
+                        (forum || !threads.is_empty()) && self.threads_expanded(&st, item.id);
+                    // Kapalı listede okunmamış/bahsetme üst satırda görünsün.
+                    let (mut unread, mut mentions) =
+                        (st.is_unread(item.id), st.mention_count(item.id));
+                    if !expanded {
+                        for t in threads.iter().filter(|t| !t.archived) {
+                            unread |= st.is_unread(t.id) && !st.is_muted(t.id, now);
+                            mentions += st.mention_count(t.id);
+                        }
+                    }
+                    let hint = match (expanded, threads.len()) {
+                        (true, _) => String::new(),
+                        (false, 0) if forum => " ▸".to_owned(),
+                        (false, 0) => String::new(),
+                        (false, n) => format!(" ▸{n}"),
                     };
                     out.push(Entry {
                         id: item.id,
-                        label: format!("{icon} {}", item.name),
+                        label: format!("{icon} {}{hint}", item.name),
                         depth: item.depth,
-                        kind,
-                        unread: st.is_unread(item.id),
-                        mentions: st.mention_count(item.id),
+                        kind: if forum {
+                            EntryKind::Forum { expanded }
+                        } else {
+                            kind
+                        },
+                        unread,
+                        mentions,
                         muted: st.is_muted(item.id, now),
+                        dim: false,
                     });
+                    if expanded {
+                        for t in &threads {
+                            out.push(Entry {
+                                id: t.id,
+                                label: format!("└ {}{}", t.name, if t.locked { " 🔒" } else { "" }),
+                                depth: item.depth + 1,
+                                kind: EntryKind::Readable,
+                                unread: st.is_unread(t.id),
+                                mentions: st.mention_count(t.id),
+                                muted: st.is_muted(t.id, now),
+                                dim: t.archived || t.locked,
+                            });
+                        }
+                    }
                     if kind == EntryKind::Voice {
                         for vs in st.voice_members(item.id) {
                             let name = st
@@ -879,6 +1015,7 @@ impl App {
                                 unread: false,
                                 mentions: 0,
                                 muted: false,
+                                dim: false,
                             });
                         }
                     }

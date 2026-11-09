@@ -1,4 +1,5 @@
 use super::*;
+use digcord_model::ThreadListSync;
 use serde_json::json;
 
 const READY: &str = include_str!("../../digcord-model/tests/fixtures/ready.json");
@@ -595,4 +596,282 @@ fn ready_clears_messages_and_records_users() {
     assert!(!s.is_loaded(sf(10)));
     assert_eq!(s.user(sf(7)).unwrap().display_name(), "Alice");
     assert_eq!(s.user(sf(100)).unwrap().username, "me");
+}
+
+// ------------------------------------------------------------------ thread'ler
+
+/// VIEW_CHANNEL + SEND_MESSAGES + SEND_MESSAGES_IN_THREADS.
+const THREAD_PERMS: &str = "274877910016";
+
+fn thread(id: u64, parent: u64, name: &str, archived: bool, locked: bool) -> serde_json::Value {
+    json!({"id": id.to_string(), "type": 11, "guild_id": "1", "parent_id": parent.to_string(),
+           "name": name, "last_message_id": id.to_string(), "owner_id": "7",
+           "thread_metadata": {"archived": archived, "locked": locked}})
+}
+
+fn thread_ch(v: serde_json::Value) -> Channel {
+    serde_json::from_value(v).unwrap()
+}
+
+fn threads_state(
+    perms: &str,
+    overwrites: serde_json::Value,
+    threads: Vec<serde_json::Value>,
+) -> State {
+    let mut parent = chan(10, 0, None, 0, "genel");
+    parent["permission_overwrites"] = overwrites;
+    let mut g = gjson(1, 999, vec![parent, chan(20, 15, None, 1, "forum")]);
+    g["roles"][0]["permissions"] = json!(perms);
+    g["threads"] = json!(threads);
+    state_with(vec![g], vec![])
+}
+
+fn thread_ids(s: &State, parent: u64) -> Vec<u64> {
+    s.threads_of(sf(parent), None)
+        .iter()
+        .map(|t| t.id.0)
+        .collect()
+}
+
+#[test]
+fn ready_threads_hang_under_parent_not_in_tree() {
+    let s = threads_state(
+        THREAD_PERMS,
+        json!([]),
+        vec![
+            thread(30, 10, "eski", false, false),
+            thread(32, 10, "yeni", false, false),
+            thread(31, 10, "arşiv", true, false),
+            thread(40, 20, "gönderi", false, false),
+        ],
+    );
+    // Yeniden eskiye; arşivli gizli.
+    assert_eq!(thread_ids(&s, 10), vec![32, 30]);
+    assert_eq!(thread_ids(&s, 20), vec![40]);
+    assert!(
+        s.guild_tree(sf(1))
+            .iter()
+            .all(|i| ![30, 31, 32, 40].contains(&i.id.0))
+    );
+    assert_eq!(s.thread_parent(sf(30)), Some(sf(10)));
+    assert_eq!(s.channel(sf(30)).unwrap().guild_id, Some(sf(1)));
+    assert_eq!(s.channel_title(sf(30)), "eski");
+}
+
+#[test]
+fn thread_create_update_delete() {
+    let mut s = threads_state(THREAD_PERMS, json!([]), vec![]);
+    s.upsert_channel(&thread_ch(thread(30, 10, "a", false, false)));
+    assert_eq!(thread_ids(&s, 10), vec![30]);
+
+    // UPDATE üyelik ve son mesajı taşımaz: eskisi korunur.
+    let mut with_member = thread(30, 10, "a", false, false);
+    with_member["member"] = json!({"flags": 1});
+    with_member["last_message_id"] = json!("500");
+    s.upsert_channel(&thread_ch(with_member));
+    s.upsert_channel(&thread_ch(thread(30, 10, "yeni ad", false, false)));
+    let c = s.channel(sf(30)).unwrap();
+    assert_eq!(c.name.as_deref(), Some("yeni ad"));
+    assert!(c.member.is_some());
+    assert_eq!(c.last_message_id, Some(sf(500)));
+
+    // Arşivlenince listeden düşer; açık olan (`keep`) kalır.
+    s.upsert_channel(&thread_ch(thread(30, 10, "yeni ad", true, true)));
+    assert!(thread_ids(&s, 10).is_empty());
+    assert_eq!(s.threads_of(sf(10), Some(sf(30))).len(), 1);
+    assert!(s.is_thread_locked(sf(30)));
+
+    // Silme: mesajlar ve bağ gider.
+    s.history_loaded(sf(30), None, 50, vec![msg(900, 30, Some(1), 7)]);
+    s.remove_channel(sf(30));
+    assert!(s.channel(sf(30)).is_none() && s.messages(sf(30)).is_none());
+    assert!(s.threads_of(sf(10), Some(sf(30))).is_empty());
+
+    // Bilinmeyen guild'in thread'i yok sayılır.
+    let mut other = thread(31, 10, "x", false, false);
+    other["guild_id"] = json!("77");
+    let v = s.version();
+    s.upsert_channel(&thread_ch(other));
+    assert_eq!(s.version(), v);
+}
+
+#[test]
+fn parent_delete_removes_threads() {
+    let mut s = threads_state(
+        THREAD_PERMS,
+        json!([]),
+        vec![thread(30, 10, "a", false, false)],
+    );
+    s.remove_channel(sf(10));
+    assert!(s.channel(sf(30)).is_none());
+}
+
+#[test]
+fn thread_list_sync_scopes() {
+    let mut s = threads_state(
+        THREAD_PERMS,
+        json!([]),
+        vec![
+            thread(30, 10, "a", false, false),
+            thread(31, 10, "b", false, false),
+            thread(40, 20, "f", false, false),
+        ],
+    );
+    // Yalnızca kanal 10 senkronlanır: 31 gider, 33 gelir, forum dokunulmaz.
+    let sync =
+        |channel_ids: serde_json::Value, threads: Vec<serde_json::Value>| -> ThreadListSync {
+            serde_json::from_value(
+                json!({"guild_id": "1", "channel_ids": channel_ids, "threads": threads}),
+            )
+            .unwrap()
+        };
+    s.thread_list_sync(&sync(
+        json!(["10"]),
+        vec![
+            thread(30, 10, "a", false, false),
+            thread(33, 10, "c", false, false),
+        ],
+    ));
+    assert_eq!(thread_ids(&s, 10), vec![33, 30]);
+    assert_eq!(thread_ids(&s, 20), vec![40]);
+    // Kapsamsız: tüm guild değişir.
+    s.thread_list_sync(&sync(json!(null), vec![thread(41, 20, "g", false, false)]));
+    assert!(thread_ids(&s, 10).is_empty());
+    assert_eq!(thread_ids(&s, 20), vec![41]);
+    // Bilinmeyen guild: yok sayılır.
+    let mut bad = sync(json!(null), vec![]);
+    bad.guild_id = sf(77);
+    let v = s.version();
+    s.thread_list_sync(&bad);
+    assert_eq!(s.version(), v);
+}
+
+#[test]
+fn rest_loaded_threads_and_archived() {
+    let mut s = threads_state(THREAD_PERMS, json!([]), vec![]);
+    assert!(!s.threads_fetched(sf(20)));
+    // `guild_id` olmayan REST thread'i de yerleşir; yanlış üst kanallı olan atlanır.
+    let mut a = thread(40, 20, "a", false, false);
+    a.as_object_mut().unwrap().remove("guild_id");
+    let stray = thread(41, 10, "başka", false, false);
+    s.threads_loaded(sf(20), &[thread_ch(a), thread_ch(stray)], false);
+    assert!(s.threads_fetched(sf(20)));
+    assert_eq!(thread_ids(&s, 20), vec![40]);
+    assert_eq!(s.channel(sf(40)).unwrap().guild_id, Some(sf(1)));
+
+    // Arşivliler istenince dim olarak listelenir.
+    s.threads_loaded(
+        sf(10),
+        &[thread_ch(thread(50, 10, "eski", true, false))],
+        true,
+    );
+    assert!(s.archived_shown(sf(10)));
+    let items = s.threads_of(sf(10), None);
+    assert_eq!(items.len(), 1);
+    assert!(items[0].archived);
+    // Sync arşivlilere dokunmaz.
+    s.thread_list_sync(&ThreadListSync {
+        guild_id: sf(1),
+        channel_ids: None,
+        threads: vec![],
+    });
+    assert_eq!(thread_ids(&s, 10), vec![50]);
+    // Bilinmeyen üst kanal: yok sayılır.
+    s.threads_loaded(
+        sf(99),
+        &[thread_ch(thread(60, 99, "x", false, false))],
+        false,
+    );
+    assert!(s.channel(sf(60)).is_none());
+}
+
+#[test]
+fn thread_permissions_inherit_from_parent() {
+    let deny = |bits: u64| json!([{"id": "1", "type": 0, "allow": "0", "deny": bits.to_string()}]);
+    // Normal: yazabilir.
+    let s = threads_state(
+        THREAD_PERMS,
+        json!([]),
+        vec![thread(30, 10, "a", false, false)],
+    );
+    assert!(s.can_send(sf(30)));
+    // Arşivli ama kilitsiz: yazmak thread'i açar, engellenmez.
+    let s = threads_state(
+        THREAD_PERMS,
+        json!([]),
+        vec![thread(30, 10, "a", true, false)],
+    );
+    assert!(s.can_send(sf(30)));
+    // Üst kanalda SEND_MESSAGES_IN_THREADS reddi miras alınır (SEND_MESSAGES değil).
+    let s = threads_state(
+        THREAD_PERMS,
+        deny(1 << 38),
+        vec![thread(30, 10, "a", false, false)],
+    );
+    assert!(!s.can_send(sf(30)));
+    assert!(s.can_send(sf(10)));
+    let s = threads_state(
+        THREAD_PERMS,
+        deny(1 << 11),
+        vec![thread(30, 10, "a", false, false)],
+    );
+    assert!(s.can_send(sf(30)) && !s.can_send(sf(10)));
+    // Üst kanalı görme izni yok → thread'de de yok.
+    let s = threads_state(
+        THREAD_PERMS,
+        deny(1 << 10),
+        vec![thread(30, 10, "a", false, false)],
+    );
+    assert!(!s.my_permissions(sf(30)).contains(Permissions::VIEW_CHANNEL));
+    // Kilitli: yazamaz; MANAGE_THREADS ile yazabilir.
+    let s = threads_state(
+        THREAD_PERMS,
+        json!([]),
+        vec![thread(30, 10, "a", false, true)],
+    );
+    assert!(!s.can_send(sf(30)));
+    let s = threads_state(
+        "292057779200",
+        json!([]),
+        vec![thread(30, 10, "a", false, true)],
+    );
+    assert!(s.can_send(sf(30)));
+}
+
+#[test]
+fn thread_unread_counts_in_guild_and_jump_list() {
+    let mut s = State::new();
+    let mut parent = chan(10, 0, None, 0, "genel");
+    parent["last_message_id"] = json!("5");
+    let mut g = gjson(1, 999, vec![parent]);
+    g["roles"][0]["permissions"] = json!(THREAD_PERMS);
+    g["threads"] = json!([thread(30, 10, "a", false, false)]);
+    let mut r = ready(vec![g], vec![], vec![]);
+    r.read_state = serde_json::from_value(json!({"entries": [
+        {"id": "10", "last_message_id": "5", "mention_count": 0},
+        {"id": "30", "last_message_id": "20", "mention_count": 2},
+    ]}))
+    .unwrap();
+    s.load_ready(&r);
+    // Thread'in son mesajı 30, okunan 20 → okunmamış.
+    assert!(s.is_unread(sf(30)));
+    assert_eq!(s.mention_count(sf(30)), 2);
+    assert_eq!(s.guild_unread(sf(1), 0), (true, 2));
+    assert_eq!(s.unread_channels(0), vec![(Some(sf(1)), sf(30))]);
+    s.mark_read(sf(30), sf(30));
+    assert!(!s.is_unread(sf(30)));
+    assert_eq!(s.guild_unread(sf(1), 0), (false, 0));
+}
+
+#[test]
+fn thread_message_flow_reuses_channel_paths() {
+    let mut s = threads_state(
+        THREAD_PERMS,
+        json!([]),
+        vec![thread(30, 10, "a", false, false)],
+    );
+    s.history_loaded(sf(30), None, 50, vec![msg(900, 30, Some(1), 7)]);
+    s.message_create(msg(901, 30, Some(1), 7));
+    assert_eq!(ids(&s, 30), vec![900, 901]);
+    assert_eq!(s.channel(sf(30)).unwrap().last_message_id, Some(sf(901)));
 }

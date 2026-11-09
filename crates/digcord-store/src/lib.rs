@@ -85,6 +85,12 @@ pub struct State {
     notify_settings: HashMap<Option<Snowflake>, digcord_model::GuildSettings>,
     relationships: Vec<digcord_model::Relationship>,
     voice: voice::VoiceData,
+    /// Üst kanal → thread'leri (arşivliler dahil, yüklü olanlar).
+    thread_children: HashMap<Snowflake, Vec<Snowflake>>,
+    /// Aktif thread listesi REST ile alınmış üst kanallar (forumlar).
+    threads_fetched: HashSet<Snowflake>,
+    /// Arşivli thread listesi istenmiş (altında dim gösterilen) üst kanallar.
+    archived_shown: HashSet<Snowflake>,
 }
 
 fn is_voice(kind: u8) -> bool {
@@ -201,10 +207,17 @@ impl State {
             data.owner_id = p.owner_id;
         }
         self.guilds.insert(guild.id, data);
+        if !guild.unavailable {
+            self.load_guild_threads(guild.id, &guild.threads);
+        }
         self.rebuild_tree(guild.id);
     }
 
     pub fn upsert_channel(&mut self, channel: &Channel) {
+        if channel.is_thread() {
+            self.upsert_thread(channel);
+            return;
+        }
         self.version += 1;
         self.channels.insert(channel.id, channel.clone());
         if let Some(gid) = channel.guild_id {
@@ -225,6 +238,17 @@ impl State {
         };
         self.version += 1;
         self.msgs.remove(&id);
+        if ch.is_thread() {
+            self.forget_thread(id, ch.parent_id);
+            return;
+        }
+        // Üst kanal silinince thread'leri de gider.
+        for kid in self.thread_children.remove(&id).unwrap_or_default() {
+            self.channels.remove(&kid);
+            self.msgs.remove(&kid);
+        }
+        self.threads_fetched.remove(&id);
+        self.archived_shown.remove(&id);
         if let Some(gid) = ch.guild_id {
             if let Some(g) = self.guilds.get_mut(&gid) {
                 g.channel_ids.retain(|c| *c != id);
@@ -583,9 +607,11 @@ fn insert_sorted(deque: &mut VecDeque<Message>, msg: Message) {
 }
 
 mod compose;
+mod threads;
 mod unread;
 mod voice;
 
+pub use threads::ThreadItem;
 pub use unread::NotifyFilter;
 pub use voice::{VoiceCall, VoicePhase};
 

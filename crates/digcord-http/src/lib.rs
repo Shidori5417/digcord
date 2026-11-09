@@ -9,7 +9,7 @@ pub mod ratelimit;
 use std::fmt::Write as _;
 use std::time::Duration;
 
-use digcord_model::{ClientProperties, Message, ReactionEmoji, Snowflake, Token};
+use digcord_model::{ClientProperties, Message, ReactionEmoji, Snowflake, ThreadList, Token};
 use reqwest::header::{self, HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Method, StatusCode};
 use serde::Deserialize;
@@ -23,6 +23,21 @@ pub const API_BASE: &str = "https://discord.com/api/v9";
 const MAX_RETRIES: u32 = 3;
 /// Discord'un söylediğinden fazla bekleme (sunucu tarafı yuvarlama için pay).
 const RETRY_PAD: Duration = Duration::from_millis(50);
+
+/// Thread listesi isteklerinde sayfa boyutu.
+pub const THREAD_PAGE: u8 = 25;
+
+/// Forum aktif gönderileri için sorgu yolu (son mesaja göre azalan).
+pub fn forum_threads_path(forum: Snowflake, limit: u8) -> String {
+    format!(
+        "/channels/{forum}/threads/search?archived=false&sort_by=last_message_time&sort_order=desc&limit={limit}"
+    )
+}
+
+/// Arşivli herkese açık thread'ler için yol.
+pub fn archived_threads_path(channel: Snowflake, limit: u8) -> String {
+    format!("/channels/{channel}/threads/archived/public?limit={limit}")
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum HttpError {
@@ -166,6 +181,22 @@ impl Http {
             ),
             None => format!("/channels/{}/messages?limit={limit}", page.channel),
         };
+        let resp = self.send(Method::GET, &path, page, None).await?;
+        Ok(resp.json().await?)
+    }
+
+    /// Forum/medya kanalının aktif gönderileri: `GET /channels/{f}/threads/search?...`
+    /// (kullanıcı istemcisi uç noktası, belgelenmemiş: doğrulanmadı, PROTOCOL_NOTES §4.4).
+    pub async fn search_forum_threads(&self, page: Page) -> Result<ThreadList, HttpError> {
+        let path = forum_threads_path(page.channel, THREAD_PAGE);
+        let resp = self.send(Method::GET, &path, page, None).await?;
+        Ok(resp.json().await?)
+    }
+
+    /// Arşivli herkese açık thread'ler: `GET /channels/{c}/threads/archived/public` (belgeli).
+    /// Yalnızca ilk sayfa; `has_more` dönüşte bildirilir.
+    pub async fn archived_threads(&self, page: Page) -> Result<ThreadList, HttpError> {
+        let path = archived_threads_path(page.channel, THREAD_PAGE);
         let resp = self.send(Method::GET, &path, page, None).await?;
         Ok(resp.json().await?)
     }
@@ -528,6 +559,50 @@ mod tests {
             assert!(req.contains(h), "eksik başlık {h}:\n{req}");
         }
         assert!(!req.contains("bot sahte-token"));
+    }
+
+    #[test]
+    fn thread_paths() {
+        assert_eq!(
+            forum_threads_path(Snowflake(5), 25),
+            "/channels/5/threads/search?archived=false&sort_by=last_message_time&sort_order=desc&limit=25"
+        );
+        assert_eq!(
+            archived_threads_path(Snowflake(5), 25),
+            "/channels/5/threads/archived/public?limit=25"
+        );
+        // Sorgu dizesi rate limit rotasını bölmez.
+        assert_eq!(
+            ratelimit::route_key("GET", &forum_threads_path(Snowflake(5), 25)),
+            "GET /channels/5/threads/search"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetches_forum_and_archived_threads() {
+        let body = r#"{"threads":[{"id":"60","type":11,"parent_id":"42","name":"gönderi","thread_metadata":{"archived":false,"locked":false}}],"members":[],"has_more":true,"total_results":3,"first_messages":[]}"#;
+        let (base, srv) = server(vec![
+            reply("200 OK", "", body),
+            reply(
+                "200 OK",
+                "",
+                r#"{"threads":[],"members":[],"has_more":false}"#,
+            ),
+        ])
+        .await;
+        let h = http(&base);
+        let list = h.search_forum_threads(PAGE).await.expect("forum");
+        assert_eq!(list.threads[0].id, Snowflake(60));
+        assert!(list.has_more);
+        let list = h.archived_threads(PAGE).await.expect("arşiv");
+        assert!(list.threads.is_empty());
+        let reqs = srv.await.expect("sunucu");
+        assert!(
+            reqs[0].starts_with("GET /channels/42/threads/search?archived=false&sort_by=last_message_time&sort_order=desc&limit=25 "),
+            "{}",
+            reqs[0]
+        );
+        assert!(reqs[1].starts_with("GET /channels/42/threads/archived/public?limit=25 "));
     }
 
     #[tokio::test]

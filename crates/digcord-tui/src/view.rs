@@ -389,9 +389,11 @@ fn draw_channels(app: &App, st: &State, frame: &mut Frame, area: Rect) {
         .map(|(i, e)| {
             let mut style = match e.kind {
                 EntryKind::Category { .. } => app.theme.dim().add_modifier(Modifier::BOLD),
-                _ if e.muted => app.theme.dim(),
+                _ if e.muted || e.dim => app.theme.dim(),
                 EntryKind::Readable if e.unread || e.mentions > 0 => app.theme.unread(),
                 EntryKind::Readable => app.theme.channel(),
+                EntryKind::Forum { .. } if e.unread || e.mentions > 0 => app.theme.unread(),
+                EntryKind::Forum { .. } => app.theme.channel(),
                 EntryKind::Voice => app.theme.channel(),
                 EntryKind::VoiceMember { speaking: true } => app.theme.speaking(),
                 EntryKind::VoiceMember { speaking: false } => app.theme.dim(),
@@ -593,6 +595,14 @@ fn input_height(app: &App, st: &State, open: Open, width: u16) -> u16 {
     }
 }
 
+fn no_send_text(st: &State, channel: Snowflake) -> &'static str {
+    if st.is_thread_locked(channel) {
+        "(bu thread kilitli; yazamazsın)"
+    } else {
+        "(bu kanala yazma iznin yok)"
+    }
+}
+
 /// Mesaj panelinin altı: ayraç/etiket satırı + giriş; üstünde tamamlama penceresi.
 fn draw_input(app: &App, st: &State, open: Open, frame: &mut Frame, area: Rect) {
     if area.height == 0 {
@@ -600,7 +610,10 @@ fn draw_input(app: &App, st: &State, open: Open, frame: &mut Frame, area: Rect) 
     }
     if !st.can_send(open.channel) {
         frame.render_widget(
-            Paragraph::new(Line::styled("(bu kanala yazma iznin yok)", app.theme.dim())),
+            Paragraph::new(Line::styled(
+                no_send_text(st, open.channel),
+                app.theme.dim(),
+            )),
             area,
         );
         return;

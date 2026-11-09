@@ -182,6 +182,14 @@ impl State {
             return Permissions::ALL;
         };
         let (gid, g) = g;
+        // Thread'lerin kendi overwrite'ı yoktur: üst kanalınkiler geçerlidir.
+        let overwrites = if ch.is_thread() {
+            ch.parent_id
+                .and_then(|p| self.channels.get(&p))
+                .map_or(&[][..], |p| &p.permission_overwrites[..])
+        } else {
+            &ch.permission_overwrites[..]
+        };
         MemberContext {
             guild_id: gid,
             owner_id: g.owner_id,
@@ -189,12 +197,20 @@ impl State {
             member_roles: &g.my_roles,
             roles: &g.roles,
         }
-        .channel(&ch.permission_overwrites)
+        .channel(overwrites)
     }
 
+    /// Thread'de `SEND_MESSAGES_IN_THREADS` gerekir; kilitliyse ayrıca `MANAGE_THREADS`.
+    /// Arşivli (kilitsiz) thread'e yazmak onu sunucuda açar, bu yüzden engellenmez.
     pub fn can_send(&self, channel: Snowflake) -> bool {
-        self.my_permissions(channel)
-            .contains(Permissions::SEND_MESSAGES)
+        let perms = self.my_permissions(channel);
+        match self.channels.get(&channel) {
+            Some(ch) if ch.is_thread() => {
+                perms.contains(Permissions::SEND_MESSAGES_IN_THREADS)
+                    && (!ch.is_locked() || perms.contains(Permissions::MANAGE_THREADS))
+            }
+            _ => perms.contains(Permissions::SEND_MESSAGES),
+        }
     }
 
     /// Kanalda benim gönderdiğim en yeni (geçici olmayan) mesaj — boş girişte ↑ ile düzenleme için.

@@ -145,6 +145,10 @@ pub struct Guild {
     /// Ses kanallarındaki kullanıcılar (`guild_id` alanı burada yok).
     #[serde(default)]
     pub voice_states: Vec<crate::VoiceState>,
+    /// Kullanıcının görebildiği aktif thread'ler (kullanıcı hesabı READY biçimi
+    /// doğrulanmadı, PROTOCOL_NOTES §4.4).
+    #[serde(default)]
+    pub threads: Vec<Channel>,
 }
 
 /// Sunucunun özel emojisi.
@@ -193,6 +197,76 @@ pub struct Channel {
     /// DM / grup DM alıcıları.
     #[serde(default)]
     pub recipient_ids: Vec<Snowflake>,
+    /// Thread'i açan kullanıcı.
+    pub owner_id: Option<Snowflake>,
+    /// Sadece thread'lerde.
+    pub thread_metadata: Option<ThreadMetadata>,
+    pub message_count: Option<u32>,
+    pub member_count: Option<u32>,
+    /// Forum / medya kanalındaki etiketler (kanal üzerinde).
+    #[serde(default)]
+    pub available_tags: Vec<ForumTag>,
+    /// Thread'e uygulanmış etiket id'leri.
+    #[serde(default)]
+    pub applied_tags: Vec<Snowflake>,
+    /// Sadece thread'lerde ve yalnızca benim üyeliğim varsa dolu (doğrulanmadı).
+    pub member: Option<ThreadMember>,
+}
+
+impl Channel {
+    pub fn is_thread(&self) -> bool {
+        channel_kind::is_thread(self.kind)
+    }
+
+    pub fn is_archived(&self) -> bool {
+        self.thread_metadata.as_ref().is_some_and(|m| m.archived)
+    }
+
+    pub fn is_locked(&self) -> bool {
+        self.thread_metadata.as_ref().is_some_and(|m| m.locked)
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ThreadMetadata {
+    #[serde(default)]
+    pub archived: bool,
+    #[serde(default)]
+    pub locked: bool,
+    pub archive_timestamp: Option<String>,
+}
+
+/// Kullanıcının thread üyeliği (alanların çoğu kullanılmıyor).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ThreadMember {
+    pub flags: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ForumTag {
+    pub id: Snowflake,
+    #[serde(default)]
+    pub name: String,
+}
+
+/// `THREAD_LIST_SYNC`: guild (veya `channel_ids` ile belirtilen üst kanallar) için aktif
+/// thread listesinin tamamı.
+#[derive(Debug, Deserialize)]
+pub struct ThreadListSync {
+    pub guild_id: Snowflake,
+    /// Verilmişse yalnızca bu üst kanalların thread'leri senkronlanır; yoksa tüm guild.
+    pub channel_ids: Option<Vec<Snowflake>>,
+    #[serde(default)]
+    pub threads: Vec<Channel>,
+}
+
+/// Thread listeleyen REST yanıtları (`/threads/search`, `/threads/archived/public`).
+#[derive(Debug, Deserialize)]
+pub struct ThreadList {
+    #[serde(default)]
+    pub threads: Vec<Channel>,
+    #[serde(default)]
+    pub has_more: bool,
 }
 
 /// Kanal tipleri (kullanılanlar).
@@ -203,8 +277,26 @@ pub mod channel_kind {
     pub const GROUP_DM: u8 = 3;
     pub const CATEGORY: u8 = 4;
     pub const ANNOUNCEMENT: u8 = 5;
+    pub const ANNOUNCEMENT_THREAD: u8 = 10;
+    pub const PUBLIC_THREAD: u8 = 11;
+    pub const PRIVATE_THREAD: u8 = 12;
     pub const STAGE: u8 = 13;
     pub const FORUM: u8 = 15;
+    pub const MEDIA: u8 = 16;
+
+    pub fn is_thread(kind: u8) -> bool {
+        matches!(kind, ANNOUNCEMENT_THREAD | PUBLIC_THREAD | PRIVATE_THREAD)
+    }
+
+    /// Altında thread'ler listelenen kanal: metin, duyuru, forum, medya.
+    pub fn has_threads(kind: u8) -> bool {
+        matches!(kind, TEXT | ANNOUNCEMENT | FORUM | MEDIA)
+    }
+
+    /// Forum benzeri (içerik thread'lerden ibaret) kanal.
+    pub fn is_forum(kind: u8) -> bool {
+        matches!(kind, FORUM | MEDIA)
+    }
 }
 
 impl Ready {
@@ -215,5 +307,50 @@ impl Ready {
             .flat_map(|g| &g.channels)
             .filter(|c| c.kind != channel_kind::CATEGORY)
             .count()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thread_fields_and_kinds() {
+        let c: Channel = serde_json::from_str(
+            r#"{"id":"30","type":12,"parent_id":"2","owner_id":"7","name":"x","message_count":3,"member_count":2,
+                "applied_tags":["5"],"thread_metadata":{"archived":true,"locked":false,"archive_timestamp":"2026-01-01T00:00:00+00:00"}}"#,
+        )
+        .expect("thread");
+        assert!(c.is_thread() && c.is_archived() && !c.is_locked());
+        assert_eq!(c.owner_id, Some(Snowflake(7)));
+        assert_eq!(c.applied_tags, [Snowflake(5)]);
+        assert_eq!((c.message_count, c.member_count), (Some(3), Some(2)));
+
+        let forum: Channel = serde_json::from_str(
+            r#"{"id":"2","type":15,"name":"f","available_tags":[{"id":"5","name":"soru","emoji_name":null}]}"#,
+        )
+        .expect("forum");
+        assert!(!forum.is_thread() && channel_kind::is_forum(forum.kind));
+        assert_eq!(forum.available_tags[0].name, "soru");
+        // Metadata yoksa arşivli/kilitli değil.
+        let plain: Channel = serde_json::from_str(r#"{"id":"1","type":0}"#).expect("kanal");
+        assert!(!plain.is_archived() && !plain.is_locked());
+        for k in [10, 11, 12] {
+            assert!(channel_kind::is_thread(k));
+        }
+        assert!(channel_kind::has_threads(channel_kind::MEDIA));
+        assert!(!channel_kind::has_threads(channel_kind::VOICE));
+    }
+
+    #[test]
+    fn guild_threads_default_empty_and_list_shapes() {
+        let g: Guild = serde_json::from_str(r#"{"id":"1"}"#).expect("guild");
+        assert!(g.threads.is_empty());
+        let l: ThreadList =
+            serde_json::from_str(r#"{"threads":[{"id":"3","type":11}],"has_more":true}"#)
+                .expect("liste");
+        assert!(l.has_more && l.threads.len() == 1);
+        let empty: ThreadList = serde_json::from_str("{}").expect("boş");
+        assert!(empty.threads.is_empty() && !empty.has_more);
     }
 }

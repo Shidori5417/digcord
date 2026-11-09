@@ -64,6 +64,8 @@ Vim istemeyenler için config'de `keymap = "simple"` (her zaman yazma modu, ok t
 | `:leave` / `:mute` / `:deaf` | Ses kanalından ayrıl / mikrofon / kulaklık |
 | `:devices` | Kullanılabilir ses giriş/çıkış aygıtlarını listele (durum çubuğuna tek satır; tam liste günlükte) |
 | `:call` | Açık DM'de aramaya katıl (çaldırmaz) |
+| `:threads` | Seçili/açık kanalın thread listesini aç-kapat (forumda gönderileri de getirir) |
+| `:archived` | Seçili/açık kanalın arşivli thread'lerini yükle ve soluk göster |
 | `:vol <ad> <0-200>` | Ses kanalındaki kişinin ses seviyesi (yüzde) |
 | `Alt+↑/↓` | Okunmamış önceki/sonraki kanal (sessizdekiler atlanır) |
 | `q` / `:q` | Çıkış |
@@ -266,3 +268,25 @@ gibi biçimler temadan bağımsızdır. Embed'in kendi rengi (sol kenar) Discord
   sonuç durum çubuğunda bildirilir. `client.*` ve `[keys]` ekranda yok (dosyadan düzenlenir).
 - `:theme <ad>`: tema dosyasını denetleyici okur, sonuç TUI'ye iletilir ve anında uygulanır;
   `ui.theme` kaydedilecek olarak işaretlenir (`:settings` → `s`).
+
+### Thread'ler ve forum kanalları (Aşama 7)
+
+- Aktif thread'ler kanal panelinde üst kanalın altında, bir seviye girintili ve `└ ` ile gösterilir
+  (yeniden eskiye, son mesaja göre). Thread'ler guild ağacında (`TreeItem`) yoktur; panel
+  `State::threads_of` ile üst kanalın altına ekler. Üst kanal gizliyse (izin) thread'leri de görünmez.
+- **Varsayılan açık/kapalı:** metin/duyuru kanalında en çok 3 aktif thread varsa açık, daha fazlaysa
+  kapalı (panel şişmesin); forumda her zaman kapalı. Kapalıyken üst satırda `▸N` ipucu ve
+  thread'lerin okunmamış/bahsetme toplamı görünür. `:threads` ters çevirir (forumda Enter de);
+  bir thread açılınca (Alt+↓, hızlı geçiş vb.) listesi kapalıysa açılır.
+- **Forum / medya** (`≡`): Enter mesaj açmaz, gönderi listesini açar; ilk açılışta
+  `Action::LoadThreads` ile aktif gönderiler REST'ten alınır (`threads/search`, bkz.
+  PROTOCOL_NOTES §4.4). Gönderi (thread) normal kanal gibi açılır: geçmiş, gönderme, düzenleme,
+  tepki, yükleme aynı yollar.
+- **Arşivli** thread'ler varsayılan gizli; `:archived` ilk sayfayı (25) yükler, soluk çizilir.
+  **Kilitli** thread'ler `🔒` ve soluk; yazılamaz: `i` bildirim verir, giriş alanı
+  "(bu thread kilitli; yazamazsın)" gösterir (`MANAGE_THREADS` sahibi yazabilir).
+- İzinler üst kanaldan miras alınır; yazmak `SEND_MESSAGES_IN_THREADS` ister.
+- Okunmamış/bahsetme sayaçları thread id'siyle mevcut okunma durumu mantığından gelir; sunucu
+  rozeti ve `Alt+↑/↓` thread'leri de kapsar (sessizdekiler ve arşivliler hariç).
+- **Kapsam dışı:** thread/forum gönderisi oluşturma, thread'e katılma/ayrılma, etiket süzme,
+  arşivli listede sayfalama.

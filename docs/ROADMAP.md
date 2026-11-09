@@ -85,7 +85,7 @@ reddedilmiyor, 30 dk kesintisiz çalışıyor, ses thread'i CPU'nun < %3'ünü k
 
 ## Aşama 7 — Cila
 - [x] Temalar, tam kısayol özelleştirme, ayarlar ekranı (`:settings`, `:theme`, `[keys]`; ayrıntı `TUI_DESIGN.md`).
-- Thread'ler ve forum kanalları.
+- [x] Thread'ler ve forum kanalları: okuma + yazma (oluşturma kapsam dışı); ayrıntı `TUI_DESIGN.md`, protokol `PROTOCOL_NOTES.md` §4.4 (⚠️ doğrulanmadı).
 - Arama (`/search` uç noktası), sabitlenen mesajlar.
 - Performans profili: açılış süresi, bellek (hedef: büyük hesapta < 150 MB).
   - [x] Sentetik büyük hesapla ölçüldü (veri işleme < 10 ms, ~50 MiB; bkz. `docs/PERFORMANCE.md`).
