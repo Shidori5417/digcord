@@ -1179,6 +1179,7 @@ dependencies = [
  "serde",
  "tokio",
  "toml",
+ "toml_edit",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -1265,6 +1266,7 @@ dependencies = [
  "ratatui",
  "ratatui-image",
  "serde_json",
+ "thiserror 2.0.21",
  "tracing",
  "unicode-width",
 ]
@@ -5240,6 +5242,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

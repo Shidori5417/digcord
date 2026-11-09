@@ -6,13 +6,21 @@
 mod compose;
 mod editor;
 mod fuzzy;
+mod keymap;
 mod markdown;
 mod media;
 mod render;
+mod settings;
+mod theme;
 mod view;
 mod viewer;
 
+pub use keymap::Keymap;
 pub use media::{ImageDone, ImageJob, ImageMode, Options};
+/// Tema yuvalarının türü.
+pub use ratatui::style::Color;
+pub use settings::{SettingItem, SettingKind, SettingValue};
+pub use theme::{Theme, ThemeError};
 
 use std::cell::Cell;
 use std::collections::HashSet;
@@ -25,6 +33,8 @@ use digcord_model::{ReactionEmoji, Snowflake, channel_kind};
 use digcord_store::{State, TreeKind};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{DefaultTerminal, Frame};
+
+use crate::keymap::{Act, Scope};
 
 /// Store + "çizilmesi gereken değişiklik var" bayrağı. Tek yazar denetleyicidir; TUI okur.
 #[derive(Default)]
@@ -61,6 +71,11 @@ pub enum UiEvent {
     Notice(String),
     /// Bir resim işi bitti.
     Image(ImageDone),
+    /// `:theme <ad>` ile istenen tema yüklendi.
+    Theme {
+        name: String,
+        theme: Box<Theme>,
+    },
 }
 
 /// Bağlantı durumu (durum çubuğunda gösterilir).
@@ -160,6 +175,15 @@ pub enum Action {
         user: Snowflake,
         volume: f32,
     },
+    /// Çalışırken uygulanabilen bir ayar değişti (`bölüm.anahtar`).
+    ApplySetting {
+        key: String,
+        value: SettingValue,
+    },
+    /// Ayarlar ekranında `s`: değişen ayarlar config.toml'a yazılsın.
+    SaveSettings(Vec<(String, SettingValue)>),
+    /// `:theme <ad>`: tema dosyasını oku; sonuç [`UiEvent::Theme`].
+    LoadTheme(String),
     Quit,
 }
 
@@ -204,8 +228,11 @@ pub fn run(
         // Odak olayları desteklenmiyorsa sorun değil: bildirim kararı "odakta" varsayar.
         let _ = ratatui::crossterm::execute!(io::stdout(), EnableFocusChange);
         let mut app = App::new(shared);
-        app.images = media::Images::new(picker, options);
         app.push_to_talk = options.push_to_talk && enhanced;
+        app.theme = options.theme;
+        app.keys = options.keys.clone();
+        app.settings = settings::State::new(options.settings.clone());
+        app.images = media::Images::new(picker, options);
         if let Some(name) = app.images.protocol_name() {
             tracing::info!(protocol = name, "resim gösterimi");
         }
@@ -347,6 +374,10 @@ pub struct App {
     push_to_talk: bool,
     /// Tam ekran resim görüntüleyici (`Mode::Viewer`).
     viewer: Option<viewer::Viewer>,
+    theme: Theme,
+    keys: Keymap,
+    /// `:settings` ekranı (`Mode::Settings`).
+    settings: settings::State,
 }
 
 impl App {
@@ -379,6 +410,9 @@ impl App {
             images: media::Images::off(),
             push_to_talk: false,
             viewer: None,
+            theme: Theme::default(),
+            keys: Keymap::default(),
+            settings: settings::State::default(),
         }
     }
 
@@ -476,14 +510,18 @@ impl App {
                 self.images.done(done);
                 None
             }
+            UiEvent::Theme { name, theme } => {
+                self.theme = *theme;
+                self.notice = Some(format!("Tema: {name}"));
+                self.settings
+                    .set_external("ui.theme", SettingValue::Str(name));
+                None
+            }
         }
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Option<Action> {
-        if self.push_to_talk
-            && key.code == KeyCode::Char(' ')
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-        {
+        if self.push_to_talk && self.keys.lookup(Scope::Global, &key) == Some(Act::PushToTalk) {
             return match key.kind {
                 KeyEventKind::Press => Some(Action::PushToTalk(true)),
                 KeyEventKind::Release => Some(Action::PushToTalk(false)),
@@ -494,6 +532,7 @@ impl App {
             return None;
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        // Ctrl+C sabit: yanlış bir kısayol atamasıyla çıkışsız kalınmasın.
         if ctrl && key.code == KeyCode::Char('c') {
             self.should_quit = true;
             return None;
@@ -519,12 +558,10 @@ impl App {
 
         self.notice = None;
         // Ses: her modda (kitty klavye protokolü gerekir; yoksa :mute / :deaf).
-        if ctrl && key.modifiers.contains(KeyModifiers::SHIFT) {
-            match key.code {
-                KeyCode::Char('m' | 'M') => return Some(Action::ToggleMute),
-                KeyCode::Char('d' | 'D') => return Some(Action::ToggleDeaf),
-                _ => {}
-            }
+        match self.keys.lookup(Scope::Global, &key) {
+            Some(Act::ToggleMute) => return Some(Action::ToggleMute),
+            Some(Act::ToggleDeaf) => return Some(Action::ToggleDeaf),
+            _ => {}
         }
         match self.mode {
             compose::Mode::Insert => return self.insert_key(key),
@@ -533,34 +570,41 @@ impl App {
             compose::Mode::Switcher => return self.switcher_key(key),
             compose::Mode::ConfirmDelete(id) => return self.confirm_key(key, id),
             compose::Mode::Viewer => return self.viewer_key(key),
+            compose::Mode::Settings => return self.settings_key(key),
             compose::Mode::Normal => {}
         }
-        if let Some(result) = self.normal_mode_key(key) {
+        let act = self.keys.lookup(Scope::Normal, &key)?;
+        if let Some(result) = self.normal_mode_key(act) {
             return result;
         }
-        let alt = key.modifiers.contains(KeyModifiers::ALT);
-        match key.code {
-            KeyCode::Char('k') if ctrl => {
+        let half_page = usize::from(self.msg_area.get().1 / 2).max(1);
+        match act {
+            Act::Quit => self.should_quit = true,
+            Act::Switcher => {
                 self.command.clear();
                 self.comp_sel = 0;
                 self.mode = compose::Mode::Switcher;
-                return None;
             }
-            KeyCode::Down if alt => return self.jump_unread(true),
-            KeyCode::Up if alt => return self.jump_unread(false),
-            _ => {}
-        }
-        let half_page = usize::from(self.msg_area.get().1 / 2).max(1);
-        match (key.code, ctrl) {
-            (KeyCode::Char('q'), false) => self.should_quit = true,
-            (KeyCode::Tab, _) => self.focus = self.next_focus(true),
-            (KeyCode::BackTab, _) => self.focus = self.next_focus(false),
-            (KeyCode::Char('j') | KeyCode::Down, false) => self.move_down(1),
-            (KeyCode::Char('k') | KeyCode::Up, false) => self.move_up(1),
-            (KeyCode::PageDown, _) | (KeyCode::Char('d'), true) => self.scroll_down(half_page),
-            (KeyCode::PageUp, _) | (KeyCode::Char('u'), true) => self.scroll_up(half_page),
-            (KeyCode::Char('G') | KeyCode::End, _) => self.scroll = Scroll::default(),
-            (KeyCode::Enter | KeyCode::Char('l'), false) => return self.activate(),
+            Act::NextUnread => return self.jump_unread(true),
+            Act::PrevUnread => return self.jump_unread(false),
+            Act::NextFocus => self.focus = self.next_focus(true),
+            Act::PrevFocus => self.focus = self.next_focus(false),
+            Act::MoveDown => self.move_down(1),
+            Act::MoveUp => self.move_up(1),
+            Act::PageDown => self.scroll_down(half_page),
+            Act::PageUp => self.scroll_up(half_page),
+            Act::ScrollBottom => self.scroll = Scroll::default(),
+            Act::Activate => {
+                // Mesaj panelinde Enter, SELECT'e girer (`l` girmez).
+                if key.code == KeyCode::Enter
+                    && self.focus == Focus::Messages
+                    && self.open.is_some()
+                {
+                    self.enter_select();
+                } else {
+                    return self.activate();
+                }
+            }
             _ => {}
         }
         None

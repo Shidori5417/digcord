@@ -2,6 +2,7 @@ mod config;
 mod controller;
 mod keystore;
 mod logging;
+mod theme;
 mod voice;
 
 use std::time::Duration;
@@ -13,10 +14,23 @@ fn main() -> anyhow::Result<()> {
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "digcord başlıyor");
 
     // Ayarlar: dosya yoksa varsayılanlar; bozuksa açılmadan hata ver (sessizce yok saymak yerine).
-    let (config, warnings) = match config::Config::default_path() {
+    let (config, mut warnings) = match config::Config::default_path() {
         Some(path) => config::Config::load(&path)?,
         None => (config::Config::default(), Vec::new()),
     };
+    // Tema: bozuk tema dosyası uygulamayı durdurmaz; hata gösterilir, yerleşik tema kullanılır.
+    let theme = match theme::load(&config.ui.theme) {
+        Ok((theme, theme_warnings)) => {
+            warnings.extend(theme_warnings);
+            theme
+        }
+        Err(e) => {
+            warnings.push(format!("{e:#}"));
+            digcord_tui::Theme::default()
+        }
+    };
+    let (tui_options, key_warnings) = config.tui_options(theme);
+    warnings.extend(key_warnings);
     for w in &warnings {
         tracing::warn!("{w}");
     }
@@ -49,7 +63,7 @@ fn main() -> anyhow::Result<()> {
         };
         let _ = ui_tx.send(digcord_tui::UiEvent::Notice(text));
     }
-    let result = digcord_tui::run(ui_tx, ui_rx, shared, config.tui_options(), |action| {
+    let result = digcord_tui::run(ui_tx, ui_rx, shared, tui_options, |action| {
         let _ = action_tx.send(action);
     });
 

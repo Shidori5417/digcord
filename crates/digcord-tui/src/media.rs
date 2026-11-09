@@ -36,13 +36,18 @@ pub enum ImageMode {
 }
 
 /// TUI ayarları (config.toml `[ui]`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
     pub images: ImageMode,
     /// Bir resmin en fazla satır yüksekliği.
     pub image_max_rows: u16,
-    /// Ses: Ctrl+Space basılıyken konuş (kitty klavye protokolü gerekir).
+    /// Ses: bas-konuş tuşu (`push_to_talk` eylemi; varsayılan Ctrl+Space) basılıyken konuş
+    /// (kitty klavye protokolü gerekir).
     pub push_to_talk: bool,
+    pub theme: crate::Theme,
+    pub keys: crate::Keymap,
+    /// Ayarlar ekranındaki satırlar (`:settings`).
+    pub settings: Vec<crate::SettingItem>,
 }
 
 impl Default for Options {
@@ -51,6 +56,9 @@ impl Default for Options {
             images: ImageMode::Thumbnail,
             image_max_rows: 10,
             push_to_talk: false,
+            theme: crate::Theme::default(),
+            keys: crate::Keymap::default(),
+            settings: Vec::new(),
         }
     }
 }
@@ -306,6 +314,7 @@ mod tests {
                 images: mode,
                 image_max_rows: rows,
                 push_to_talk: false,
+                ..Options::default()
             },
         )
     }

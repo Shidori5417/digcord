@@ -4,6 +4,7 @@ use digcord_model::{Message, Ready, Snowflake};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::style::Color;
 
 use super::*;
 
@@ -993,4 +994,241 @@ fn voice_members_status_and_commands() {
     assert_eq!(app.handle(ptt(K::Press)), Some(Action::PushToTalk(true)));
     assert_eq!(app.handle(ptt(K::Repeat)), None);
     assert_eq!(app.handle(ptt(K::Release)), Some(Action::PushToTalk(false)));
+}
+
+// ------------------------------------------------------------ tema, kısayol, ayarlar
+
+fn key_mod(code: KeyCode, mods: KeyModifiers) -> UiEvent {
+    UiEvent::Input(Event::Key(KeyEvent::new(code, mods)))
+}
+
+fn run_command(app: &mut App, cmd: &str) -> Vec<Action> {
+    press(app, &[KeyCode::Char(':')]);
+    let mut keys: Vec<KeyCode> = cmd.chars().map(KeyCode::Char).collect();
+    keys.push(KeyCode::Enter);
+    press(app, &keys)
+}
+
+fn overrides(pairs: &[(&str, &str)]) -> Keymap {
+    let list: Vec<(String, Vec<String>)> = pairs
+        .iter()
+        .map(|(a, k)| ((*a).to_owned(), vec![(*k).to_owned()]))
+        .collect();
+    let (map, warnings) = Keymap::from_overrides(&list);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    map
+}
+
+#[test]
+fn custom_keys_replace_normal_mode_defaults() {
+    let mut app = test_app(shared_with(vec![], true));
+    app.keys = overrides(&[
+        ("quit", "x"),
+        ("move_down", "n"),
+        ("switcher", "ctrl+o"),
+        ("command_mode", ";"),
+    ]);
+    // Eski tuşlar artık işlemez.
+    press(&mut app, &[KeyCode::Char('q'), KeyCode::Char('j')]);
+    assert!(!app.should_quit);
+    assert_eq!(app.guild_sel, 0);
+    app.handle(key(KeyCode::Char('n')));
+    assert_eq!(app.guild_sel, 1);
+    app.handle(key_mod(KeyCode::Char('k'), KeyModifiers::CONTROL));
+    assert_eq!(app.mode, compose::Mode::Normal);
+    app.handle(key_mod(KeyCode::Char('o'), KeyModifiers::CONTROL));
+    assert_eq!(app.mode, compose::Mode::Switcher);
+    app.handle(key(KeyCode::Esc));
+    app.handle(key(KeyCode::Char(';')));
+    assert_eq!(app.mode, compose::Mode::Command);
+    app.handle(key(KeyCode::Esc));
+    app.handle(key(KeyCode::Char('x')));
+    assert!(app.should_quit);
+}
+
+#[test]
+fn custom_keys_replace_select_mode_defaults_and_global_keys() {
+    let mut app = test_app(shared_with(vec![msg(1, 0, ME, "merhaba")], true));
+    open_sohbet(&mut app);
+    app.keys = overrides(&[
+        ("reply", "R"),
+        ("toggle_mute", "f5"),
+        ("select_mode", "s"),
+        ("back", "q"),
+    ]);
+    press(&mut app, &[KeyCode::Char('s')]);
+    assert_eq!(app.mode, compose::Mode::Select);
+    // `r` artık yanıtlamaz; Shift+R yanıtlar.
+    app.handle(key(KeyCode::Char('r')));
+    assert_eq!(app.mode, compose::Mode::Select);
+    app.handle(key_mod(KeyCode::Char('R'), KeyModifiers::SHIFT));
+    assert_eq!(app.mode, compose::Mode::Insert);
+    app.handle(key(KeyCode::Esc));
+    press(&mut app, &[KeyCode::Char('s'), KeyCode::Char('q')]);
+    assert_eq!(app.mode, compose::Mode::Normal);
+    // Genel tuş her modda çalışır; eskisi artık çalışmaz.
+    assert_eq!(app.handle(key(KeyCode::F(5))), Some(Action::ToggleMute));
+    let old = key_mod(
+        KeyCode::Char('M'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
+    assert_eq!(app.handle(old), None);
+    // Ctrl+C her zaman çıkar.
+    app.handle(key_mod(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert!(app.should_quit);
+}
+
+fn setting_items() -> Vec<SettingItem> {
+    vec![
+        SettingItem::new(
+            "behavior.send_typing",
+            SettingValue::Bool(true),
+            SettingKind::Bool,
+            true,
+        ),
+        SettingItem::new(
+            "ui.image_max_rows",
+            SettingValue::Int(10),
+            SettingKind::Int {
+                min: 1,
+                max: 100,
+                step: 1,
+            },
+            false,
+        ),
+        SettingItem::new(
+            "ui.images",
+            SettingValue::Str("thumbnail".into()),
+            SettingKind::Choice(
+                ["off", "thumbnail", "full"]
+                    .map(|s| SettingValue::Str(s.into()))
+                    .to_vec(),
+            ),
+            false,
+        ),
+        SettingItem::new(
+            "ui.theme",
+            SettingValue::Str("default".into()),
+            SettingKind::ReadOnly,
+            false,
+        ),
+    ]
+}
+
+#[test]
+fn settings_screen_navigation_edits_and_save() {
+    let mut app = test_app(Arc::new(Shared::default()));
+    app.settings = settings::State::new(setting_items());
+    assert!(run_command(&mut app, "settings").is_empty());
+    assert_eq!(app.mode, compose::Mode::Settings);
+    insta::assert_snapshot!("settings_screen", draw(&app, 90, 10));
+
+    // Canlı ayar: Enter değiştirir ve eylem üretir.
+    assert_eq!(
+        press(&mut app, &[KeyCode::Enter]),
+        [Action::ApplySetting {
+            key: "behavior.send_typing".into(),
+            value: SettingValue::Bool(false)
+        }]
+    );
+    // Yeniden başlatma gerektiren ayar: eylem yok, not var.
+    assert!(press(&mut app, &[KeyCode::Char('j'), KeyCode::Char('+')]).is_empty());
+    assert_eq!(app.settings.items[1].value, SettingValue::Int(11));
+    assert_eq!(app.notice.as_deref(), Some("yeniden başlatınca geçerli"));
+    // Enter sayıyı değiştirmez; sınırlar aşılmaz.
+    press(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.settings.items[1].value, SettingValue::Int(11));
+    app.settings.items[1].value = SettingValue::Int(100);
+    press(&mut app, &[KeyCode::Char('+')]);
+    assert_eq!(app.settings.items[1].value, SettingValue::Int(100));
+    // Seçenek döngüsü; salt okunur ayar değişmez.
+    press(&mut app, &[KeyCode::Char('j'), KeyCode::Enter]);
+    assert_eq!(
+        app.settings.items[2].value,
+        SettingValue::Str("full".into())
+    );
+    press(&mut app, &[KeyCode::Char('j'), KeyCode::Enter]);
+    assert_eq!(
+        app.settings.items[3].value,
+        SettingValue::Str("default".into())
+    );
+    // Aşağı sınır: son satırdan öteye geçmez.
+    press(&mut app, &[KeyCode::Char('j'), KeyCode::Char('j')]);
+    assert_eq!(app.settings.sel, 3);
+
+    // `s`: sadece değişenler kaydedilir; ikinci `s` boş.
+    assert_eq!(
+        press(&mut app, &[KeyCode::Char('s')]),
+        [Action::SaveSettings(vec![
+            ("behavior.send_typing".into(), SettingValue::Bool(false)),
+            ("ui.image_max_rows".into(), SettingValue::Int(100)),
+            ("ui.images".into(), SettingValue::Str("full".into())),
+        ])]
+    );
+    assert!(press(&mut app, &[KeyCode::Char('s')]).is_empty());
+    assert_eq!(app.notice.as_deref(), Some("Kaydedilecek değişiklik yok"));
+
+    // Esc kapatır; komut modundaki tuşlar ayarlar ekranında etkisizdir.
+    press(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.mode, compose::Mode::Normal);
+}
+
+#[test]
+fn theme_command_and_event_update_colors() {
+    let mut app = test_app(shared_with(vec![msg(1, 0, FRIEND, "selam")], true));
+    app.settings = settings::State::new(setting_items());
+    assert_eq!(
+        run_command(&mut app, "theme light"),
+        [Action::LoadTheme("light".into())]
+    );
+    assert!(run_command(&mut app, "theme").is_empty());
+    assert!(
+        app.notice
+            .as_deref()
+            .is_some_and(|n| n.contains("Kullanım"))
+    );
+
+    open_sohbet(&mut app);
+    let mut theme = Theme::default();
+    for (slot, value) in [
+        ("background", "#101820"),
+        ("author", "magenta"),
+        ("border_focused", "#00ff00"),
+        ("status_bg", "blue"),
+    ] {
+        theme.set(slot, value).expect("geçerli yuva");
+    }
+    app.handle(UiEvent::Theme {
+        name: "koyu".into(),
+        theme: Box::new(theme),
+    });
+    assert_eq!(app.notice.as_deref(), Some("Tema: koyu"));
+    // Tema kaydedilecek ayar olarak işaretlenir.
+    assert_eq!(
+        app.settings.items[3].value,
+        SettingValue::Str("koyu".into())
+    );
+
+    let screen = draw(&app, 80, 12);
+    insta::assert_snapshot!("themed_message_view", screen);
+    let buf = screen.buffer();
+    // Odaktaki mesaj paneli çerçevesi (sol üst köşe: sütun 30) yeşil, arka plan koyu.
+    assert_eq!(buf[(30, 0)].fg, Color::Rgb(0, 255, 0));
+    assert_eq!(buf[(31, 0)].bg, Color::Rgb(16, 24, 32));
+    // Yazar adı macenta.
+    assert_eq!(buf[(31, 6)].symbol(), "a");
+    assert_eq!(buf[(31, 6)].fg, Color::Magenta);
+    // Durum çubuğu mavi arka planlı.
+    assert_eq!(buf[(5, 11)].bg, Color::Blue);
+}
+
+#[test]
+fn default_theme_keeps_the_builtin_colors() {
+    let mut app = test_app(shared_with(vec![msg(1, 0, FRIEND, "selam")], true));
+    open_sohbet(&mut app);
+    let screen = draw(&app, 80, 12);
+    let buf = screen.buffer();
+    assert_eq!(buf[(30, 0)].fg, Color::Cyan, "odaktaki çerçeve");
+    assert_eq!(buf[(0, 0)].fg, Color::Reset, "odaksız çerçeve");
+    assert_eq!(buf[(31, 0)].bg, Color::Reset);
 }

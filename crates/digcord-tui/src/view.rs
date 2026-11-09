@@ -8,7 +8,7 @@ use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Margin, Rect};
-use ratatui::style::{Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
@@ -16,6 +16,7 @@ use crate::compose::{self, Mode, Target};
 use crate::media::{Images, SlotState};
 use crate::render::ImageFit;
 use crate::render::{self, Resolver};
+use crate::theme::Theme;
 use crate::{App, EntryKind, Focus, Open, Screen, Status};
 
 /// Giriş kutusunun en fazla satır sayısı (fazlası kaydırılır).
@@ -34,6 +35,7 @@ pub(crate) struct Res<'a> {
     me: Option<Snowflake>,
     today: jiff::civil::Date,
     images: Option<&'a Images>,
+    theme: &'a Theme,
 }
 
 impl<'a> Res<'a> {
@@ -45,12 +47,19 @@ impl<'a> Res<'a> {
             me: st.me().map(|u| u.id),
             today: Timestamp::now().to_zoned(tz.clone()).date(),
             images: None,
+            theme: &Theme::DEFAULT,
         }
     }
 
     /// Resim boyutları için (kaydırma hesapları da aynı çözücüyü kullanmalı).
     pub(crate) fn with_images(mut self, images: &'a Images) -> Self {
         self.images = Some(images);
+        self
+    }
+
+    /// Renkler için (yükseklik hesapları temadan bağımsızdır; onlar varsayılanı kullanır).
+    pub(crate) fn with_theme(mut self, theme: &'a Theme) -> Self {
+        self.theme = theme;
         self
     }
 
@@ -62,6 +71,10 @@ impl<'a> Res<'a> {
 }
 
 impl Resolver for Res<'_> {
+    fn theme(&self) -> &Theme {
+        self.theme
+    }
+
     fn image_fit(&self, w: u32, h: u32, max_cols: u16) -> Option<ImageFit> {
         self.images?.fit(w, h, max_cols)
     }
@@ -193,22 +206,34 @@ pub(crate) fn draw(app: &App, frame: &mut Frame) {
     ])
     .areas(main);
 
+    let full = frame.area();
+    frame.buffer_mut().set_style(full, app.theme.base());
     let st = app.shared.read();
     draw_strip(app, &st, frame, strip);
     draw_channels(app, &st, frame, channels);
     draw_messages(app, &st, frame, messages);
     if show_members {
-        frame.render_widget(Block::bordered().title(" Üyeler "), members);
+        frame.render_widget(
+            Block::bordered()
+                .title(" Üyeler ")
+                .border_style(app.theme.border_style(false)),
+            members,
+        );
     }
     drop(st);
-    frame.render_widget(Paragraph::new(status_line(app)), status);
+    frame.render_widget(
+        Paragraph::new(status_line(app)).style(app.theme.status()),
+        status,
+    );
 
     if let Screen::Login { input, error } = &app.screen {
-        draw_login(frame, input, error.as_deref());
+        draw_login(frame, &app.theme, input, error.as_deref());
+    } else if app.mode == Mode::Settings {
+        crate::settings::draw(app, frame);
     } else if app.mode == Mode::Switcher {
         draw_switcher(app, frame);
     } else if let (Mode::Viewer, Some(v)) = (app.mode, &app.viewer) {
-        crate::viewer::draw(v, &app.images, frame);
+        crate::viewer::draw(v, &app.images, &app.theme, frame);
     }
 }
 
@@ -222,12 +247,12 @@ fn draw_switcher(app: &App, frame: &mut Frame) {
     frame.render_widget(Clear, area);
     let block = Block::bordered()
         .title(" Hızlı geçiş (Ctrl+K) ")
-        .border_style(Style::new().cyan());
+        .border_style(app.theme.border_style(true));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let [input, list] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
     let (rows, cur) = app.command.layout(input.width.saturating_sub(2).max(1));
-    let mut line = Line::from(Span::styled("> ", Style::new().dim()));
+    let mut line = Line::from(Span::styled("> ", app.theme.dim()));
     line.spans
         .extend(rows.into_iter().next().unwrap_or_default().spans);
     frame.render_widget(Paragraph::new(line), input);
@@ -236,7 +261,7 @@ fn draw_switcher(app: &App, frame: &mut Frame) {
     let matches = app.switcher_matches();
     let sel = app.comp_sel.min(matches.len().saturating_sub(1));
     let lines: Vec<Line> = if matches.is_empty() {
-        vec![Line::from("eşleşme yok").dim()]
+        vec![Line::styled("eşleşme yok", app.theme.dim())]
     } else {
         matches
             .iter()
@@ -254,13 +279,10 @@ fn draw_switcher(app: &App, frame: &mut Frame) {
     frame.render_widget(Paragraph::new(lines), list);
 }
 
-fn panel(title: String, focused: bool) -> Block<'static> {
-    let b = Block::bordered().title(title);
-    if focused {
-        b.border_style(Style::new().cyan())
-    } else {
-        b
-    }
+fn panel(title: String, focused: bool, theme: &Theme) -> Block<'static> {
+    Block::bordered()
+        .title(title)
+        .border_style(theme.border_style(focused))
 }
 
 fn selected_style(focused: bool) -> Style {
@@ -291,12 +313,12 @@ fn draw_strip(app: &App, st: &State, frame: &mut Frame, area: Rect) {
     let label =
         |i: usize, text: String, guild: Option<Snowflake>, (unread, mentions): (bool, u32)| {
             let mut style = if unread || mentions > 0 {
-                Style::new().bold()
+                app.theme.unread()
             } else {
-                Style::new().dim()
+                app.theme.dim()
             };
             if open_guild == Some(guild) {
-                style = style.green();
+                style = style.patch(app.theme.current());
             }
             if i == app.guild_sel {
                 style = style.patch(selected_style(focused));
@@ -311,7 +333,7 @@ fn draw_strip(app: &App, st: &State, frame: &mut Frame, area: Rect) {
                 };
                 if room > count.len() {
                     spans.push(Span::raw(" ".repeat(room - count.len())));
-                    spans.push(Span::styled(count, Style::new().red().bold()));
+                    spans.push(Span::styled(count, app.theme.badge()));
                 }
             }
             Line::from(spans)
@@ -328,7 +350,11 @@ fn draw_strip(app: &App, st: &State, frame: &mut Frame, area: Rect) {
     let inner_h = usize::from(area.height.saturating_sub(2));
     let skip = app.guild_sel.saturating_sub(inner_h.saturating_sub(1));
     frame.render_widget(
-        Paragraph::new(lines.split_off(skip.min(lines.len()))).block(panel(String::new(), focused)),
+        Paragraph::new(lines.split_off(skip.min(lines.len()))).block(panel(
+            String::new(),
+            focused,
+            &app.theme,
+        )),
         area,
     );
 }
@@ -362,17 +388,17 @@ fn draw_channels(app: &App, st: &State, frame: &mut Frame, area: Rect) {
         .take(inner_h)
         .map(|(i, e)| {
             let mut style = match e.kind {
-                EntryKind::Category { .. } => Style::new().dim().bold(),
-                _ if e.muted => Style::new().dim(),
-                EntryKind::Readable if e.unread || e.mentions > 0 => Style::new().bold(),
-                EntryKind::Readable => Style::new().fg(ratatui::style::Color::Gray),
-                EntryKind::Voice => Style::new().fg(ratatui::style::Color::Gray),
-                EntryKind::VoiceMember { speaking: true } => Style::new().green().bold(),
-                EntryKind::VoiceMember { speaking: false } => Style::new().dim(),
-                EntryKind::Other => Style::new().dim(),
+                EntryKind::Category { .. } => app.theme.dim().add_modifier(Modifier::BOLD),
+                _ if e.muted => app.theme.dim(),
+                EntryKind::Readable if e.unread || e.mentions > 0 => app.theme.unread(),
+                EntryKind::Readable => app.theme.channel(),
+                EntryKind::Voice => app.theme.channel(),
+                EntryKind::VoiceMember { speaking: true } => app.theme.speaking(),
+                EntryKind::VoiceMember { speaking: false } => app.theme.dim(),
+                EntryKind::Other => app.theme.dim(),
             };
             if open == Some(e.id) {
-                style = style.green();
+                style = style.patch(app.theme.current());
             }
             if i == app.chan_sel {
                 style = style.patch(selected_style(focused));
@@ -382,18 +408,18 @@ fn draw_channels(app: &App, st: &State, frame: &mut Frame, area: Rect) {
             if e.mentions > 0 {
                 spans.push(Span::styled(
                     format!(" ({})", e.mentions),
-                    Style::new().red().bold(),
+                    app.theme.badge(),
                 ));
             }
             Line::from(spans)
         })
         .collect();
     let body = if lines.is_empty() {
-        Paragraph::new(Line::from("(kanal yok)").dim())
+        Paragraph::new(Line::styled("(kanal yok)", app.theme.dim()))
     } else {
         Paragraph::new(lines)
     };
-    frame.render_widget(body.block(panel(title, focused)), area);
+    frame.render_widget(body.block(panel(title, focused, &app.theme)), area);
 }
 
 fn draw_messages(app: &App, st: &State, frame: &mut Frame, area: Rect) {
@@ -401,9 +427,14 @@ fn draw_messages(app: &App, st: &State, frame: &mut Frame, area: Rect) {
     let Some(open) = app.open else {
         app.msg_area
             .set((area.width.saturating_sub(2), area.height.saturating_sub(2)));
-        let hint =
-            Paragraph::new(Line::from("Bir kanal seç (Tab: panel, j/k: gez, Enter: aç)").dim());
-        frame.render_widget(hint.block(panel(" Mesajlar ".to_owned(), focused)), area);
+        let hint = Paragraph::new(Line::styled(
+            "Bir kanal seç (Tab: panel, j/k: gez, Enter: aç)",
+            app.theme.dim(),
+        ));
+        frame.render_widget(
+            hint.block(panel(" Mesajlar ".to_owned(), focused, &app.theme)),
+            area,
+        );
         return;
     };
     let mut title = match open.guild {
@@ -422,7 +453,7 @@ fn draw_messages(app: &App, st: &State, frame: &mut Frame, area: Rect) {
     if app.scroll.anchor.is_some() {
         title.push_str("[geçmiş] ");
     }
-    let block = panel(title, focused);
+    let block = panel(title, focused, &app.theme);
     let full = block.inner(area);
     frame.render_widget(block, area);
     let input_h = input_height(app, st, open, full.width);
@@ -431,11 +462,16 @@ fn draw_messages(app: &App, st: &State, frame: &mut Frame, area: Rect) {
     app.msg_area.set((inner.width, inner.height));
 
     let Some(msgs) = st.messages(open.channel) else {
-        frame.render_widget(Paragraph::new(Line::from("yükleniyor…").dim()), inner);
+        frame.render_widget(
+            Paragraph::new(Line::styled("yükleniyor…", app.theme.dim())),
+            inner,
+        );
         draw_input(app, st, open, frame, input);
         return;
     };
-    let res = Res::new(st, open.guild, &app.tz).with_images(&app.images);
+    let res = Res::new(st, open.guild, &app.tz)
+        .with_images(&app.images)
+        .with_theme(&app.theme);
     let h = usize::from(inner.height);
     // Görünen resim yerleri: (yer, ilk satırın alttan sırası, kaynak mesaj).
     let mut slots: Vec<(render::ImageSlot, usize, (Snowflake, Snowflake))> = Vec::new();
@@ -465,9 +501,7 @@ fn draw_messages(app: &App, st: &State, frame: &mut Frame, area: Rect) {
             }
             if selected == Some(msgs[idx].id) {
                 for l in &mut ls {
-                    l.style = l
-                        .style
-                        .patch(Style::new().bg(ratatui::style::Color::Rgb(45, 45, 60)));
+                    l.style = l.style.patch(app.theme.selection_bg());
                 }
             }
             app.visible.set(Some((msgs[idx].id, bottom_id)));
@@ -496,7 +530,7 @@ fn draw_messages(app: &App, st: &State, frame: &mut Frame, area: Rect) {
             app.want_older.set(true);
             "yükleniyor…"
         };
-        out.push_front(Line::from(marker).dim().centered());
+        out.push_front(Line::styled(marker, app.theme.dim()).centered());
         // Kısa içerik alta yaslanır (sohbet düzeni).
         while out.len() < h {
             out.push_front(Line::default());
@@ -540,7 +574,7 @@ fn draw_slots(
             (inner.y, "[resim]")
         };
         let area = Rect::new(col, note.0, cols, 1);
-        frame.render_widget(Paragraph::new(Line::from(note.1).dim()), area);
+        frame.render_widget(Paragraph::new(Line::styled(note.1, app.theme.dim())), area);
     }
 }
 
@@ -566,7 +600,7 @@ fn draw_input(app: &App, st: &State, open: Open, frame: &mut Frame, area: Rect) 
     }
     if !st.can_send(open.channel) {
         frame.render_widget(
-            Paragraph::new(Line::from("(bu kanala yazma iznin yok)").dim()),
+            Paragraph::new(Line::styled("(bu kanala yazma iznin yok)", app.theme.dim())),
             area,
         );
         return;
@@ -590,7 +624,10 @@ fn draw_input(app: &App, st: &State, open: Open, frame: &mut Frame, area: Rect) 
         }
         _ => "i: yaz · v: mesaj seç · :upload <yol>".to_owned(),
     };
-    frame.render_widget(Paragraph::new(Line::from(label_text).dim()), label);
+    frame.render_widget(
+        Paragraph::new(Line::styled(label_text, app.theme.dim())),
+        label,
+    );
 
     let (cursor, top) = if matches!(app.mode, Mode::Command | Mode::React) {
         let (rows, cur) = app.command.layout(body.width.saturating_sub(2).max(1));
@@ -608,7 +645,7 @@ fn draw_input(app: &App, st: &State, open: Open, frame: &mut Frame, area: Rect) 
             .skip(usize::from(skip))
             .map(|(i, mut l)| {
                 let prefix = if i == 0 { "> " } else { "  " };
-                l.spans.insert(0, Span::styled(prefix, Style::new().dim()));
+                l.spans.insert(0, Span::styled(prefix, app.theme.dim()));
                 l
             })
             .collect();
@@ -638,7 +675,7 @@ fn draw_input(app: &App, st: &State, open: Open, frame: &mut Frame, area: Rect) 
                 let style = if i == sel {
                     Style::new().add_modifier(Modifier::REVERSED)
                 } else {
-                    Style::new().bg(ratatui::style::Color::Rgb(30, 30, 40))
+                    app.theme.popup_bg()
                 };
                 Line::styled(format!(" {} ", c.label), style)
             })
@@ -667,22 +704,25 @@ fn status_line(app: &App) -> Line<'static> {
         Status::Failed(reason) => format!("Digcord · hata: {reason}"),
     };
     let style = match app.status {
-        Status::Online { .. } => Style::new().green(),
-        Status::Reconnecting { .. } => Style::new().yellow(),
-        Status::Failed(_) => Style::new().red(),
+        Status::Online { .. } => app.theme.success(),
+        Status::Reconnecting { .. } => app.theme.warning(),
+        Status::Failed(_) => app.theme.error(),
         _ => Style::new(),
     };
-    let mut spans = vec![mode.bold(), Span::styled(text, style)];
+    let mut spans = vec![
+        Span::styled(mode, Style::new().add_modifier(Modifier::BOLD)),
+        Span::styled(text, style),
+    ];
     if let Some(voice) = voice_status(app) {
         spans.push(voice);
     }
     if let Mode::ConfirmDelete(_) = app.mode {
         spans.push(Span::styled(
             "  Mesaj silinsin mi? (e/h)",
-            Style::new().yellow().bold(),
+            app.theme.warning().add_modifier(Modifier::BOLD),
         ));
     } else if let Some(n) = &app.notice {
-        spans.push(Span::styled(format!("  {n}"), Style::new().yellow()));
+        spans.push(Span::styled(format!("  {n}"), app.theme.warning()));
     } else if let Some(open) = app.open {
         let names = app
             .shared
@@ -694,7 +734,7 @@ fn status_line(app: &App) -> Line<'static> {
                 2 => format!("{} ve {} yazıyor…", names[0], names[1]),
                 n => format!("{n} kişi yazıyor…"),
             };
-            spans.push(Span::styled(format!("  {who}"), Style::new().dim()));
+            spans.push(Span::styled(format!("  {who}"), app.theme.dim()));
         }
     }
     Line::from(spans)
@@ -706,10 +746,10 @@ fn voice_status(app: &App) -> Option<Span<'static>> {
     let st = app.shared.read();
     let call = st.voice_call()?;
     let (phase, style) = match call.phase {
-        VoicePhase::Joining => ("katılınıyor…", Style::new().yellow()),
-        VoicePhase::Connecting => ("bağlanıyor…", Style::new().yellow()),
-        VoicePhase::Connected { e2ee: true } => ("bağlı (uçtan uca)", Style::new().green()),
-        VoicePhase::Connected { e2ee: false } => ("bağlı", Style::new().green()),
+        VoicePhase::Joining => ("katılınıyor…", app.theme.warning()),
+        VoicePhase::Connecting => ("bağlanıyor…", app.theme.warning()),
+        VoicePhase::Connected { e2ee: true } => ("bağlı (uçtan uca)", app.theme.success()),
+        VoicePhase::Connected { e2ee: false } => ("bağlı", app.theme.success()),
     };
     let flags = match (call.self_deaf, call.self_mute) {
         (true, _) => " 🎧✕",
@@ -722,7 +762,7 @@ fn voice_status(app: &App) -> Option<Span<'static>> {
     ))
 }
 
-fn draw_login(frame: &mut Frame, input: &str, error: Option<&str>) {
+fn draw_login(frame: &mut Frame, theme: &Theme, input: &str, error: Option<&str>) {
     let area = centered(frame.area(), 60, 9);
     frame.render_widget(Clear, area);
     let block = Block::bordered().title(" Digcord — Giriş ");
@@ -736,13 +776,16 @@ fn draw_login(frame: &mut Frame, input: &str, error: Option<&str>) {
     let lines = vec![
         Line::from("Discord token'ını yapıştır (yan hesap önerilir):"),
         Line::from(""),
-        Line::from(format!("> {masked}")).bold(),
+        Line::styled(
+            format!("> {masked}"),
+            Style::new().add_modifier(Modifier::BOLD),
+        ),
         Line::from(""),
         match error {
-            Some(e) => Line::from(e.to_owned()).red(),
+            Some(e) => Line::styled(e.to_owned(), theme.error()),
             None => Line::from(""),
         },
-        Line::from("Enter: giriş · Esc: çıkış").dim(),
+        Line::styled("Enter: giriş · Esc: çıkış", theme.dim()),
     ];
     frame.render_widget(Paragraph::new(lines), inner.inner(Margin::new(1, 0)));
 }

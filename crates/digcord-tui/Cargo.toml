@@ -17,6 +17,8 @@ ratatui = "0.30"
 # Terminal grafik protokolleri (kitty/sixel/iTerm2) + yarım blok yedeği; MIT. Varsayılan
 # özellikler kapalı: `chafa-dyn` LGPL bir C kütüphanesine bağlanır.
 ratatui-image = { version = "11.1.0", default-features = false, features = ["crossterm"] }
+# Tema/kısayol ayrıştırma hataları için (diğer kütüphane crate'leriyle aynı sürüm).
+thiserror = "2.0.21"
 tracing = "0.1.44"
 unicode-width = "0.2.0"
 

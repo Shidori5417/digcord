@@ -14,7 +14,7 @@ use digcord_model::{
     ReactionEmoji, Ready, Snowflake, Token,
 };
 use digcord_store::{NotifyFilter, State, VoiceCall, VoicePhase};
-use digcord_tui::{Action, ImageJob, Shared, Status, UiEvent};
+use digcord_tui::{Action, ImageJob, SettingValue, Shared, Status, UiEvent};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
@@ -81,7 +81,8 @@ pub struct Env {
 pub struct Settings {
     pub send_typing: bool,
     pub send_read_receipts: bool,
-    pub notify: Option<NotifyFilter>,
+    pub notify_enabled: bool,
+    pub notify_filter: NotifyFilter,
     pub build_number: u32,
     pub chrome_major: u32,
     pub push_to_talk: bool,
@@ -95,11 +96,12 @@ impl Settings {
         Self {
             send_typing: c.behavior.send_typing,
             send_read_receipts: c.behavior.send_read_receipts,
-            notify: c.notifications.enabled.then(|| NotifyFilter {
+            notify_enabled: c.notifications.enabled,
+            notify_filter: NotifyFilter {
                 mention: on.contains(&NotifyOn::Mention),
                 dm: on.contains(&NotifyOn::Dm),
                 all: on.contains(&NotifyOn::All),
-            }),
+            },
             build_number: match c.client.build_number {
                 0 => DEFAULT_BUILD_NUMBER,
                 n => n,
@@ -110,6 +112,26 @@ impl Settings {
             },
             push_to_talk: c.voice.mode == VoiceMode::Ptt,
             jitter_frames: usize::try_from(c.voice.jitter_ms.div_ceil(20)).unwrap_or(3),
+        }
+    }
+}
+
+impl Settings {
+    /// Bildirim süzgeci; bildirimler kapalıysa `None`.
+    fn notify(&self) -> Option<NotifyFilter> {
+        self.notify_enabled.then_some(self.notify_filter)
+    }
+
+    /// Ayarlar ekranından gelen çalışma anı değişikliği. Başka anahtarlar yok sayılır.
+    fn apply(&mut self, key: &str, value: &SettingValue) {
+        match (key, value) {
+            ("behavior.send_typing", SettingValue::Bool(b)) => self.send_typing = *b,
+            ("behavior.send_read_receipts", SettingValue::Bool(b)) => self.send_read_receipts = *b,
+            ("notifications.enabled", SettingValue::Bool(b)) => self.notify_enabled = *b,
+            ("notifications.on", SettingValue::List(names)) => {
+                self.notify_filter = crate::config::notify_filter(names);
+            }
+            _ => {}
         }
     }
 }
@@ -848,7 +870,7 @@ impl Controller {
 
     /// Yeni mesaj için masaüstü bildirimi (açık+odaktaki kanal hariç).
     fn maybe_notify(&self, msg: &Message) {
-        let Some(filter) = self.env.settings.notify else {
+        let Some(filter) = self.env.settings.notify() else {
             return;
         };
         if self.focused && self.open.is_some_and(|o| o.channel == msg.channel_id) {
@@ -1026,6 +1048,47 @@ impl Controller {
         }
     }
 
+    /// Ayarları config.toml'a yazar (disk işi ayrı thread'de); sonucu bildirir.
+    fn save_settings(&self, changes: Vec<(String, SettingValue)>) {
+        let Some(path) = AppConfig::default_path() else {
+            self.notice("Yapılandırma dizini bulunamadı; kaydedilemedi");
+            return;
+        };
+        let ui = self.ui.clone();
+        tokio::task::spawn_blocking(move || {
+            let text = match crate::config::save_settings(&path, &changes) {
+                Ok(()) => format!("Ayarlar kaydedildi: {}", path.display()),
+                Err(e) => format!("Ayarlar kaydedilemedi: {e:#}"),
+            };
+            let _ = ui.send(UiEvent::Notice(text));
+        });
+    }
+
+    /// Tema dosyasını okur (ayrı thread'de) ve sonucu TUI'ye yollar.
+    fn load_theme(&self, name: String) {
+        let ui = self.ui.clone();
+        tokio::task::spawn_blocking(move || match crate::theme::load(&name) {
+            Ok((theme, warnings)) => {
+                let _ = ui.send(UiEvent::Theme {
+                    name: name.clone(),
+                    theme: Box::new(theme),
+                });
+                if let Some(w) = warnings.first() {
+                    let more = warnings.len() - 1;
+                    let text = if more > 0 {
+                        format!("tema: {w} (+{more})")
+                    } else {
+                        format!("tema: {w}")
+                    };
+                    let _ = ui.send(UiEvent::Notice(text));
+                }
+            }
+            Err(e) => {
+                let _ = ui.send(UiEvent::Notice(format!("{e:#}")));
+            }
+        });
+    }
+
     async fn on_action(&mut self, action: Action) -> bool {
         match action {
             Action::SubmitToken(raw) => {
@@ -1119,6 +1182,9 @@ impl Controller {
                 }
             }
             Action::OpenExternal(url) => self.open_external(url),
+            Action::ApplySetting { key, value } => self.env.settings.apply(&key, &value),
+            Action::SaveSettings(changes) => self.save_settings(changes),
+            Action::LoadTheme(name) => self.load_theme(name),
             Action::Quit => return false,
         }
         true

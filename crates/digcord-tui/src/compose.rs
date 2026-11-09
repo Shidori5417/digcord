@@ -7,6 +7,7 @@ use digcord_model::{Permissions, ReactionEmoji, Snowflake};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::editor::EditOutcome;
+use crate::keymap::{Act, Scope};
 use crate::{Action, App, Focus, Scroll};
 
 /// Resmi istemci "yazıyor"u yaklaşık bu aralıkla yeniler (PROTOCOL_NOTES §4, doğrulanmadı).
@@ -28,6 +29,8 @@ pub(crate) enum Mode {
     Switcher,
     /// Tam ekran resim görüntüleyici.
     Viewer,
+    /// `:settings` tam ekran ayarlar.
+    Settings,
 }
 
 /// Yazılan metnin hedefi.
@@ -46,25 +49,24 @@ pub(crate) struct Candidate {
 }
 
 impl App {
-    /// NORMAL moddan diğer modlara geçiş tuşları; işlenmezse `None`.
-    pub(crate) fn normal_mode_key(&mut self, key: KeyEvent) -> Option<Option<Action>> {
-        match key.code {
-            KeyCode::Char('i') if self.open.is_some() => {
+    /// NORMAL moddan diğer modlara geçiş eylemleri; işlenmezse `None`.
+    pub(crate) fn normal_mode_key(&mut self, act: Act) -> Option<Option<Action>> {
+        match act {
+            Act::InsertMode if self.open.is_some() => {
                 self.enter_insert(crate::compose::Target::New);
                 Some(None)
             }
-            KeyCode::Char('v') | KeyCode::Enter
-                if self.open.is_some()
-                    && (key.code != KeyCode::Enter || self.focus == Focus::Messages) =>
-            {
+            Act::SelectMode if self.open.is_some() => {
                 self.enter_select();
                 Some(None)
             }
-            KeyCode::Char(':') => {
+            Act::CommandMode => {
                 self.command.clear();
                 self.mode = Mode::Command;
                 Some(None)
             }
+            // Açık kanal yokken `i`/`v` sessizce yutulur.
+            Act::InsertMode | Act::SelectMode => Some(None),
             _ => None,
         }
     }
@@ -94,7 +96,7 @@ impl App {
         self.focus = Focus::Messages;
     }
 
-    fn enter_select(&mut self) {
+    pub(crate) fn enter_select(&mut self) {
         let Some(open) = self.open else { return };
         let st = self.shared.read();
         let Some(msgs) = st.messages(open.channel).filter(|m| !m.is_empty()) else {
@@ -228,12 +230,12 @@ impl App {
         let open = self.open?;
         let sel = self.selected?;
         let d_pressed = std::mem::take(&mut self.pending_d);
-        match key.code {
-            KeyCode::Esc => self.mode = Mode::Normal,
-            KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
-            KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
-            KeyCode::Char('r') => self.enter_insert(Target::Reply(sel)),
-            KeyCode::Char('e') => {
+        match self.keys.lookup(Scope::Select, &key) {
+            Some(Act::Back) => self.mode = Mode::Normal,
+            Some(Act::MoveDown) => self.move_selection(1),
+            Some(Act::MoveUp) => self.move_selection(-1),
+            Some(Act::Reply) => self.enter_insert(Target::Reply(sel)),
+            Some(Act::Edit) => {
                 let own = self.is_own(sel);
                 if own {
                     self.enter_insert(Target::Edit(sel));
@@ -241,15 +243,15 @@ impl App {
                     self.notice = Some("Sadece kendi mesajını düzenleyebilirsin".into());
                 }
             }
-            KeyCode::Char('d') if d_pressed => {
+            Some(Act::Delete) if d_pressed => {
                 if self.is_own(sel) || self.has_perm(Permissions::MANAGE_MESSAGES) {
                     self.mode = Mode::ConfirmDelete(sel);
                 } else {
                     self.notice = Some("Bu mesajı silme iznin yok".into());
                 }
             }
-            KeyCode::Char('d') => self.pending_d = true,
-            KeyCode::Char('+') => {
+            Some(Act::Delete) => self.pending_d = true,
+            Some(Act::React) => {
                 if self.has_perm(Permissions::ADD_REACTIONS) {
                     self.command.clear();
                     self.command.insert_str(":");
@@ -259,7 +261,7 @@ impl App {
                     self.notice = Some("Tepki ekleme iznin yok".into());
                 }
             }
-            KeyCode::Char('y') => {
+            Some(Act::Copy) => {
                 let text = self
                     .shared
                     .read()
@@ -267,8 +269,8 @@ impl App {
                     .map(|m| m.content.clone())?;
                 return Some(Action::Copy(text));
             }
-            KeyCode::Char('o') => return self.open_media(open.channel, sel),
-            KeyCode::Enter if self.shared.read().is_failed(sel) => {
+            Some(Act::OpenMedia) => return self.open_media(open.channel, sel),
+            Some(Act::Retry) if self.shared.read().is_failed(sel) => {
                 return Some(Action::Retry {
                     guild: open.guild,
                     channel: open.channel,
@@ -484,6 +486,19 @@ impl App {
                     content,
                     max_bytes: MAX_UPLOAD,
                 })
+            }
+            "settings" => {
+                self.mode = Mode::Settings;
+                None
+            }
+            "theme" => {
+                let theme = rest.trim();
+                if theme.is_empty() {
+                    self.notice = Some("Kullanım: :theme <ad> (default: yerleşik)".into());
+                    None
+                } else {
+                    Some(Action::LoadTheme(theme.to_owned()))
+                }
             }
             "leave" => Some(Action::LeaveVoice),
             "vol" => self.volume_command(rest.trim()),
@@ -764,6 +779,7 @@ pub(crate) fn mode_label(mode: Mode) -> &'static str {
         Mode::ConfirmDelete(_) => " [SİL?] ",
         Mode::Switcher => " [GEÇİŞ] ",
         Mode::Viewer => " [RESİM] ",
+        Mode::Settings => " [AYAR] ",
     }
 }
 

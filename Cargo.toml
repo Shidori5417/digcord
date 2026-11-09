@@ -48,6 +48,8 @@ zbus-secret-service-keyring-store = { version = "1.0.1", features = ["crypto-rus
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 notify-rust = "4.17.0"
 toml = "1.2.1"
+# `:settings` kaydederken kullanıcının config.toml yorumlarını/biçimini korur (MIT/Apache).
+toml_edit = "0.25.19"
 serde = { version = "1.0.229", features = ["derive"] }
 
 # tls_codec'in debug assertion'ları bozuk/düşman girdide hata dönmek yerine panikliyor;

@@ -84,7 +84,7 @@ reddedilmiyor, 30 dk kesintisiz çalışıyor, ses thread'i CPU'nun < %3'ünü k
 - [ ] Canlı test: sunucu ses kanalı, DM araması, 4017 yok, 30 dk; protokol karşılaştırması (PROTOCOL_NOTES §7.1).
 
 ## Aşama 7 — Cila
-- Temalar, tam kısayol özelleştirme, ayarlar ekranı.
+- [x] Temalar, tam kısayol özelleştirme, ayarlar ekranı (`:settings`, `:theme`, `[keys]`; ayrıntı `TUI_DESIGN.md`).
 - Thread'ler ve forum kanalları.
 - Arama (`/search` uç noktası), sabitlenen mesajlar.
 - Performans profili: açılış süresi, bellek (hedef: büyük hesapta < 150 MB).

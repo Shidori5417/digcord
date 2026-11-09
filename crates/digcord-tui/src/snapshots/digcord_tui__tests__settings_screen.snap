@@ -1,0 +1,14 @@
+---
+source: crates/digcord-tui/src/tests.rs
+expression: "draw(&app, 90, 10)"
+---
+"┌ Ayarlar ───────────────────────────────────────────────────────────────────────────────┐"
+"│> behavior.send_typing  açık               anında geçerli                               │"
+"│  ui.image_max_rows     10                 yeniden başlatınca geçerli                   │"
+"│  ui.images             thumbnail          yeniden başlatınca geçerli                   │"
+"│  ui.theme              default            salt okunur                                  │"
+"│                                                                                        │"
+"│                                                                                        │"
+"│                                                                                        │"
+"│j/k gez · Enter/Boşluk değiştir · +/- (←/→) sayı/seçenek · s kaydet · Esc kapat         │"
+"└────────────────────────────────────────────────────────────────────────────────────────┘"

@@ -67,7 +67,11 @@ Vim istemeyenler için config'de `keymap = "simple"` (her zaman yazma modu, ok t
 | `Alt+↑/↓` | Okunmamış önceki/sonraki kanal (sessizdekiler atlanır) |
 | `q` / `:q` | Çıkış |
 
-Tüm kısayollar `config.toml` içinden değiştirilebilir.
+Normal/SELECT modu ve genel kısayollar `config.toml` `[keys]` tablosundan değiştirilebilir (aşağıda).
+`Ctrl+C` (çıkış), INSERT/COMMAND metin düzenleme tuşları, hızlı geçiş/resim görüntüleyici/silme onayı
+pencerelerinin içindeki tuşlar ve ayarlar ekranının tuşları sabittir. Alt çubuktaki ipucu metinleri
+varsayılan tuşları gösterir. `Ctrl+M` (üye listesi aç/kapat) henüz uygulanmadı, bu yüzden atanabilir
+eylemlerde yok.
 
 ## Mesaj işleme
 
@@ -115,11 +119,11 @@ Tüm kısayollar `config.toml` içinden değiştirilebilir.
 
 `~/.config/digcord/config.toml`
 
-**Şu an desteklenenler:** `ui.show_member_list`, `ui.images`, `ui.image_max_rows`, `voice.mode`
-(`"vad"`, `"ptt"`), `voice.jitter_ms`, `behavior.send_typing`,
+**Şu an desteklenenler:** `ui.theme`, `ui.show_member_list`, `ui.images`, `ui.image_max_rows`,
+`voice.mode` (`"vad"`, `"ptt"`), `voice.jitter_ms`, `behavior.send_typing`,
 `behavior.send_read_receipts`, `notifications.enabled`, `notifications.on` (`"mention"`, `"dm"`,
-`"all"`), `client.build_number`, `client.chrome_major`. Diğer anahtarlar okunur ama yok sayılır
-(açılışta uyarı); bozuk dosyada uygulama açılmaz ve hatayı gösterir.
+`"all"`), `client.build_number`, `client.chrome_major` ve `[keys]` tablosu. Diğer anahtarlar okunur
+ama yok sayılır (açılışta uyarı); bozuk dosyada uygulama açılmaz ve hatayı gösterir.
 
 ```toml
 [ui]
@@ -152,6 +156,104 @@ build_number = 0          # 0 = otomatik/varsayılan
 
 [keys]
 # "eylem" = "tuş" geçersiz kılmaları
+quit = "ctrl+q"
+toggle_mute = "ctrl+shift+m"
+copy = ["y", "ctrl+c"]    # birden çok tuş için liste
 ```
 
 Token config'de **tutulmaz** (keyring).
+
+### Kısayol özelleştirme (`[keys]`)
+
+`eylem = "tuş"` (ya da `eylem = ["tuş", ...]`). Bir eylem verilince **varsayılan tuşlarının hepsi**
+yerine geçer. Tuş yazımı: tek karakter (`q`, `G`, `:`, `+`), adlar (`enter`, `esc`, `tab`, `space`,
+`backspace`, `delete`, `insert`, `home`, `end`, `pageup`/`pgup`, `pagedown`/`pgdown`, `up`, `down`,
+`left`, `right`, `f1`…`f24`) ve `ctrl+`, `alt+`, `shift+`, `super+` önekleri (`ctrl+k`, `alt+up`,
+`shift+tab`, `ctrl+shift+m`). Büyük harf = Shift'li harf (`G` = `shift+g`).
+
+Bilinmeyen eylem adı, ayrıştırılamayan tuş ve çakışmalar **uyarıdır** (açılışta durum çubuğunda ilk
+uyarı gösterilir, hepsi log'a yazılır); açılış başarısız olmaz. Çakışmada (aynı tuş aynı kapsamda
+ya da genel bir eylemle) son atama geçerlidir; eski sahibi o tuşu kaybeder. "Son", `[keys]` içinde
+eylem adına göre alfabetik sıradır. Kapsamlar: *genel* (her modda), *NORMAL*, *SELECT*;
+`move_down`/`move_up` NORMAL ve SELECT'te ortaktır.
+
+| Kapsam | Eylem | Varsayılan | Açıklama |
+|---|---|---|---|
+| genel | `toggle_mute` | `ctrl+shift+m` | Mikrofonu sessize al |
+| genel | `toggle_deaf` | `ctrl+shift+d` | Kulaklığı sessize al |
+| genel | `push_to_talk` | `ctrl+space` | Bas-konuş (`voice.mode = "ptt"`; basma/bırakma olayları gerekir) |
+| NORMAL | `quit` | `q` | Çıkış |
+| NORMAL | `switcher` | `ctrl+k` | Hızlı geçiş |
+| NORMAL | `next_focus` / `prev_focus` | `tab` / `shift+tab` | Panel odağı |
+| NORMAL | `activate` | `enter`, `l` | Sunucu/kanal aç; mesaj panelinde `enter` SELECT'e girer |
+| NORMAL | `insert_mode` | `i` | Yazma modu |
+| NORMAL | `select_mode` | `v` | Mesaj seçme modu |
+| NORMAL | `command_mode` | `:` | Komut modu |
+| NORMAL | `page_down` / `page_up` | `pagedown`, `ctrl+d` / `pageup`, `ctrl+u` | Yarım sayfa kaydır |
+| NORMAL | `scroll_bottom` | `G`, `end` | En alta in |
+| NORMAL | `next_unread` / `prev_unread` | `alt+down` / `alt+up` | Okunmamış kanala atla |
+| NORMAL+SELECT | `move_down` / `move_up` | `j`, `down` / `k`, `up` | Gezin / mesaj seçimini kaydır |
+| SELECT | `back` | `esc` | NORMAL'e dön |
+| SELECT | `reply` / `edit` | `r` / `e` | Yanıtla / düzenle |
+| SELECT | `delete` | `d` | İki kez basılınca silme onayı (`d d`) |
+| SELECT | `react` | `+` | Tepki istemi |
+| SELECT | `copy` | `y` | Metni kopyala |
+| SELECT | `open_media` | `o` | Resmi/bağlantıyı aç |
+| SELECT | `retry` | `enter` | Başarısız mesajı yeniden gönder |
+
+### Temalar
+
+`ui.theme = "<ad>"` → `~/.config/digcord/themes/<ad>.toml` (`"default"` yerleşik, dosya aranmaz).
+Dosya düz `yuva = "renk"` satırlarından oluşur. Renk: `"#rrggbb"`, ANSI adı (`red`, `darkgray`,
+`lightblue`, `white`…), 0-255 indeks ya da `"reset"` (terminalin rengi). Eksik yuvalar yerleşik
+temadan gelir. Bilinmeyen anahtar uyarı, geçersiz değer dosya adıyla birlikte hatadır; açılışta
+bozuk tema uygulamayı durdurmaz (hata gösterilir, yerleşik tema kullanılır). Dosya okuma UI
+thread'inde yapılmaz (açılışta ve `:theme` ile denetleyicide). Örnek: `themes/light.toml` (tüm yuvalar).
+
+| Yuva | Varsayılan | Nerede |
+|---|---|---|
+| `background` | `reset` | Tüm ekran arka planı |
+| `text` | `reset` | Varsayılan metin rengi |
+| `border` | `reset` | Odakta olmayan panel çerçevesi |
+| `border_focused` | `cyan` | Odaktaki panel, açılır pencereler, ayarlar |
+| `author` | `cyan` | Mesaj yazarı (kalın) |
+| `timestamp` | `reset` (soluk) | Saatler, `<t:…>` zaman damgaları |
+| `dim` | `reset` (soluk) | İkincil metin, ipuçları, yanıt önizlemesi, ekler |
+| `quote` | `reset` (soluk) | Alıntı (`>`) işareti |
+| `mention` | `lightblue` | `@kişi`, `#kanal` |
+| `mention_role` | `lightmagenta` | `@rol`, `@everyone`, `@here` |
+| `mention_me_bg` | `#3c3200` | Seni anan mesajda anmanın arka planı |
+| `link` | `cyan` | Bağlantılar (altı çizili) |
+| `highlight` | `lightblue` | Bağlantılı embed başlığı, kendi tepkilerin |
+| `code` | `yellow` | Satır içi kod, kod bloğu |
+| `emoji` | `yellow` | `:özel_emoji:` adları |
+| `spoiler` | `darkgray` | Gizli (spoiler) metin |
+| `selection_bg` | `#2d2d3c` | Seçili mesajın arka planı |
+| `popup_bg` | `#1e1e28` | Tamamlama penceresi adayları |
+| `channel` | `gray` | Okunmuş kanal adları |
+| `unread` | `reset` (kalın) | Okunmamış kanal/sunucu |
+| `current` | `green` | Açık kanal ve sunucu |
+| `voice_speaking` | `green` | Konuşan kişi (kalın) |
+| `badge` | `red` | Mention sayacı (kalın) |
+| `error` | `red` | Hata mesajları, gönderilemeyen mesaj |
+| `warning` | `yellow` | Bildirimler, yeniden bağlanma, silme onayı |
+| `success` | `green` | Bağlı durumu, ses bağlantısı |
+| `status_fg` / `status_bg` | `reset` | Durum çubuğu |
+
+`timestamp`, `dim` ve `quote` yuvalarında `reset` "renk yok, soluk biçim" demektir; bir renk
+verilirse soluk biçim yerine o renk kullanılır. Seçili satır/mesaj vurgusu (ters renk) ve kalın/italik
+gibi biçimler temadan bağımsızdır. Embed'in kendi rengi (sol kenar) Discord'dan gelir.
+
+### Ayarlar ekranı ve komutlar
+
+- `:settings`: tam ekran; `ui.*`, `behavior.*`, `notifications.*`, `voice.*` ayarlarını mevcut
+  değerleriyle listeler. `j`/`k` gez, `Enter`/`Boşluk` açık-kapalı ya da sonraki seçenek, `+`/`-`
+  (`←`/`→`) sayı ve seçenek, `s` kaydet, `Esc` kapat.
+- Satır sonundaki etiket: **anında geçerli** (`behavior.send_typing`, `behavior.send_read_receipts`,
+  `notifications.enabled`, `notifications.on`: denetleyiciye `Action` olarak gider) ya da
+  **yeniden başlatınca geçerli** (diğerleri). `ui.theme` salt okunurdur; `:theme <ad>` kullanılır.
+- `s`: sadece bu oturumda değişenler `config.toml`'a yazılır (`toml_edit`: yorumlar, sıra ve biçim
+  korunur; olmayan bölüm/anahtar eklenir). Disk işi denetleyicide, geçici dosya + yer değiştirme ile;
+  sonuç durum çubuğunda bildirilir. `client.*` ve `[keys]` ekranda yok (dosyadan düzenlenir).
+- `:theme <ad>`: tema dosyasını denetleyici okur, sonuç TUI'ye iletilir ve anında uygulanır;
+  `ui.theme` kaydedilecek olarak işaretlenir (`:settings` → `s`).

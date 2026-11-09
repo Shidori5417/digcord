@@ -3,11 +3,12 @@
 //! Saf fonksiyonlar: ağ/disk yok. Dış dünya (isim çözümleme, saat biçimi) `Resolver` ile gelir.
 
 use digcord_model::{Embed, Message, User, message_kind as kind};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::markdown::{self, Block, BlockKind, Span as Md};
+use crate::theme::Theme;
 
 /// Gruplama penceresi: aynı yazarın bu süre içindeki mesajları başlıksız birleşir.
 const GROUP_WINDOW_MS: u64 = 7 * 60 * 1000;
@@ -45,6 +46,10 @@ pub trait Resolver {
     /// `None`: resimler kapalı ya da terminal desteklemiyor (metin yedeği çizilir).
     fn image_fit(&self, _w: u32, _h: u32, _max_cols: u16) -> Option<ImageFit> {
         None
+    }
+    /// Renkler (varsayılan: yerleşik tema).
+    fn theme(&self) -> &Theme {
+        &Theme::DEFAULT
     }
 }
 
@@ -112,6 +117,7 @@ pub fn message_lines(
 /// resmi çağıran çizer.
 pub fn message_layout(msg: &Message, grouped: bool, r: &dyn Resolver, width: u16) -> Layout {
     let width = usize::from(width).max(1);
+    let t = r.theme();
     let mut out = Vec::new();
     let mut images = Vec::new();
 
@@ -119,10 +125,10 @@ pub fn message_layout(msg: &Message, grouped: bool, r: &dyn Resolver, width: u16
         out.push(Line::default());
         out.push(fit_line(
             vec![
-                ("→ ".into(), dim()),
+                ("→ ".into(), t.dim()),
                 (text, Style::new().add_modifier(Modifier::ITALIC)),
                 ("  ".into(), Style::new()),
-                (r.clock(msg.timestamp_ms()), dim()),
+                (r.clock(msg.timestamp_ms()), t.timestamp()),
             ],
             width,
         ));
@@ -135,18 +141,15 @@ pub fn message_layout(msg: &Message, grouped: bool, r: &dyn Resolver, width: u16
             out.push(reply_line(reply, r, width));
         } else if msg.kind == KIND_REPLY {
             out.push(fit_line(
-                vec![("  ↳ (silinmiş mesaj)".into(), dim())],
+                vec![("  ↳ (silinmiş mesaj)".into(), t.dim())],
                 width,
             ));
         }
         out.push(fit_line(
             vec![
-                (
-                    r.author_name(&msg.author),
-                    Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                ),
+                (r.author_name(&msg.author), t.author()),
                 ("  ".into(), Style::new()),
-                (r.clock(msg.timestamp_ms()), dim()),
+                (r.clock(msg.timestamp_ms()), t.timestamp()),
             ],
             width,
         ));
@@ -158,7 +161,7 @@ pub fn message_layout(msg: &Message, grouped: bool, r: &dyn Resolver, width: u16
     } else {
         content_lines(msg, r, width)
     };
-    let extras = sticker_lines(msg, width);
+    let extras = sticker_lines(msg, t, width);
     let has_embeds = msg.embeds.iter().any(|e| embed_visible(e, msg));
     if content.is_empty()
         && jumbo.is_none()
@@ -166,7 +169,7 @@ pub fn message_layout(msg: &Message, grouped: bool, r: &dyn Resolver, width: u16
         && extras.is_empty()
         && !has_embeds
     {
-        content.push(fit_line(vec![("  (boş mesaj)".into(), dim())], width));
+        content.push(fit_line(vec![("  (boş mesaj)".into(), t.dim())], width));
     }
     if let Some((rows, slots)) = jumbo {
         let base = out.len();
@@ -180,11 +183,11 @@ pub fn message_layout(msg: &Message, grouped: bool, r: &dyn Resolver, width: u16
     if msg.is_edited() {
         match content.last_mut() {
             Some(last) if last.width() + EDITED.width() <= width => {
-                last.push_span(Span::styled(EDITED, dim()));
+                last.push_span(Span::styled(EDITED, t.dim()));
             }
             _ => {
                 let text = format!("{}{}", " ".repeat(indent_for(width)), EDITED.trim_start());
-                content.push(fit_line(vec![(text, dim())], width));
+                content.push(fit_line(vec![(text, t.dim())], width));
             }
         }
     }
@@ -198,12 +201,12 @@ pub fn message_layout(msg: &Message, grouped: bool, r: &dyn Resolver, width: u16
         out.push(fit_line(
             vec![(
                 "  ✗ gönderilemedi (seçip Enter: tekrar dene, d d: sil)".into(),
-                Style::new().fg(Color::Red),
+                t.error(),
             )],
             width,
         ));
     } else if r.is_pending(msg.id.0) {
-        out.push(fit_line(vec![("  gönderiliyor…".into(), dim())], width));
+        out.push(fit_line(vec![("  gönderiliyor…".into(), t.dim())], width));
     }
 
     for a in &msg.attachments {
@@ -212,7 +215,7 @@ pub fn message_layout(msg: &Message, grouped: bool, r: &dyn Resolver, width: u16
             _ => human_size(a.size),
         };
         let text = format!("  [ek: {} {info}]", a.filename);
-        out.push(fit_line(vec![(text, dim())], width));
+        out.push(fit_line(vec![(text, t.dim())], width));
         if let (true, Some(w), Some(h)) = (a.is_image(), a.width, a.height) {
             let src = if a.proxy_url.is_empty() {
                 &a.url
@@ -222,7 +225,7 @@ pub fn message_layout(msg: &Message, grouped: bool, r: &dyn Resolver, width: u16
             push_image(src, w, h, r, width, &mut out, &mut images);
         }
     }
-    if let Some(line) = reactions_line(msg, width) {
+    if let Some(line) = reactions_line(msg, t, width) {
         out.push(line);
     }
     Layout { lines: out, images }
@@ -348,10 +351,10 @@ fn system_text(msg: &Message, r: &dyn Resolver) -> Option<String> {
 }
 
 /// Çıkartma satırları.
-fn sticker_lines(msg: &Message, width: usize) -> Vec<Line<'static>> {
+fn sticker_lines(msg: &Message, t: &Theme, width: usize) -> Vec<Line<'static>> {
     msg.sticker_items
         .iter()
-        .map(|s| fit_line(vec![(format!("  [çıkartma: {}]", s.name), dim())], width))
+        .map(|s| fit_line(vec![(format!("  [çıkartma: {}]", s.name), t.dim())], width))
         .collect()
 }
 
@@ -391,10 +394,15 @@ fn embed_lines(
     if !embed_visible(e, msg) {
         return;
     }
+    let t = r.theme();
     let indent = indent_for(width);
     let border = match e.color {
-        Some(c) if c != 0 => Style::new().fg(Color::Rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)),
-        _ => dim(),
+        Some(c) if c != 0 => Style::new().fg(ratatui::style::Color::Rgb(
+            (c >> 16) as u8,
+            (c >> 8) as u8,
+            c as u8,
+        )),
+        _ => t.dim(),
     };
     let prefix = take_width("▎ ", width.saturating_sub(indent + 1));
     let avail = width.saturating_sub(indent + prefix.width()).max(1);
@@ -407,7 +415,7 @@ fn embed_lines(
         if lines.len() > max {
             lines.truncate(max);
             if let Some(last) = lines.last_mut() {
-                last.push(("…".into(), dim()));
+                last.push(("…".into(), t.dim()));
             }
         }
         body.extend(lines);
@@ -418,20 +426,18 @@ fn embed_lines(
             .map(str::to_owned)
     };
     if let Some(p) = e.provider.as_ref().and_then(|p| nonempty(&p.name)) {
-        add(&p, dim(), 1);
+        add(&p, t.dim(), 1);
     }
     if let Some(a) = e.author.as_ref().and_then(|a| nonempty(&a.name)) {
         add(&a, Style::new().add_modifier(Modifier::BOLD), 1);
     }
-    if let Some(t) = nonempty(&e.title) {
+    if let Some(title) = nonempty(&e.title) {
         let style = if e.url.is_some() {
-            Style::new()
-                .fg(Color::LightBlue)
-                .add_modifier(Modifier::BOLD)
+            t.highlight().add_modifier(Modifier::BOLD)
         } else {
             Style::new().add_modifier(Modifier::BOLD)
         };
-        add(&t, style, 2);
+        add(&title, style, 2);
     }
     if let Some(d) = nonempty(&e.description) {
         add(&d, Style::new(), EMBED_DESC_LINES);
@@ -441,7 +447,7 @@ fn embed_lines(
         add(&f.value, Style::new(), 4);
     }
     if let Some(f) = e.footer.as_ref().and_then(|f| nonempty(&f.text)) {
-        add(&f, dim(), 1);
+        add(&f, t.dim(), 1);
     }
     let text_only = body.is_empty();
     for line in body {
@@ -460,12 +466,15 @@ fn embed_lines(
     // Ne metin ne (çizilebilen) resim: içerik boşsa bağlantıyı göster.
     if text_only && images.len() == before && msg.content.is_empty() {
         let url = e.url.clone().unwrap_or_else(|| "(içerik yok)".into());
-        out.push(fit_line(vec![(format!("  [embed: {url}]"), dim())], width));
+        out.push(fit_line(
+            vec![(format!("  [embed: {url}]"), t.dim())],
+            width,
+        ));
     }
 }
 
 /// `  👍 2  :kedi: 1` — benim tepkilerim vurgulu.
-fn reactions_line(msg: &Message, width: usize) -> Option<Line<'static>> {
+fn reactions_line(msg: &Message, t: &Theme, width: usize) -> Option<Line<'static>> {
     if msg.reactions.is_empty() {
         return None;
     }
@@ -475,19 +484,13 @@ fn reactions_line(msg: &Message, width: usize) -> Option<Line<'static>> {
             parts.push(("  ".into(), Style::new()));
         }
         let style = if r.me {
-            Style::new()
-                .fg(Color::LightBlue)
-                .add_modifier(Modifier::BOLD)
+            t.highlight().add_modifier(Modifier::BOLD)
         } else {
-            dim()
+            t.dim()
         };
         parts.push((format!("{} {}", r.emoji.display(), r.count), style));
     }
     Some(fit_line(parts, width))
-}
-
-fn dim() -> Style {
-    Style::new().add_modifier(Modifier::DIM)
 }
 
 fn cwidth(c: char) -> usize {
@@ -565,15 +568,16 @@ fn fit_line(parts: Vec<(String, Style)>, width: usize) -> Line<'static> {
 
 fn reply_line(reply: &Message, r: &dyn Resolver, width: usize) -> Line<'static> {
     let first = reply.content.lines().next().unwrap_or("");
+    let dim = r.theme().dim();
     fit_line(
         vec![
-            ("  ↳ ".into(), dim()),
+            ("  ↳ ".into(), dim),
             (
                 r.author_name(&reply.author),
-                dim().add_modifier(Modifier::BOLD),
+                dim.add_modifier(Modifier::BOLD),
             ),
-            (": ".into(), dim()),
-            (first.to_string(), dim()),
+            (": ".into(), dim),
+            (first.to_string(), dim),
         ],
         width,
     )
@@ -602,9 +606,10 @@ fn content_lines(msg: &Message, r: &dyn Resolver, width: usize) -> Vec<Line<'sta
 }
 
 fn block_lines(block: &Block, msg: &Message, r: &dyn Resolver, width: usize) -> Vec<Line<'static>> {
+    let t = r.theme();
     let indent = indent_for(width);
     let (first, cont, pstyle) = match &block.kind {
-        BlockKind::Quote => ("▎ ", "▎ ", dim()),
+        BlockKind::Quote => ("▎ ", "▎ ", t.quote()),
         BlockKind::ListItem => ("• ", "  ", Style::new()),
         _ => ("", "", Style::new()),
     };
@@ -617,7 +622,7 @@ fn block_lines(block: &Block, msg: &Message, r: &dyn Resolver, width: usize) -> 
     let runs = match &block.kind {
         BlockKind::CodeBlock { .. } => {
             let text = block.spans.iter().map(span_text).collect::<String>();
-            hard_wrap(&text, Style::new().fg(Color::Yellow), avail)
+            hard_wrap(&text, t.code(), avail)
         }
         kind => {
             let extra = match kind {
@@ -625,7 +630,7 @@ fn block_lines(block: &Block, msg: &Message, r: &dyn Resolver, width: usize) -> 
                     Style::new().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
                 }
                 BlockKind::Heading(_) => Style::new().add_modifier(Modifier::BOLD),
-                BlockKind::Subtext => dim(),
+                BlockKind::Subtext => t.dim(),
                 _ => Style::new(),
             };
             let pieces = inline_pieces(&block.spans, extra, msg, r);
@@ -676,16 +681,18 @@ fn take_width(s: &str, max: usize) -> String {
     out
 }
 
-fn mention_style(fg: Color, highlight: bool) -> Style {
-    let s = Style::new().fg(fg);
-    if highlight {
-        s.bg(Color::Rgb(60, 50, 0)).add_modifier(Modifier::BOLD)
+fn mention_style(base: Style, t: &Theme, highlight: bool) -> Style {
+    if highlight && t.mention_me_bg != ratatui::style::Color::Reset {
+        base.bg(t.mention_me_bg).add_modifier(Modifier::BOLD)
+    } else if highlight {
+        base.add_modifier(Modifier::BOLD)
     } else {
-        s
+        base
     }
 }
 
 fn inline_pieces(spans: &[Md], extra: Style, msg: &Message, r: &dyn Resolver) -> Vec<Run> {
+    let t = r.theme();
     spans
         .iter()
         .map(|s| {
@@ -703,49 +710,44 @@ fn inline_pieces(spans: &[Md], extra: Style, msg: &Message, r: &dyn Resolver) ->
                         }
                     }
                     if style.spoiler {
-                        (mask(text), st.fg(Color::DarkGray))
+                        (mask(text), st.patch(t.spoiler()))
                     } else {
                         (text.clone(), st)
                     }
                 }
-                Md::Code(t) => (t.clone(), Style::new().fg(Color::Yellow)),
+                Md::Code(code) => (code.clone(), t.code()),
                 Md::UserMention(id) => (
                     format!("@{}", r.user_name(*id).as_deref().unwrap_or("bilinmeyen")),
-                    mention_style(Color::LightBlue, r.is_me(*id)),
+                    mention_style(t.mention(), t, r.is_me(*id)),
                 ),
                 Md::ChannelMention(id) => (
                     format!(
                         "#{}",
                         r.channel_name(*id).as_deref().unwrap_or("bilinmeyen-kanal")
                     ),
-                    mention_style(Color::LightBlue, false),
+                    mention_style(t.mention(), t, false),
                 ),
                 Md::RoleMention(id) => (
                     format!(
                         "@{}",
                         r.role_name(*id).as_deref().unwrap_or("bilinmeyen-rol")
                     ),
-                    mention_style(Color::LightMagenta, false),
+                    mention_style(t.mention_role(), t, false),
                 ),
                 Md::Everyone => (
                     "@everyone".to_string(),
-                    mention_style(Color::LightMagenta, msg.mention_everyone),
+                    mention_style(t.mention_role(), t, msg.mention_everyone),
                 ),
                 Md::Here => (
                     "@here".to_string(),
-                    mention_style(Color::LightMagenta, msg.mention_everyone),
+                    mention_style(t.mention_role(), t, msg.mention_everyone),
                 ),
-                Md::Emoji { name, .. } => (format!(":{name}:"), Style::new().fg(Color::Yellow)),
+                Md::Emoji { name, .. } => (format!(":{name}:"), t.emoji()),
                 Md::Timestamp { unix, format } => (
                     r.timestamp(*unix, *format),
-                    dim().add_modifier(Modifier::UNDERLINED),
+                    t.timestamp().add_modifier(Modifier::UNDERLINED),
                 ),
-                Md::Link(url) => (
-                    url.clone(),
-                    Style::new()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::UNDERLINED),
-                ),
+                Md::Link(url) => (url.clone(), t.link()),
             };
             (text, style.patch(extra))
         })
@@ -885,6 +887,8 @@ fn flush_word(
 
 #[cfg(test)]
 mod tests {
+    use ratatui::style::Color;
+
     use super::*;
     use serde_json::{Value, json};
 

@@ -3,12 +3,12 @@
 use digcord_model::{Message, Snowflake};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, Paragraph};
 
 use crate::markdown::{self, Span as Md};
 use crate::media::{Images, SlotState};
+use crate::theme::Theme;
 
 /// Mesajdaki gösterilebilir bir resim.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,9 +97,10 @@ pub(crate) fn external_link(msg: &Message) -> Option<String> {
         .filter(|u| u.starts_with("https://") || u.starts_with("http://"))
 }
 
-pub(crate) fn draw(viewer: &Viewer, images: &Images, frame: &mut Frame) {
+pub(crate) fn draw(viewer: &Viewer, images: &Images, theme: &Theme, frame: &mut Frame) {
     let area = frame.area();
     frame.render_widget(Clear, area);
+    frame.buffer_mut().set_style(area, theme.base());
     let Some(item) = viewer.current() else { return };
     let title = format!(
         " {} ({}/{}) — ←/→ gez · o: harici aç · Esc: kapat ",
@@ -107,7 +108,9 @@ pub(crate) fn draw(viewer: &Viewer, images: &Images, frame: &mut Frame) {
         viewer.index + 1,
         viewer.items.len()
     );
-    let block = Block::bordered().title(title);
+    let block = Block::bordered()
+        .title(title)
+        .border_style(theme.border_style(true));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let Some(fit) = images.fit_area(item.width, item.height, inner) else {
@@ -124,7 +127,10 @@ pub(crate) fn draw(viewer: &Viewer, images: &Images, frame: &mut Frame) {
         SlotState::Failed => "resim yüklenemedi (o: harici aç)",
     };
     let row = Rect::new(inner.x, inner.y + inner.height / 2, inner.width, 1);
-    frame.render_widget(Paragraph::new(Line::from(note).dim().centered()), row);
+    frame.render_widget(
+        Paragraph::new(Line::styled(note, theme.dim()).centered()),
+        row,
+    );
 }
 
 #[cfg(test)]

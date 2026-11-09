@@ -1,0 +1,33 @@
+# Açık tema örneği. Kullanmak için ~/.config/digcord/themes/light.toml olarak kopyala ve
+# config.toml'da `[ui] theme = "light"` yaz (ya da çalışırken `:theme light`).
+# Renkler: "#rrggbb", ANSI adı ("red", "darkgray", "lightblue"...), 0-255 indeks ya da "reset".
+# Dosyada olmayan yuvalar yerleşik (koyu) temadan gelir. Yuva listesi: docs/TUI_DESIGN.md.
+
+background = "#fafafa"
+text = "#24292f"
+border = "#c0c4cc"
+border_focused = "#0969da"
+author = "#8250df"
+timestamp = "#6e7781"
+dim = "#6e7781"
+quote = "#6e7781"
+mention = "#0969da"
+mention_role = "#bf3989"
+mention_me_bg = "#fff8c5"
+link = "#0550ae"
+highlight = "#0969da"
+code = "#953800"
+emoji = "#953800"
+spoiler = "#8c959f"
+selection_bg = "#ddf4ff"
+popup_bg = "#eaeef2"
+channel = "#57606a"
+unread = "#24292f"
+current = "#1a7f37"
+voice_speaking = "#1a7f37"
+badge = "#cf222e"
+error = "#cf222e"
+warning = "#9a6700"
+success = "#1a7f37"
+status_fg = "#24292f"
+status_bg = "#eaeef2"
