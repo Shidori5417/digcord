@@ -26,8 +26,13 @@ publish.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
+digcord-gateway.workspace = true
+digcord-model.workspace = true
 digcord-tui.workspace = true
 dirs = "7.0.0"
+keyring-core = "1.0.1"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync", "macros", "time"] }
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
+zbus-secret-service-keyring-store = { version = "1.0.1", features = ["crypto-rust"] }

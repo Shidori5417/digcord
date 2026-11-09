@@ -1,6 +1,6 @@
 ---
 source: crates/digcord-tui/src/lib.rs
-expression: terminal.backend()
+expression: "snapshot(&App::default())"
 ---
 "┌ Kanallar ──────────┐┌ Mesajlar ──────────────────────────┐┌ Üyeler ──────────┐"
 "│                    ││                                    ││                  │"
@@ -12,5 +12,7 @@ expression: terminal.backend()
 "│                    ││                                    ││                  │"
 "│                    ││                                    ││                  │"
 "│                    ││                                    ││                  │"
+"│                    ││                                    ││                  │"
+"│                    ││                                    ││                  │"
 "└────────────────────┘└────────────────────────────────────┘└──────────────────┘"
-" [NORMAL]  Digcord · bağlı değil · q: çıkış                                     "
+" [NORMAL] Digcord · başlatılıyor…                                               "
