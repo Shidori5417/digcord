@@ -1,0 +1,20 @@
+---
+source: crates/digcord-tui/src/tests.rs
+expression: "draw(&app, 100, 16)"
+---
+"┌────┐┌ Test Sunucusu ───────┐┌ #sohbet — konu ────────────────────────────────┐┌ Üyeler ──────────┐"
+"│DM  ││▾ GENEL               ││                                                ││                  │"
+"│TS  ││  # sohbet            ││                                                ││                  │"
+"│    ││  # duyurular         ││                                                ││                  │"
+"│    ││  🔊 Ses              ││             — kanalın başlangıcı —             ││                  │" Hidden by multi-width symbols: [(10, " ")]
+"│    ││                      ││arkadas  01.01.2026 12:00                       ││                  │"
+"│    ││                      ││  selam herkese                                 ││                  │"
+"│    ││                      ││  kalın ve kod                                  ││                  │"
+"│    ││                      ││                                                ││                  │"
+"│    ││                      ││ben  01.01.2026 12:02                           ││                  │"
+"│    ││                      ││  naber @arkadas                                ││                  │"
+"│    ││                      ││                                                ││                  │"
+"│    ││                      ││arkadas  01.01.2026 12:20                       ││                  │"
+"│    ││                      ││  yedi dakikadan sonra yeni grup                ││                  │"
+"└────┘└──────────────────────┘└────────────────────────────────────────────────┘└──────────────────┘"
+" [NORMAL] Digcord · başlatılıyor…                                                                   "

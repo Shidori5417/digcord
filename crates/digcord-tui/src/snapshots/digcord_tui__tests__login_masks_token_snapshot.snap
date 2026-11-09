@@ -1,18 +1,18 @@
 ---
-source: crates/digcord-tui/src/lib.rs
+source: crates/digcord-tui/src/tests.rs
 expression: screen
 ---
-"┌ Kanallar ──────────┐┌ Mesajlar ──────────────────────────┐┌ Üyeler ──────────┐"
-"│                    ││                                    ││                  │"
-"│                    ││                                    ││                  │"
-"│         ┌ Digcord — Giriş ─────────────────────────────────────────┐         │"
-"│         │ Discord token'ını yapıştır (yan hesap önerilir):         │         │"
-"│         │                                                          │         │"
-"│         │ > •••••                                                  │         │"
-"│         │                                                          │         │"
-"│         │ Token geçersiz, tekrar dene                              │         │"
-"│         │ Enter: giriş · Esc: çıkış                                │         │"
-"│         │                                                          │         │"
-"│         └──────────────────────────────────────────────────────────┘         │"
-"└────────────────────┘└────────────────────────────────────┘└──────────────────┘"
+"┌────┐┌ Direkt Mesajlar ─────┐┌ Mesajlar ──────────────────────────────────────┐"
+"│DM  ││(kanal yok)           ││Bir kanal seç (Tab: panel, j/k: gez, Enter: aç) │"
+"│    ││                      ││                                                │"
+"│    ││   ┌ Digcord — Giriş ─────────────────────────────────────────┐         │"
+"│    ││   │ Discord token'ını yapıştır (yan hesap önerilir):         │         │"
+"│    ││   │                                                          │         │"
+"│    ││   │ > •••••                                                  │         │"
+"│    ││   │                                                          │         │"
+"│    ││   │ Token geçersiz, tekrar dene                              │         │"
+"│    ││   │ Enter: giriş · Esc: çıkış                                │         │"
+"│    ││   │                                                          │         │"
+"│    ││   └──────────────────────────────────────────────────────────┘         │"
+"└────┘└──────────────────────┘└────────────────────────────────────────────────┘"
 " [GİRİŞ] Digcord · başlatılıyor…                                                "
