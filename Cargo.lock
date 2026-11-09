@@ -358,8 +358,13 @@ dependencies = [
 name = "digcord-gateway"
 version = "0.1.0"
 dependencies = [
+ "digcord-model",
+ "fastrand",
  "flate2",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]
