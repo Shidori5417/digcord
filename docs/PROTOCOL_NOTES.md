@@ -116,12 +116,50 @@ Kaynak: CDP ile `discord.com/app` yüklenirken WebSocket kaydı. Ham kayıt `/ca
 - Mesaj gönderme: `POST /channels/{id}/messages` — `nonce` (istemci üretimi snowflake) ile
   iyimser güncelleme eşleştirmesi.
 - Okundu bilgisi: `POST /channels/{id}/messages/{msg}/ack` (+ token alanı, doğrula).
-- Geçmiş: `GET /channels/{id}/messages?before=&limit=50`
+- Geçmiş: `GET /channels/{id}/messages?limit=10` (kanal açılışı), yukarı kaydırınca
+  `?before=<en eski id>&limit=20` — ✅ gözlendi 2026-11-09, bkz. §4.1.
 - Yazıyor: `POST /channels/{id}/typing` (en fazla ~8 sn'de bir).
 - Ek dosya: multipart veya önce yükleme URL'si alıp sonra gönderme akışı (resmi istemcinin
   kullandığını doğrula).
 - **Rate limit:** bucket başlıklarına uy; 429'da `retry_after` kadar bekle. Kullanıcı hesaplarında
   limitler botlardan sıkı olabilir; agresif önceden yükleme yapma.
+
+### 4.1 Gözlenen REST trafiği — 2026-11-09 (Linux, Chrome 155, web, yan hesap)
+
+**Başlıklar — ✅ gözlendi** (`GET /channels/{id}/messages`, diğer `/api/v9` istekleri aynı küme):
+`Authorization` (öneksiz token), `User-Agent`, `X-Super-Properties`, `X-Discord-Locale: tr`
+(sadece dil), `X-Discord-Timezone: Europe/Istanbul` (IANA), `X-Debug-Options: bugReporterEnabled`,
+`X-Installation-ID: <snowflake>.<imza>` (IDENTIFY'daki `installation_id` ile **aynı** değer → kalıcı,
+kuruluma özel), `Referer: https://discord.com/channels/<guild>/<kanal>`,
+`sec-ch-ua: "Google Chrome";v="155", "Chromium";v="155", "Not(A:Brand";v="24"`,
+`sec-ch-ua-mobile: ?0`, `sec-ch-ua-platform: "Linux"`.
+
+**`X-Super-Properties`** = base64(JSON). IDENTIFY `properties` ile aynı alanlar **şu farklarla**:
+- `is_fast_connect`, `gateway_connect_reasons`, `installation_id` **yok**.
+- `launch_signature` **var** (UUID biçimli; her açılışta farklı → istemci üretiyor olabilir — doğrulanmadı).
+- `client_heartbeat_session_id` **var** (UUID; op 41'deki `session_id` ve bazı sorgu
+  parametreleriyle aynı → istemci üretimi oturum kimliği).
+- Sıra: `os, browser, device, device_model_name, system_locale, has_client_mods, browser_user_agent,
+  browser_version, os_version, referrer, referring_domain, referrer_current, referring_domain_current,
+  release_channel, client_build_number, client_event_source, client_launch_id, launch_signature,
+  client_heartbeat_session_id, client_app_state`.
+
+**Rate limit başlıkları:** CDP'nin gördüğü yanıt başlıklarında `x-ratelimit-*` **görülmedi** (200 yanıtlar).
+CDP'nin bazı başlıkları göstermemesi mümkün — **doğrulanmadı**. 429 işleme yine de zorunlu.
+
+**Kanal açılınca giden gateway mesajları — ✅ gözlendi**
+- op 37 guild aboneliği. Küçük sunucu: `{"subscriptions":{"<guild>":{"typing":true,"activities":true,"threads":true}}}`.
+  Büyük sunucu (~250 bin üye): ek olarak `"members":[],"member_updates":false,"channels":{},"thread_member_lists":[]`.
+  Büyük sunucuda op 37 sonrası `GUILD_CREATE` geldi (tam guild nesnesi, `lazy: true`).
+- op 43: `{"guild_id":"<guild>","fields":["status","voice_start_time"]}` → `CHANNEL_INFO`.
+- op 8: `{"guild_id":["<guild>"],"user_ids":[<görünen yazarlar>],"presences":false}` → `GUILD_MEMBERS_CHUNK`
+  (üye: `nick`, `roles`, `avatar`, `user`…). Mesaj yazarlarının takma ad/rol rengi için.
+- Abonelikten sonra `MESSAGE_CREATE/UPDATE/DELETE`, `TYPING_START`, `PRESENCE_UPDATE` geldi.
+  **Abonelik olmadan** büyük sunucuda MESSAGE_CREATE gelip gelmediği **doğrulanmadı** → resmi istemci
+  gibi kanal açılınca op 37 gönderilecek.
+- `MESSAGE_CREATE.d`: `id, channel_id, guild_id, author{id,username,global_name,avatar,…}, member{nick,roles,…},
+  content, timestamp, edited_timestamp, type, flags, mentions, mention_roles, mention_everyone,
+  attachments, embeds, components, pinned, tts, nonce, channel_type`. `MESSAGE_DELETE.d`: `id, channel_id, guild_id`.
 
 ## 5. Davranış kuralları (ban riskini azaltmak için)
 
