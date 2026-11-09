@@ -93,6 +93,13 @@ Kaynak: CDP ile `discord.com/app` yüklenirken WebSocket kaydı. Ham kayıt `/ca
 - İstemci zaman zaman (ör. ~90. sn) op 3 presence tekrar gönderiyor — muhtemelen odak/boşta
   durumu değişimi; **doğrulanmadı**.
 
+**Digcord'un resmi web istemcisinden bilinen farkları (Aşama 1)** — her biri bilinçli, karar bekliyor:
+- IDENTIFY'da `launch_signature`, `installation_id`, `qos_token` **gönderilmiyor** (kaynakları bilinmiyor).
+- El sıkışmada `permessage-deflate` sunulmuyor (tungstenite desteklemiyor).
+- READY sonrası op 4 / op 3 / op 41 **gönderilmiyor**; sadece op 40 gönderiliyor.
+- RESUME (op 6) biçimi resmi istemciden **gözlenmedi**; standart `{token, session_id, seq}`.
+- `client_build_number` sabit (667580); zamanla eskir, config desteği sonraki aşamada.
+
 **READY — ✅ gözlendi** (`v: 9`, ~357 KB açılmış, ~53 KB sıkıştırılmış)
 - Üst anahtarlar: `user`, `users`, `guilds`, `private_channels`, `relationships`, `read_state`
   (`{entries, partial, version}`), `user_guild_settings`, `merged_members`, `session_id`,
