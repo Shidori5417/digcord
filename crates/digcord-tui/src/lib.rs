@@ -99,14 +99,35 @@ pub fn run(
 ) -> io::Result<()> {
     std::thread::Builder::new()
         .name("digcord-input".into())
-        .spawn(move || {
-            while let Ok(ev) = event::read() {
+        .spawn(move || input_loop(&tx))?;
+    ratatui::run(|terminal| App::new(shared).run(terminal, &events, &mut actions))
+}
+
+/// Terminal girdisini okur. Tek bir okuma hatası (ör. yeniden boyutlandırma sırasında boyut
+/// sorgusu başarısız olursa crossterm hata döner) thread'i bitirmemeli: biterse ne tuşlar ne
+/// de yeniden boyutlandırma olayları gelir. Üst üste çok hata olursa vazgeçilir.
+fn input_loop(tx: &Sender<UiEvent>) {
+    const MAX_CONSECUTIVE_ERRORS: u32 = 50;
+    let mut errors = 0;
+    loop {
+        match event::read() {
+            Ok(ev) => {
+                errors = 0;
                 if tx.send(UiEvent::Input(ev)).is_err() {
-                    break;
+                    return;
                 }
             }
-        })?;
-    ratatui::run(|terminal| App::new(shared).run(terminal, &events, &mut actions))
+            Err(e) => {
+                errors += 1;
+                tracing::warn!(errors, "terminal girdisi okunamadı: {e}");
+                if errors >= MAX_CONSECUTIVE_ERRORS {
+                    tracing::error!("terminal girdisi okunamıyor; girdi thread'i durdu");
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
 }
 
 #[derive(Debug)]

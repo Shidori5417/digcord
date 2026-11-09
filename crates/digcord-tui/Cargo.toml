@@ -12,6 +12,7 @@ digcord-model.workspace = true
 digcord-store.workspace = true
 jiff = "0.2.41"
 ratatui = "0.30"
+tracing = "0.1.44"
 unicode-width = "0.2.0"
 
 [dev-dependencies]
