@@ -12,6 +12,7 @@ publish = false
 
 [workspace.dependencies]
 digcord-gateway = { path = "crates/digcord-gateway" }
+digcord-http = { path = "crates/digcord-http" }
 digcord-model = { path = "crates/digcord-model" }
 digcord-tui = { path = "crates/digcord-tui" }
 

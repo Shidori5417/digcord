@@ -37,6 +37,37 @@ pub struct ClientProperties {
     // Kaynağı doğrulanmadı (PROTOCOL_NOTES §3.1); bilinene kadar gönderilmez.
     #[serde(skip_serializing_if = "Option::is_none")]
     installation_id: Option<String>,
+    /// Sadece `X-Super-Properties`'te ve op 41'de; oturum başına üretilir (PROTOCOL_NOTES §4.1).
+    #[serde(skip)]
+    client_heartbeat_session_id: String,
+    #[serde(skip)]
+    chrome_major: u32,
+}
+
+/// `X-Super-Properties` içeriği: IDENTIFY `properties`'ten farklı alan kümesi (PROTOCOL_NOTES §4.1).
+#[derive(Serialize)]
+struct SuperProperties<'a> {
+    os: &'a str,
+    browser: &'a str,
+    device: &'a str,
+    device_model_name: &'a str,
+    system_locale: &'a str,
+    has_client_mods: bool,
+    browser_user_agent: &'a str,
+    browser_version: &'a str,
+    os_version: &'a str,
+    referrer: &'a str,
+    referring_domain: &'a str,
+    referrer_current: &'a str,
+    referring_domain_current: &'a str,
+    release_channel: &'a str,
+    client_build_number: u32,
+    client_event_source: Option<()>,
+    client_launch_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    launch_signature: Option<&'a str>,
+    client_heartbeat_session_id: &'a str,
+    client_app_state: &'a str,
 }
 
 impl ClientProperties {
@@ -68,7 +99,54 @@ impl ClientProperties {
             is_fast_connect: false,
             gateway_connect_reasons: "AppSkeleton",
             installation_id: None,
+            client_heartbeat_session_id: uuid_v4(),
+            chrome_major,
         }
+    }
+
+    /// `X-Super-Properties` başlığı: alt kümenin JSON'unun base64'ü.
+    pub fn super_properties(&self) -> String {
+        use base64::Engine;
+        let sp = SuperProperties {
+            os: self.os,
+            browser: self.browser,
+            device: self.device,
+            device_model_name: self.device_model_name,
+            system_locale: &self.system_locale,
+            has_client_mods: self.has_client_mods,
+            browser_user_agent: &self.browser_user_agent,
+            browser_version: &self.browser_version,
+            os_version: self.os_version,
+            referrer: self.referrer,
+            referring_domain: self.referring_domain,
+            referrer_current: self.referrer_current,
+            referring_domain_current: self.referring_domain_current,
+            release_channel: self.release_channel,
+            client_build_number: self.client_build_number,
+            client_event_source: self.client_event_source,
+            client_launch_id: &self.client_launch_id,
+            launch_signature: self.launch_signature.as_deref(),
+            client_heartbeat_session_id: &self.client_heartbeat_session_id,
+            client_app_state: self.client_app_state,
+        };
+        // Sabit yapılı, string anahtarlı tip; serileştirme başarısız olamaz.
+        let json = serde_json::to_vec(&sp).unwrap_or_default();
+        base64::engine::general_purpose::STANDARD.encode(json)
+    }
+
+    /// `sec-ch-ua` başlığı (gözlenen Chrome 155 biçimi; "Not(A:Brand" kısmı Chrome sürümüne göre
+    /// değişebilir — diğer sürümler doğrulanmadı).
+    pub fn sec_ch_ua(&self) -> String {
+        let v = self.chrome_major;
+        format!(r#""Google Chrome";v="{v}", "Chromium";v="{v}", "Not(A:Brand";v="24""#)
+    }
+
+    /// `X-Discord-Locale`: sadece dil kısmı (`tr-TR` → `tr`).
+    pub fn discord_locale(&self) -> &str {
+        self.system_locale
+            .split('-')
+            .next()
+            .unwrap_or(&self.system_locale)
     }
 
     pub fn user_agent(&self) -> &str {
@@ -155,6 +233,54 @@ mod tests {
         assert_eq!(&id[14..15], "4");
         assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"));
         assert_ne!(uuid_v4(), id);
+    }
+
+    #[test]
+    fn super_properties_matches_observed() {
+        use base64::Engine;
+        let p = ClientProperties::chrome_linux("tr-TR", 155, 667_580);
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(p.super_properties())
+            .expect("base64");
+        let text = String::from_utf8(raw).expect("utf8");
+        let v: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let keys = [
+            "os",
+            "browser",
+            "device",
+            "device_model_name",
+            "system_locale",
+            "has_client_mods",
+            "browser_user_agent",
+            "browser_version",
+            "os_version",
+            "referrer",
+            "referring_domain",
+            "referrer_current",
+            "referring_domain_current",
+            "release_channel",
+            "client_build_number",
+            "client_event_source",
+            "client_launch_id",
+            "client_heartbeat_session_id",
+            "client_app_state",
+        ];
+        assert_eq!(v.as_object().expect("nesne").len(), keys.len(), "{text}");
+        let pos: Vec<usize> = keys
+            .iter()
+            .map(|k| text.find(&format!("\"{k}\"")).expect("anahtar"))
+            .collect();
+        assert!(pos.windows(2).all(|w| w[0] < w[1]), "{text}");
+        assert_eq!(
+            v["client_launch_id"],
+            serde_json::to_value(&p).expect("json")["client_launch_id"]
+        );
+        assert_ne!(v["client_heartbeat_session_id"], v["client_launch_id"]);
+        assert_eq!(
+            p.sec_ch_ua(),
+            r#""Google Chrome";v="155", "Chromium";v="155", "Not(A:Brand";v="24""#
+        );
+        assert_eq!(p.discord_locale(), "tr");
     }
 
     #[test]
