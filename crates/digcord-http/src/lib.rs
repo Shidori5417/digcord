@@ -1,17 +1,22 @@
 //! REST istemcisi ve rate limit yönetimi.
 //!
 //! Tüm istekler resmi web istemcisinin başlıklarını taşır (PROTOCOL_NOTES §4.1); başlık
-//! değerleri sadece [`ClientProperties`]'ten üretilir. Bu aşamada 429 + `retry_after` ve
-//! global kilit var; bucket bazlı yönetim Aşama 3'te.
+//! değerleri sadece [`ClientProperties`]'ten üretilir. Rate limit mantığı [`ratelimit`]
+//! modülünde: rota bazlı bucket, global kilit, 429'da en fazla 3 yeniden deneme.
 
+pub mod ratelimit;
+
+use std::fmt::Write as _;
 use std::time::Duration;
 
-use digcord_model::{ClientProperties, Message, Snowflake, Token};
+use digcord_model::{ClientProperties, Message, ReactionEmoji, Snowflake, Token};
 use reqwest::header::{self, HeaderMap, HeaderName, HeaderValue};
-use reqwest::{RequestBuilder, StatusCode};
+use reqwest::{Method, StatusCode};
 use serde::Deserialize;
-use tokio::sync::Mutex;
-use tokio::time::{Instant, sleep_until};
+use serde_json::{Value, json};
+use tokio::time::Instant;
+
+use ratelimit::{Limits, RateLimiter, secs_to_duration};
 
 pub const API_BASE: &str = "https://discord.com/api/v9";
 /// Aynı istek için en fazla bu kadar 429 sonrası yeniden deneme.
@@ -31,6 +36,11 @@ pub enum HttpError {
     Network(#[from] reqwest::Error),
     #[error("geçersiz başlık değeri")]
     Header,
+    /// Yükleme adresi `https://` değil (adres, imza içerebileceğinden hataya konmaz).
+    #[error("güvensiz yükleme adresi")]
+    InsecureUploadUrl,
+    #[error("beklenmeyen yanıt biçimi")]
+    BadResponse,
 }
 
 /// İsteğin hangi sayfadan yapıldığı (`Referer` başlığı).
@@ -50,12 +60,27 @@ impl Page {
     }
 }
 
+/// Gönderilecek mesaj.
+pub struct NewMessage<'a> {
+    pub content: &'a str,
+    pub nonce: Snowflake,
+    pub reply_to: Option<Snowflake>,
+    pub attachments: Vec<UploadedAttachment>,
+}
+
+/// [`Http::upload_attachment`] sonucu; [`NewMessage::attachments`] içine konur.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadedAttachment {
+    pub id: u32,
+    pub filename: String,
+    pub uploaded_filename: String,
+}
+
 pub struct Http {
     client: reqwest::Client,
     base: String,
     auth: HeaderValue,
-    /// Global 429 sonrası tüm isteklerin bekleyeceği an.
-    blocked_until: Mutex<Option<Instant>>,
+    limiter: RateLimiter,
 }
 
 #[derive(Deserialize)]
@@ -63,6 +88,18 @@ struct RateLimitBody {
     retry_after: f64,
     #[serde(default)]
     global: bool,
+}
+
+#[derive(Deserialize)]
+struct AttachmentSlots {
+    attachments: Vec<AttachmentSlot>,
+}
+
+#[derive(Deserialize)]
+struct AttachmentSlot {
+    id: u32,
+    upload_url: String,
+    upload_filename: String,
 }
 
 impl Http {
@@ -104,7 +141,7 @@ impl Http {
             client,
             base: API_BASE.to_owned(),
             auth,
-            blocked_until: Mutex::new(None),
+            limiter: RateLimiter::new(),
         })
     }
 
@@ -122,57 +159,215 @@ impl Http {
         before: Option<Snowflake>,
         limit: u8,
     ) -> Result<Vec<Message>, HttpError> {
-        let url = match before {
+        let path = match before {
             Some(b) => format!(
-                "{}/channels/{}/messages?before={b}&limit={limit}",
-                self.base, page.channel
+                "/channels/{}/messages?before={b}&limit={limit}",
+                page.channel
             ),
-            None => format!(
-                "{}/channels/{}/messages?limit={limit}",
-                self.base, page.channel
-            ),
+            None => format!("/channels/{}/messages?limit={limit}", page.channel),
         };
-        let referer = page.referer();
-        let resp = self
-            .send(|| self.client.get(&url).header(header::REFERER, &referer))
-            .await?;
+        let resp = self.send(Method::GET, &path, page, None).await?;
         Ok(resp.json().await?)
     }
 
-    /// İsteği gönderir; 429'da bekleyip yeniden dener, 401'i ayrı hata yapar.
+    /// `POST /channels/{c}/messages`. Yanıt oluşan mesajdır.
+    pub async fn create_message(
+        &self,
+        page: Page,
+        msg: &NewMessage<'_>,
+    ) -> Result<Message, HttpError> {
+        // doğrulanmadı (PROTOCOL_NOTES): alanlar Discord'un herkese açık belgelerinden.
+        let mut body = json!({
+            "mobile_network_type": "unknown",
+            "content": msg.content,
+            "nonce": msg.nonce,
+            "tts": false,
+            "flags": 0,
+        });
+        if let Some(reply) = msg.reply_to {
+            let mut reference = json!({
+                "channel_id": page.channel,
+                "message_id": reply,
+            });
+            if let (Some(g), Some(map)) = (page.guild, reference.as_object_mut()) {
+                map.insert("guild_id".into(), json!(g));
+            }
+            body["message_reference"] = reference;
+            body["allowed_mentions"] =
+                json!({"parse": ["users", "roles", "everyone"], "replied_user": true});
+        }
+        if !msg.attachments.is_empty() {
+            body["type"] = json!(0);
+            body["sticker_ids"] = json!([]);
+            body["attachments"] = msg
+                .attachments
+                .iter()
+                .map(|a| {
+                    json!({
+                        "id": a.id.to_string(),
+                        "filename": a.filename,
+                        "uploaded_filename": a.uploaded_filename,
+                    })
+                })
+                .collect();
+        }
+        let path = format!("/channels/{}/messages", page.channel);
+        let resp = self.send(Method::POST, &path, page, Some(body)).await?;
+        Ok(resp.json().await?)
+    }
+
+    /// `PATCH /channels/{c}/messages/{m}`.
+    pub async fn edit_message(
+        &self,
+        page: Page,
+        message: Snowflake,
+        content: &str,
+    ) -> Result<Message, HttpError> {
+        // doğrulanmadı (PROTOCOL_NOTES)
+        let body = json!({ "content": content });
+        let path = format!("/channels/{}/messages/{message}", page.channel);
+        let resp = self.send(Method::PATCH, &path, page, Some(body)).await?;
+        Ok(resp.json().await?)
+    }
+
+    /// `DELETE /channels/{c}/messages/{m}` (204).
+    pub async fn delete_message(&self, page: Page, message: Snowflake) -> Result<(), HttpError> {
+        let path = format!("/channels/{}/messages/{message}", page.channel);
+        self.send(Method::DELETE, &path, page, None).await?;
+        Ok(())
+    }
+
+    /// `PUT .../reactions/{emoji}/@me?location=Message&type=0` (204).
+    pub async fn add_reaction(
+        &self,
+        page: Page,
+        message: Snowflake,
+        emoji: &ReactionEmoji,
+    ) -> Result<(), HttpError> {
+        // doğrulanmadı (PROTOCOL_NOTES): sorgu parametreleri topluluk bilgisi.
+        let path = format!(
+            "/channels/{}/messages/{message}/reactions/{}/@me?location=Message&type=0",
+            page.channel,
+            percent_encode(&emoji.api_form())
+        );
+        self.send(Method::PUT, &path, page, None).await?;
+        Ok(())
+    }
+
+    /// `DELETE .../reactions/{emoji}/0/@me?location=Message&burst=false` (204).
+    pub async fn remove_reaction(
+        &self,
+        page: Page,
+        message: Snowflake,
+        emoji: &ReactionEmoji,
+    ) -> Result<(), HttpError> {
+        // doğrulanmadı (PROTOCOL_NOTES)
+        let path = format!(
+            "/channels/{}/messages/{message}/reactions/{}/0/@me?location=Message&burst=false",
+            page.channel,
+            percent_encode(&emoji.api_form())
+        );
+        self.send(Method::DELETE, &path, page, None).await?;
+        Ok(())
+    }
+
+    /// `POST /channels/{c}/typing` (204, gövdesiz).
+    pub async fn typing(&self, page: Page) -> Result<(), HttpError> {
+        let path = format!("/channels/{}/typing", page.channel);
+        self.send(Method::POST, &path, page, None).await?;
+        Ok(())
+    }
+
+    /// İki adımlı yükleme: `POST /channels/{c}/attachments` ile yer ayrılır, dönen
+    /// `upload_url`'e ham baytlar `PUT` edilir. Sonuç [`NewMessage::attachments`]'a konur.
+    pub async fn upload_attachment(
+        &self,
+        page: Page,
+        filename: &str,
+        bytes: Vec<u8>,
+    ) -> Result<UploadedAttachment, HttpError> {
+        // doğrulanmadı (PROTOCOL_NOTES)
+        let body = json!({
+            "files": [{
+                "file_size": bytes.len(),
+                "filename": filename,
+                "id": "0",
+                "is_clip": false,
+            }]
+        });
+        let path = format!("/channels/{}/attachments", page.channel);
+        let resp = self.send(Method::POST, &path, page, Some(body)).await?;
+        let slots: AttachmentSlots = resp.json().await?;
+        let slot = slots
+            .attachments
+            .into_iter()
+            .next()
+            .ok_or(HttpError::BadResponse)?;
+        if !upload_url_allowed(&self.base, &slot.upload_url) {
+            return Err(HttpError::InsecureUploadUrl);
+        }
+        // Harici depolama sunucusu: Authorization ASLA gönderilmez (istemcinin varsayılan
+        // başlıkları token içermez; token sadece `send()` içinde eklenir).
+        let put = self
+            .client
+            .put(&slot.upload_url)
+            .header(header::CONTENT_TYPE, "application/octet-stream")
+            .body(bytes)
+            .send()
+            .await?;
+        if !put.status().is_success() {
+            return Err(HttpError::Status(put.status().as_u16()));
+        }
+        Ok(UploadedAttachment {
+            id: slot.id,
+            filename: filename.to_owned(),
+            uploaded_filename: slot.upload_filename,
+        })
+    }
+
+    /// İsteği rate limit kurallarıyla gönderir; 429'da bekleyip yeniden dener, 401'i ayrı
+    /// hata yapar. `path` taban adresten sonrası (sorgu dahil).
     async fn send(
         &self,
-        build: impl Fn() -> RequestBuilder,
+        method: Method,
+        path: &str,
+        page: Page,
+        body: Option<Value>,
     ) -> Result<reqwest::Response, HttpError> {
+        let route = ratelimit::route_key(method.as_str(), path);
+        let url = format!("{}{path}", self.base);
+        let referer = page.referer();
+        // Aynı bucket'taki istekler sırayla gider; koruyucu istek bitene kadar tutulur.
+        let _slot = self.limiter.acquire(&route).await;
         for _ in 0..=MAX_RETRIES {
-            let blocked = *self.blocked_until.lock().await;
-            if let Some(until) = blocked {
-                sleep_until(until).await;
+            self.limiter.wait(&route).await;
+            let mut req = self
+                .client
+                .request(method.clone(), &url)
+                .header(header::REFERER, &referer)
+                .header(header::AUTHORIZATION, self.auth.clone());
+            if let Some(b) = &body {
+                req = req.json(b);
+            } else if matches!(method, Method::POST | Method::PUT | Method::PATCH) {
+                // reqwest gövdesiz POST/PUT'ta content-length yollamaz; resmi istemci 0 yollar.
+                req = req.header(header::CONTENT_LENGTH, "0");
             }
-            let resp = build()
-                .header(header::AUTHORIZATION, self.auth.clone())
-                .send()
-                .await?;
+            let resp = req.send().await?;
+            let limits = Limits::from_headers(resp.headers());
+            self.limiter.record(&route, &limits, Instant::now());
             match resp.status() {
                 StatusCode::TOO_MANY_REQUESTS => {
-                    let header_wait = retry_after_header(&resp);
-                    let body: Option<RateLimitBody> = resp.json().await.ok();
-                    let wait = body
+                    let parsed: Option<RateLimitBody> = resp.json().await.ok();
+                    let wait = parsed
                         .as_ref()
-                        .map(|b| Duration::from_secs_f64(b.retry_after.max(0.0)))
-                        .or(header_wait)
+                        .and_then(|b| secs_to_duration(b.retry_after))
+                        .or(limits.retry_after)
                         .unwrap_or(Duration::from_secs(1))
                         + RETRY_PAD;
-                    let until = Instant::now() + wait;
-                    tracing::warn!(
-                        ?wait,
-                        global = body.as_ref().is_some_and(|b| b.global),
-                        "http: 429"
-                    );
-                    if body.is_some_and(|b| b.global) {
-                        *self.blocked_until.lock().await = Some(until);
-                    }
-                    sleep_until(until).await;
+                    let global = limits.global || parsed.is_some_and(|b| b.global);
+                    tracing::warn!(%route, ?wait, global, "http: 429");
+                    self.limiter
+                        .record_429(&route, wait, global, Instant::now());
                 }
                 StatusCode::UNAUTHORIZED => return Err(HttpError::Unauthorized),
                 s if !s.is_success() => return Err(HttpError::Status(s.as_u16())),
@@ -187,14 +382,25 @@ fn name(n: &'static str) -> HeaderName {
     HeaderName::from_static(n)
 }
 
-fn retry_after_header(resp: &reqwest::Response) -> Option<Duration> {
-    resp.headers()
-        .get(header::RETRY_AFTER)?
-        .to_str()
-        .ok()?
-        .parse::<f64>()
-        .ok()
-        .map(|s| Duration::from_secs_f64(s.max(0.0)))
+/// Yükleme adresi yalnızca `https://` olabilir; test tabanı (`http://127.0.0.1`) için
+/// yerel `http://127.0.0.1` adresine izin verilir.
+fn upload_url_allowed(base: &str, url: &str) -> bool {
+    const LOCAL: &str = "http://127.0.0.1";
+    url.starts_with("https://") || (base.starts_with(LOCAL) && url.starts_with(LOCAL))
+}
+
+/// Yol parçası için yüzde kodlama: UTF-8 baytları, `A-Za-z0-9-._~` ve `:` (özel emoji) hariç.
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b':') {
+            out.push(char::from(b));
+        } else {
+            // String'e yazma hata vermez.
+            let _ = write!(out, "%{b:02X}");
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -203,25 +409,50 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    /// Sırayla verilen yanıtları dönen tek bağlantılık HTTP/1.1 sunucusu; gelen istekleri kaydeder.
-    async fn server(responses: Vec<String>) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    async fn bind() -> (TcpListener, String) {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let base = format!("http://{}", listener.local_addr().expect("adres"));
-        let task = tokio::spawn(async move {
+        (listener, base)
+    }
+
+    /// Sırayla verilen yanıtları dönen HTTP/1.1 sunucusu (istek başına bağlantı); gelen
+    /// istekleri (başlık + gövde) kaydeder.
+    fn serve(
+        listener: TcpListener,
+        responses: Vec<String>,
+    ) -> tokio::task::JoinHandle<Vec<String>> {
+        tokio::spawn(async move {
             let mut seen = Vec::new();
             for resp in responses {
                 let (mut sock, _) = listener.accept().await.expect("accept");
-                let mut buf = vec![0u8; 16 * 1024];
-                let mut n = 0;
-                while !buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
-                    n += sock.read(&mut buf[n..]).await.expect("oku");
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    let n = sock.read(&mut chunk).await.expect("oku");
+                    assert!(n > 0, "bağlantı erken kapandı");
+                    buf.extend_from_slice(&chunk[..n]);
+                    if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+                        let len: usize = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length: "))
+                            .and_then(|v| v.trim().parse().ok())
+                            .unwrap_or(0);
+                        if buf.len() >= end + 4 + len {
+                            break;
+                        }
+                    }
                 }
-                seen.push(String::from_utf8_lossy(&buf[..n]).into_owned());
+                seen.push(String::from_utf8_lossy(&buf).into_owned());
                 sock.write_all(resp.as_bytes()).await.expect("yaz");
             }
             seen
-        });
-        (base, task)
+        })
+    }
+
+    async fn server(responses: Vec<String>) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        let (listener, base) = bind().await;
+        (base, serve(listener, responses))
     }
 
     fn reply(status: &str, extra: &str, body: &str) -> String {
@@ -229,6 +460,10 @@ mod tests {
             "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n{extra}\r\n{body}",
             body.len()
         )
+    }
+
+    fn no_content() -> String {
+        "HTTP/1.1 204 No Content\r\nconnection: close\r\n\r\n".to_owned()
     }
 
     fn http(base: &str) -> Http {
@@ -239,11 +474,22 @@ mod tests {
             .with_base(base)
     }
 
+    /// İstek metninden JSON gövdeyi ayrıştırır.
+    fn body_json(req: &str) -> Value {
+        let (_, body) = req.split_once("\r\n\r\n").expect("gövde ayracı");
+        serde_json::from_str(body).expect("json gövde")
+    }
+
+    fn lower(req: &str) -> String {
+        req.to_ascii_lowercase()
+    }
+
     const PAGE: Page = Page {
         guild: Some(Snowflake(7)),
         channel: Snowflake(42),
     };
     const MSG: &str = r#"[{"id":"10","channel_id":"42","author":{"id":"1","username":"a","global_name":null},"content":"selam"}]"#;
+    const ONE: &str = r#"{"id":"10","channel_id":"42","author":{"id":"1","username":"a","global_name":null},"content":"selam"}"#;
 
     #[tokio::test]
     async fn sends_observed_headers_and_query() {
@@ -299,6 +545,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retries_with_bucket_headers_then_succeeds() {
+        let (base, srv) = server(vec![
+            reply(
+                "429 Too Many Requests",
+                "x-ratelimit-bucket: bk1\r\nx-ratelimit-limit: 5\r\nx-ratelimit-remaining: 0\r\nx-ratelimit-reset-after: 0.2\r\nx-ratelimit-scope: user\r\n",
+                r#"{"message":"You are being rate limited.","retry_after":0.2,"global":false}"#,
+            ),
+            reply("200 OK", "", ONE),
+        ])
+        .await;
+        let started = Instant::now();
+        let m = http(&base)
+            .edit_message(PAGE, Snowflake(10), "yeni")
+            .await
+            .expect("başarı");
+        assert_eq!(m.content, "selam");
+        assert!(started.elapsed() >= Duration::from_millis(200));
+        let reqs = srv.await.expect("sunucu");
+        assert_eq!(reqs.len(), 2);
+        assert_eq!(body_json(&reqs[1])["content"], "yeni");
+    }
+
+    #[tokio::test]
+    async fn gives_up_after_max_retries() {
+        let one = reply(
+            "429 Too Many Requests",
+            "",
+            r#"{"retry_after":0.01,"global":false}"#,
+        );
+        let (base, srv) = server(vec![one; 4]).await;
+        let err = http(&base).typing(PAGE).await.expect_err("vazgeçmeli");
+        assert!(matches!(err, HttpError::RateLimited));
+        assert_eq!(srv.await.expect("sunucu").len(), 4);
+    }
+
+    #[tokio::test]
+    async fn remaining_zero_delays_next_request() {
+        let ok =
+            |extra: &str| format!("HTTP/1.1 204 No Content\r\nconnection: close\r\n{extra}\r\n");
+        let (base, srv) = server(vec![
+            ok("x-ratelimit-bucket: t\r\nx-ratelimit-limit: 1\r\nx-ratelimit-remaining: 0\r\nx-ratelimit-reset-after: 0.3\r\n"),
+            ok(""),
+        ])
+        .await;
+        let h = http(&base);
+        let started = Instant::now();
+        h.typing(PAGE).await.expect("ilk");
+        h.typing(PAGE).await.expect("ikinci");
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        assert_eq!(srv.await.expect("sunucu").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn global_429_blocks_other_routes() {
+        let (base, srv) = server(vec![
+            reply(
+                "429 Too Many Requests",
+                "",
+                r#"{"retry_after":0.25,"global":true}"#,
+            ),
+            no_content(),
+            no_content(),
+        ])
+        .await;
+        let h = http(&base);
+        let started = Instant::now();
+        h.typing(PAGE).await.expect("typing");
+        assert!(started.elapsed() >= Duration::from_millis(250));
+        // başka rota (farklı kanal) global engel bittiği için hemen gider
+        let other = Page {
+            guild: None,
+            channel: Snowflake(43),
+        };
+        h.typing(other).await.expect("typing 2");
+        assert_eq!(srv.await.expect("sunucu").len(), 3);
+    }
+
+    #[tokio::test]
     async fn unauthorized_and_errors() {
         let (base, _srv) = server(vec![
             reply(
@@ -331,5 +655,260 @@ mod tests {
             channel: Snowflake(5),
         };
         assert_eq!(p.referer(), "https://discord.com/channels/@me/5");
+    }
+
+    #[tokio::test]
+    async fn create_message_plain() {
+        let (base, srv) = server(vec![reply("200 OK", "", ONE)]).await;
+        let msg = NewMessage {
+            content: "merhaba",
+            nonce: Snowflake(1234),
+            reply_to: None,
+            attachments: vec![],
+        };
+        let m = http(&base)
+            .create_message(PAGE, &msg)
+            .await
+            .expect("gönder");
+        assert_eq!(m.content, "selam");
+        let req = srv.await.expect("sunucu").remove(0);
+        assert!(req.starts_with("POST /channels/42/messages "), "{req}");
+        let l = lower(&req);
+        assert!(l.contains("authorization: sahte-token"));
+        assert!(l.contains("referer: https://discord.com/channels/7/42"));
+        assert!(l.contains("content-type: application/json"));
+        let b = body_json(&req);
+        assert_eq!(b["content"], "merhaba");
+        assert_eq!(b["nonce"], "1234");
+        assert_eq!(b["tts"], false);
+        assert_eq!(b["flags"], 0);
+        assert_eq!(b["mobile_network_type"], "unknown");
+        assert!(b.get("message_reference").is_none());
+        assert!(b.get("allowed_mentions").is_none());
+        assert!(b.get("attachments").is_none());
+    }
+
+    #[tokio::test]
+    async fn create_message_reply_with_attachment() {
+        let (base, srv) = server(vec![reply("200 OK", "", ONE)]).await;
+        let msg = NewMessage {
+            content: "cevap",
+            nonce: Snowflake(5),
+            reply_to: Some(Snowflake(99)),
+            attachments: vec![UploadedAttachment {
+                id: 0,
+                filename: "a.png".into(),
+                uploaded_filename: "cdn/xyz/a.png".into(),
+            }],
+        };
+        http(&base)
+            .create_message(PAGE, &msg)
+            .await
+            .expect("gönder");
+        let b = body_json(&srv.await.expect("sunucu").remove(0));
+        assert_eq!(
+            b["message_reference"],
+            json!({"guild_id":"7","channel_id":"42","message_id":"99"})
+        );
+        assert_eq!(
+            b["allowed_mentions"],
+            json!({"parse":["users","roles","everyone"],"replied_user":true})
+        );
+        assert_eq!(b["type"], 0);
+        assert_eq!(b["sticker_ids"], json!([]));
+        assert_eq!(
+            b["attachments"],
+            json!([{"id":"0","filename":"a.png","uploaded_filename":"cdn/xyz/a.png"}])
+        );
+    }
+
+    #[tokio::test]
+    async fn create_message_dm_reply_has_no_guild_id() {
+        let (base, srv) = server(vec![reply("200 OK", "", ONE)]).await;
+        let dm = Page {
+            guild: None,
+            channel: Snowflake(42),
+        };
+        let msg = NewMessage {
+            content: "x",
+            nonce: Snowflake(5),
+            reply_to: Some(Snowflake(99)),
+            attachments: vec![],
+        };
+        http(&base).create_message(dm, &msg).await.expect("gönder");
+        let b = body_json(&srv.await.expect("sunucu").remove(0));
+        assert_eq!(
+            b["message_reference"],
+            json!({"channel_id":"42","message_id":"99"})
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_and_delete_message() {
+        let (base, srv) = server(vec![reply("200 OK", "", ONE), no_content()]).await;
+        let h = http(&base);
+        h.edit_message(PAGE, Snowflake(10), "düzenli")
+            .await
+            .expect("düzenle");
+        h.delete_message(PAGE, Snowflake(10)).await.expect("sil");
+        let reqs = srv.await.expect("sunucu");
+        assert!(reqs[0].starts_with("PATCH /channels/42/messages/10 "));
+        assert_eq!(body_json(&reqs[0]), json!({"content":"düzenli"}));
+        assert!(reqs[1].starts_with("DELETE /channels/42/messages/10 "));
+        for r in &reqs {
+            assert!(lower(r).contains("authorization: sahte-token"));
+        }
+    }
+
+    #[tokio::test]
+    async fn reactions_encode_emoji() {
+        let (base, srv) = server(vec![no_content(), no_content(), no_content()]).await;
+        let h = http(&base);
+        let fire = ReactionEmoji::unicode("🔥");
+        let custom = ReactionEmoji {
+            id: Some(Snowflake(555)),
+            name: Some("pepe".into()),
+            animated: false,
+        };
+        h.add_reaction(PAGE, Snowflake(10), &fire)
+            .await
+            .expect("ekle");
+        h.remove_reaction(PAGE, Snowflake(10), &fire)
+            .await
+            .expect("kaldır");
+        h.add_reaction(PAGE, Snowflake(10), &custom)
+            .await
+            .expect("özel ekle");
+        let reqs = srv.await.expect("sunucu");
+        assert!(
+            reqs[0].starts_with(
+                "PUT /channels/42/messages/10/reactions/%F0%9F%94%A5/@me?location=Message&type=0 "
+            ),
+            "{}",
+            reqs[0]
+        );
+        assert!(
+            reqs[1].starts_with(
+                "DELETE /channels/42/messages/10/reactions/%F0%9F%94%A5/0/@me?location=Message&burst=false "
+            ),
+            "{}",
+            reqs[1]
+        );
+        assert!(
+            reqs[2].starts_with(
+                "PUT /channels/42/messages/10/reactions/pepe:555/@me?location=Message&type=0 "
+            ),
+            "{}",
+            reqs[2]
+        );
+        assert!(lower(&reqs[0]).contains("authorization: sahte-token"));
+    }
+
+    #[tokio::test]
+    async fn typing_has_empty_body() {
+        let (base, srv) = server(vec![no_content()]).await;
+        http(&base).typing(PAGE).await.expect("typing");
+        let req = srv.await.expect("sunucu").remove(0);
+        assert!(req.starts_with("POST /channels/42/typing "), "{req}");
+        let l = lower(&req);
+        assert!(l.contains("content-length: 0"), "{req}");
+        assert!(l.contains("authorization: sahte-token"));
+        assert!(req.ends_with("\r\n\r\n"));
+    }
+
+    #[tokio::test]
+    async fn upload_two_step_flow() {
+        let (listener, base) = bind().await;
+        let slots = format!(
+            r#"{{"attachments":[{{"id":0,"upload_url":"{base}/upload/abc?sig=1","upload_filename":"cdn/xyz/a.txt"}}]}}"#
+        );
+        let srv = serve(
+            listener,
+            vec![
+                reply("200 OK", "", &slots),
+                "HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_owned(),
+                reply("200 OK", "", ONE),
+            ],
+        );
+        let h = http(&base);
+        let up = h
+            .upload_attachment(PAGE, "a.txt", b"HAM-BAYTLAR".to_vec())
+            .await
+            .expect("yükle");
+        assert_eq!(
+            up,
+            UploadedAttachment {
+                id: 0,
+                filename: "a.txt".into(),
+                uploaded_filename: "cdn/xyz/a.txt".into()
+            }
+        );
+        let msg = NewMessage {
+            content: "",
+            nonce: Snowflake(8),
+            reply_to: None,
+            attachments: vec![up],
+        };
+        h.create_message(PAGE, &msg).await.expect("mesaj");
+
+        let reqs = srv.await.expect("sunucu");
+        // 1) yer ayırma
+        assert!(
+            reqs[0].starts_with("POST /channels/42/attachments "),
+            "{}",
+            reqs[0]
+        );
+        assert!(lower(&reqs[0]).contains("authorization: sahte-token"));
+        assert_eq!(
+            body_json(&reqs[0]),
+            json!({"files":[{"file_size":11,"filename":"a.txt","id":"0","is_clip":false}]})
+        );
+        // 2) ham PUT: Authorization yok, gövde ham baytlar
+        assert!(reqs[1].starts_with("PUT /upload/abc?sig=1 "), "{}", reqs[1]);
+        let l = lower(&reqs[1]);
+        assert!(!l.contains("authorization"), "{}", reqs[1]);
+        assert!(!l.contains("sahte-token"));
+        assert!(l.contains("content-type: application/octet-stream"));
+        assert!(reqs[1].ends_with("\r\n\r\nHAM-BAYTLAR"), "{}", reqs[1]);
+        // 3) mesaj ek bilgisini taşır
+        assert_eq!(
+            body_json(&reqs[2])["attachments"][0]["uploaded_filename"],
+            "cdn/xyz/a.txt"
+        );
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_insecure_url() {
+        // test tabanı olsa bile harici http adresi reddedilir
+        let slots = r#"{"attachments":[{"id":0,"upload_url":"http://example.com/u","upload_filename":"f"}]}"#;
+        let (base, _srv) = server(vec![reply("200 OK", "", slots)]).await;
+        let err = http(&base)
+            .upload_attachment(PAGE, "a", vec![1])
+            .await
+            .expect_err("reddedilmeli");
+        assert!(matches!(err, HttpError::InsecureUploadUrl));
+    }
+
+    #[test]
+    fn upload_url_policy() {
+        assert!(upload_url_allowed(API_BASE, "https://cdn.example/x"));
+        assert!(!upload_url_allowed(API_BASE, "http://cdn.example/x"));
+        assert!(!upload_url_allowed(API_BASE, "http://127.0.0.1:1/x"));
+        assert!(upload_url_allowed(
+            "http://127.0.0.1:9",
+            "http://127.0.0.1:1/x"
+        ));
+        assert!(!upload_url_allowed(
+            "http://127.0.0.1:9",
+            "http://evil.test/x"
+        ));
+    }
+
+    #[test]
+    fn percent_encoding() {
+        assert_eq!(percent_encode("🔥"), "%F0%9F%94%A5");
+        assert_eq!(percent_encode("pepe:555"), "pepe:555");
+        assert_eq!(percent_encode("a b/c"), "a%20b%2Fc");
+        assert_eq!(percent_encode("A-z_0.~"), "A-z_0.~");
     }
 }
