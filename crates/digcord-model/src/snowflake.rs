@@ -15,6 +15,11 @@ impl Snowflake {
     pub fn timestamp_ms(self) -> u64 {
         (self.0 >> 22) + DISCORD_EPOCH_MS
     }
+
+    /// Verilen Unix milisaniyesinden snowflake (alt bitler 0). Mesaj `nonce`'u için.
+    pub fn from_timestamp_ms(ms: u64) -> Self {
+        Self(ms.saturating_sub(DISCORD_EPOCH_MS) << 22)
+    }
 }
 
 impl fmt::Display for Snowflake {
@@ -62,6 +67,13 @@ mod tests {
             r#""175928847299117063""#
         );
         assert!(serde_json::from_str::<Snowflake>(r#""abc""#).is_err());
+    }
+
+    #[test]
+    fn from_timestamp_roundtrip() {
+        let s = Snowflake::from_timestamp_ms(1_767_268_800_123);
+        assert_eq!(s.timestamp_ms(), 1_767_268_800_123);
+        assert_eq!(Snowflake::from_timestamp_ms(0), Snowflake(0));
     }
 
     #[test]

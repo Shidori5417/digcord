@@ -57,9 +57,26 @@ pub struct Guild {
     pub channels: Vec<Channel>,
     #[serde(default)]
     pub roles: Vec<Role>,
+    #[serde(default)]
+    pub emojis: Vec<CustomEmoji>,
     /// Büyük guild: op 37 aboneliği genişletilmiş biçimde gönderilir (PROTOCOL_NOTES §4.1).
     #[serde(default)]
     pub large: bool,
+}
+
+/// Sunucunun özel emojisi.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CustomEmoji {
+    pub id: Snowflake,
+    pub name: String,
+    #[serde(default)]
+    pub animated: bool,
+    #[serde(default = "yes")]
+    pub available: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// `GUILD_MEMBERS_CHUNK` (op 8 yanıtı).

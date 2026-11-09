@@ -28,12 +28,98 @@ pub struct Message {
     pub attachments: Vec<Attachment>,
     /// Yanıt verilen mesaj (varsa; silinmişse `null`).
     pub referenced_message: Option<Box<Message>>,
+    /// İstemcinin gönderirken verdiği değer; iyimser mesajı gerçeğiyle eşleştirmek için.
+    /// Discord string veya sayı olarak döndürebilir.
+    #[serde(default, deserialize_with = "nonce_de")]
+    pub nonce: Option<String>,
+    #[serde(default)]
+    pub reactions: Vec<Reaction>,
     #[serde(default)]
     pub sticker_items: Vec<StickerItem>,
     #[serde(default)]
     pub embeds: Vec<Embed>,
     /// Arama mesajı (tür 3).
     pub call: Option<Call>,
+}
+
+fn nonce_de<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum N {
+        S(String),
+        I(u64),
+    }
+    Ok(Option::<N>::deserialize(d)?.map(|n| match n {
+        N::S(s) => s,
+        N::I(i) => i.to_string(),
+    }))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Reaction {
+    pub count: u32,
+    #[serde(default)]
+    pub me: bool,
+    pub emoji: ReactionEmoji,
+}
+
+/// Unicode emoji (`id == None`, `name` = emoji) veya özel emoji (`id` + `name`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+pub struct ReactionEmoji {
+    pub id: Option<Snowflake>,
+    pub name: Option<String>,
+    #[serde(default)]
+    pub animated: bool,
+}
+
+impl ReactionEmoji {
+    pub fn unicode(e: &str) -> Self {
+        Self {
+            id: None,
+            name: Some(e.to_owned()),
+            animated: false,
+        }
+    }
+
+    /// REST yolundaki biçim (kodlanmamış): unicode için emojinin kendisi, özel için `ad:id`.
+    pub fn api_form(&self) -> String {
+        let name = self.name.as_deref().unwrap_or("_");
+        match self.id {
+            Some(id) => format!("{name}:{id}"),
+            None => name.to_owned(),
+        }
+    }
+
+    /// Ekranda gösterim: unicode emoji veya `:ad:`.
+    pub fn display(&self) -> String {
+        let name = self.name.as_deref().unwrap_or("?");
+        if self.id.is_some() {
+            format!(":{name}:")
+        } else {
+            name.to_owned()
+        }
+    }
+}
+
+/// `MESSAGE_REACTION_ADD` / `MESSAGE_REACTION_REMOVE`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReactionEvent {
+    pub user_id: Snowflake,
+    pub channel_id: Snowflake,
+    pub message_id: Snowflake,
+    pub guild_id: Option<Snowflake>,
+    pub emoji: ReactionEmoji,
+}
+
+/// `TYPING_START`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TypingStart {
+    pub channel_id: Snowflake,
+    pub guild_id: Option<Snowflake>,
+    pub user_id: Snowflake,
+    /// Unix saniyesi.
+    pub timestamp: u64,
+    pub member: Option<crate::Member>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -168,6 +254,36 @@ mod tests {
         assert!(m.call.is_some_and(|c| c.ended_timestamp.is_some()));
         assert_eq!(m.sticker_items[0].name, "kedi");
         assert_eq!(m.embeds[0].title.as_deref(), Some("Başlık"));
+    }
+
+    #[test]
+    fn parses_nonce_reactions_and_events() {
+        let json = r#"{
+            "id":"10","channel_id":"2","author":{"id":"4","username":"a","global_name":null},
+            "content":"x","nonce":1234,
+            "reactions":[{"count":2,"me":true,"emoji":{"id":null,"name":"👍"},"burst_count":0},
+                         {"count":1,"me":false,"emoji":{"id":"77","name":"kedi","animated":true}}]
+        }"#;
+        let m: Message = serde_json::from_str(json).expect("mesaj");
+        assert_eq!(m.nonce.as_deref(), Some("1234"));
+        assert_eq!(m.reactions[0].emoji.api_form(), "👍");
+        assert_eq!(m.reactions[1].emoji.api_form(), "kedi:77");
+        assert_eq!(m.reactions[1].emoji.display(), ":kedi:");
+        let m: Message = serde_json::from_str(
+            r#"{"id":"10","channel_id":"2","author":{"id":"4","username":"a","global_name":null},"nonce":"abc"}"#,
+        )
+        .expect("mesaj");
+        assert_eq!(m.nonce.as_deref(), Some("abc"));
+
+        let r: ReactionEvent = serde_json::from_str(
+            r#"{"user_id":"1","channel_id":"2","message_id":"3","guild_id":"4","emoji":{"id":null,"name":"🔥"},"burst":false,"type":0}"#,
+        )
+        .expect("tepki");
+        assert_eq!(r.emoji, ReactionEmoji::unicode("🔥"));
+        let t: TypingStart =
+            serde_json::from_str(r#"{"channel_id":"2","user_id":"1","timestamp":1767268800}"#)
+                .expect("yazıyor");
+        assert_eq!(t.timestamp, 1_767_268_800);
     }
 
     #[test]
