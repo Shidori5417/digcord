@@ -1,7 +1,7 @@
 {
  "v": 9,
  "user": {
-  "id": "100000000054525952",
+  "id": "100000000020971520",
   "username": "kullanici",
   "global_name": "Kullanıcı",
   "discriminator": "0",
@@ -26,6 +26,7 @@
      "id": "100000000004194304",
      "type": 4,
      "flags": 0,
+     "permission_overwrites": [],
      "position": 2,
      "name": "kategori-1"
     },
@@ -33,6 +34,14 @@
      "id": "100000000008388608",
      "type": 0,
      "flags": 0,
+     "permission_overwrites": [
+      {
+       "id": "100000000000000000",
+       "type": 0,
+       "allow": "0",
+       "deny": "1024"
+      }
+     ],
      "parent_id": "100000000004194304",
      "position": 44,
      "name": "kanal-2"
@@ -41,71 +50,158 @@
      "id": "100000000012582912",
      "type": 0,
      "flags": 0,
+     "permission_overwrites": [
+      {
+       "id": "100000000000000000",
+       "type": 0,
+       "allow": "0",
+       "deny": "1024"
+      }
+     ],
      "parent_id": "100000000004194304",
      "position": 47,
      "name": "kanal-3"
     }
    ],
-   "roles": []
+   "roles": [
+    {
+     "id": "100000000016777216",
+     "name": "rol-25",
+     "permissions": "0",
+     "position": 17,
+     "color": 0
+    },
+    {
+     "id": "100000000000000000",
+     "name": "@everyone",
+     "permissions": "1096185212685889",
+     "position": 0,
+     "color": 0
+    }
+   ]
   },
   {
-   "id": "100000000016777216",
+   "id": "100000000025165824",
    "lazy": true,
    "member_count": 20,
    "properties": {
-    "id": "100000000016777216",
+    "id": "100000000025165824",
     "name": "sunucu-2",
     "icon": null
    },
    "channels": [
     {
-     "id": "100000000020971520",
+     "id": "100000000029360128",
      "type": 4,
      "flags": 0,
+     "permission_overwrites": [
+      {
+       "id": "100000000025165824",
+       "type": 0,
+       "allow": "0",
+       "deny": "1024"
+      }
+     ],
      "position": 4,
      "name": "kategori-1"
     },
     {
-     "id": "100000000025165824",
+     "id": "100000000033554432",
      "type": 0,
      "flags": 0,
-     "parent_id": "100000000020971520",
+     "permission_overwrites": [
+      {
+       "id": "100000000025165824",
+       "type": 0,
+       "allow": "0",
+       "deny": "1024"
+      }
+     ],
+     "parent_id": "100000000029360128",
      "position": 22,
      "name": "kanal-2"
     },
     {
-     "id": "100000000029360128",
+     "id": "100000000037748736",
      "type": 0,
      "flags": 0,
-     "parent_id": "100000000020971520",
+     "permission_overwrites": [
+      {
+       "id": "100000000025165824",
+       "type": 0,
+       "allow": "0",
+       "deny": "1024"
+      }
+     ],
+     "parent_id": "100000000029360128",
      "position": 23,
      "name": "kanal-3"
     }
    ],
-   "roles": []
+   "roles": [
+    {
+     "id": "100000000025165824",
+     "name": "@everyone",
+     "permissions": "1096183065202241",
+     "position": 0,
+     "color": 0
+    },
+    {
+     "id": "100000000041943040",
+     "name": "rol-39",
+     "permissions": "0",
+     "position": 15,
+     "color": 0
+    }
+   ]
   },
   {
-   "id": "100000000033554432",
+   "id": "100000000046137344",
    "unavailable": true
   }
  ],
  "private_channels": [
   {
-   "id": "100000000037748736",
+   "id": "100000000050331648",
    "type": 1,
    "recipient_ids": [
-    "100000000041943040"
+    "100000000054525952"
    ],
    "last_message_id": null
   },
   {
-   "id": "100000000046137344",
+   "id": "100000000058720256",
    "type": 1,
    "recipient_ids": [
-    "100000000050331648"
+    "100000000062914560"
    ],
    "last_message_id": null
   }
+ ],
+ "merged_members": [
+  [
+   {
+    "user_id": "100000000020971520",
+    "nick": null,
+    "roles": [
+     "100000000016777216"
+    ],
+    "joined_at": "2020-01-01T00:00:00+00:00",
+    "deaf": false
+   }
+  ],
+  [
+   {
+    "user_id": "100000000020971520",
+    "nick": null,
+    "roles": [
+     "100000000041943040"
+    ],
+    "joined_at": "2020-01-01T00:00:00+00:00",
+    "deaf": false
+   }
+  ],
+  []
  ],
  "read_state": {
   "entries": [],

@@ -32,3 +32,29 @@ fn parses_anonymized_ready() {
     assert_eq!(ready.private_channels.len(), 2);
     assert_eq!(ready.channel_count(), 4);
 }
+
+#[test]
+fn permissions_from_anonymized_ready() {
+    use digcord_model::{MemberContext, Permissions};
+    let ready: Ready = serde_json::from_str(FIXTURE).expect("READY");
+    let g = &ready.guilds[0];
+    let me = &ready.merged_members[0][0];
+    assert_eq!(me.user_id, Some(ready.user.id));
+    let ctx = MemberContext {
+        guild_id: g.id,
+        owner_id: g.properties.as_ref().and_then(|p| p.owner_id),
+        user_id: ready.user.id,
+        member_roles: &me.roles,
+        roles: &g.roles,
+    };
+    let visible: Vec<bool> = g
+        .channels
+        .iter()
+        .map(|c| {
+            ctx.channel(&c.permission_overwrites)
+                .contains(Permissions::VIEW_CHANNEL)
+        })
+        .collect();
+    // Gerçek veride @everyone bu iki kanalı gizliyor ve kullanıcının rolü açmıyor.
+    assert_eq!(visible, [true, false, false]);
+}
