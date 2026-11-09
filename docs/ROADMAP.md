@@ -83,14 +83,14 @@ reddedilmiyor, 30 dk kesintisiz çalışıyor, ses thread'i CPU'nun < %3'ünü k
 - [x] Çevrimdışı: ses yolu kare başına ~175 µs (1 gönderen + 3 dinlenen, tek çekirdeğin %0,9'u).
 - [ ] Canlı test: sunucu ses kanalı, DM araması, 4017 yok, 30 dk; protokol karşılaştırması (PROTOCOL_NOTES §7.1).
 
-## Aşama 7 — Cila
+## Aşama 7 — Cila ⏳ (kod tamam, canlı kabul testi bekliyor)
 - [x] Temalar, tam kısayol özelleştirme, ayarlar ekranı (`:settings`, `:theme`, `[keys]`; ayrıntı `TUI_DESIGN.md`).
 - [x] Thread'ler ve forum kanalları: okuma + yazma (oluşturma kapsam dışı); ayrıntı `TUI_DESIGN.md`, protokol `PROTOCOL_NOTES.md` §4.4 (⚠️ doğrulanmadı).
 - [x] Arama (`:search`, `/search` uç noktaları) ve sabitlenen mesajlar (`:pins`), mesaja atlama (`around`); ayrıntı `TUI_DESIGN.md`, protokol `PROTOCOL_NOTES.md` §4.5 (⚠️ arama uç noktaları doğrulanmadı).
 - Performans profili: açılış süresi, bellek (hedef: büyük hesapta < 150 MB).
   - [x] Sentetik büyük hesapla ölçüldü (veri işleme < 10 ms, ~50 MiB; bkz. `docs/PERFORMANCE.md`).
   - [ ] Gerçek hesapla canlı ölçüm (bekliyor).
-- Paketleme: AUR paketi (`digcord-git`).
+- [x] Paketleme: AUR paketi (`digcord-git`) — `packaging/aur/digcord-git/PKGBUILD`; yerel `makepkg -si` ile. AUR'a yükleme bilinçli olarak yapılmadı (tescilli lisans, özel depo).
 
 ## Sonraki opsiyonel aşamalar (ana yapının dışında)
 Bunlar proje bittikten sonra istenirse eklenecek; ana mimari bunları engellemeyecek şekilde
