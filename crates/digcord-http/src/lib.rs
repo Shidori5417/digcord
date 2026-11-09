@@ -271,6 +271,15 @@ impl Http {
         Ok(())
     }
 
+    /// `POST /channels/{c}/messages/{m}/ack` gövde `{"token":null}` — okundu işareti.
+    pub async fn ack(&self, page: Page, message: Snowflake) -> Result<(), HttpError> {
+        // doğrulanmadı (PROTOCOL_NOTES): resmi istemci `last_viewed` de gönderiyor olabilir.
+        let path = format!("/channels/{}/messages/{message}/ack", page.channel);
+        self.send(Method::POST, &path, page, Some(json!({ "token": null })))
+            .await?;
+        Ok(())
+    }
+
     /// `POST /channels/{c}/typing` (204, gövdesiz).
     pub async fn typing(&self, page: Page) -> Result<(), HttpError> {
         let path = format!("/channels/{}/typing", page.channel);
@@ -814,6 +823,18 @@ mod tests {
         assert!(l.contains("content-length: 0"), "{req}");
         assert!(l.contains("authorization: sahte-token"));
         assert!(req.ends_with("\r\n\r\n"));
+    }
+
+    #[tokio::test]
+    async fn ack_posts_null_token() {
+        let (base, srv) = server(vec![reply("200 OK", "", r#"{"token":null}"#)]).await;
+        http(&base).ack(PAGE, Snowflake(77)).await.expect("ack");
+        let req = srv.await.expect("sunucu").remove(0);
+        assert!(
+            req.starts_with("POST /channels/42/messages/77/ack "),
+            "{req}"
+        );
+        assert!(req.ends_with(r#"{"token":null}"#), "{req}");
     }
 
     #[tokio::test]

@@ -531,6 +531,7 @@ impl Controller {
             E::ReactionAdd(r) => self.write(|st| st.reaction_add(&r)),
             E::ReactionRemove(r) => self.write(|st| st.reaction_remove(&r)),
             E::TypingStart(t) => self.write(|st| st.typing_start(&t)),
+            E::MessageAck(a) => self.write(|st| st.apply_ack(&a)),
         }
     }
 

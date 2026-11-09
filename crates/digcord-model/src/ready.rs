@@ -20,6 +20,86 @@ pub struct Ready {
     /// `guilds` ile aynı sırada; her biri bu kullanıcının o guild'deki üyeliği(leri).
     #[serde(default)]
     pub merged_members: Vec<Vec<Member>>,
+    #[serde(default)]
+    pub read_state: Entries<ReadStateEntry>,
+    #[serde(default)]
+    pub user_guild_settings: Entries<GuildSettings>,
+    #[serde(default)]
+    pub relationships: Vec<Relationship>,
+}
+
+/// `{"version":..,"partial":..,"entries":[..]}` sarmalayıcısı.
+#[derive(Debug, Deserialize)]
+#[serde(bound = "T: Deserialize<'de>")]
+pub struct Entries<T> {
+    #[serde(default)]
+    pub entries: Vec<T>,
+}
+
+impl<T> Default for Entries<T> {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+}
+
+/// Kanal okunma durumu. `read_state_type` dolu olanlar kanal değil (bildirim merkezi vb.).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReadStateEntry {
+    pub id: Snowflake,
+    pub last_message_id: Option<Snowflake>,
+    #[serde(default)]
+    pub mention_count: u32,
+    pub read_state_type: Option<u8>,
+}
+
+/// Sunucu (veya `guild_id == None` → DM) bildirim ayarları.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct GuildSettings {
+    pub guild_id: Option<Snowflake>,
+    #[serde(default)]
+    pub muted: bool,
+    pub mute_config: Option<MuteConfig>,
+    /// 0 tüm mesajlar, 1 sadece bahsetmeler, 2 hiçbiri, 3 üst ayara uy.
+    #[serde(default)]
+    pub message_notifications: u8,
+    #[serde(default)]
+    pub suppress_everyone: bool,
+    #[serde(default)]
+    pub suppress_roles: bool,
+    #[serde(default)]
+    pub channel_overrides: Vec<ChannelOverride>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChannelOverride {
+    pub channel_id: Snowflake,
+    #[serde(default)]
+    pub muted: bool,
+    pub mute_config: Option<MuteConfig>,
+    #[serde(default = "inherit")]
+    pub message_notifications: u8,
+}
+
+fn inherit() -> u8 {
+    3
+}
+
+/// Süreli sessize alma; `end_time` ISO 8601 (null = süresiz).
+#[derive(Debug, Clone, Deserialize)]
+pub struct MuteConfig {
+    pub end_time: Option<String>,
+}
+
+/// 1 arkadaş, 2 engelli, 3 gelen istek, 4 giden istek.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Relationship {
+    /// Karşı kullanıcının id'si.
+    pub id: Snowflake,
+    #[serde(rename = "type")]
+    pub kind: u8,
+    pub nickname: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

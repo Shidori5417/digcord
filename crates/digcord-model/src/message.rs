@@ -111,6 +111,15 @@ pub struct ReactionEvent {
     pub emoji: ReactionEmoji,
 }
 
+/// `MESSAGE_ACK` (başka oturumda okundu işareti). Alanlar doğrulanmadı.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MessageAck {
+    pub channel_id: Snowflake,
+    pub message_id: Snowflake,
+    #[serde(default)]
+    pub mention_count: u32,
+}
+
 /// `TYPING_START`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TypingStart {

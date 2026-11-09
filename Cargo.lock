@@ -794,6 +794,7 @@ name = "digcord-store"
 version = "0.1.0"
 dependencies = [
  "digcord-model",
+ "jiff",
  "serde_json",
 ]
 

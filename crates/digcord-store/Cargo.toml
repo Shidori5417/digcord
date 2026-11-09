@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 digcord-model.workspace = true
+jiff = "0.2.41"
 
 [dev-dependencies]
 serde_json = "1.0.154"

@@ -5,8 +5,8 @@
 use std::time::Duration;
 
 use digcord_model::{
-    Channel, ClientProperties, Guild, GuildMembersChunk, Message, MessageDelete, ReactionEvent,
-    Ready, Snowflake, Token, TypingStart,
+    Channel, ClientProperties, Guild, GuildMembersChunk, Message, MessageAck, MessageDelete,
+    ReactionEvent, Ready, Snowflake, Token, TypingStart,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -88,6 +88,8 @@ pub enum GatewayEvent {
     ReactionAdd(ReactionEvent),
     ReactionRemove(ReactionEvent),
     TypingStart(TypingStart),
+    /// Başka oturumda okundu işareti (alanlar doğrulanmadı).
+    MessageAck(MessageAck),
 }
 
 #[derive(Deserialize)]
@@ -161,6 +163,7 @@ fn parse_event(t: &str, d: &str) -> Dispatch {
         "MESSAGE_REACTION_ADD" => de(t, d).map(E::ReactionAdd),
         "MESSAGE_REACTION_REMOVE" => de(t, d).map(E::ReactionRemove),
         "TYPING_START" => de(t, d).map(E::TypingStart),
+        "MESSAGE_ACK" => de(t, d).map(E::MessageAck),
         _ => None,
     };
     event.map_or(Dispatch::Other, Dispatch::Event)

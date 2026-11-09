@@ -79,6 +79,11 @@ pub struct State {
     failed: HashSet<Snowflake>,
     /// Kanal başına yazanlar: (kullanıcı, bitiş zamanı Unix saniyesi).
     typing: HashMap<Snowflake, Vec<(Snowflake, u64)>>,
+    /// Kanal okunma durumu: son okunan mesaj ve bekleyen bahsetme sayısı.
+    read: HashMap<Snowflake, unread::ReadMark>,
+    /// Bildirim ayarları; anahtar `None` = DM'ler.
+    notify_settings: HashMap<Option<Snowflake>, digcord_model::GuildSettings>,
+    relationships: Vec<digcord_model::Relationship>,
 }
 
 fn is_voice(kind: u8) -> bool {
@@ -130,6 +135,7 @@ impl State {
         }
         self.rebuild_dms();
         self.rebuild_guild_infos();
+        self.load_read_state(ready);
     }
 
     /// GUILD_CREATE: kanalları, rolleri ve adı değiştirir; benim rollerim korunur.
@@ -254,6 +260,7 @@ impl State {
         self.version += 1;
         self.resolve_pending(&msg);
         self.stop_typing(msg.channel_id, msg.author.id);
+        self.count_unread(&msg);
         self.record_author(&msg);
         let mut dm = false;
         if let Some(ch) = self.channels.get_mut(&msg.channel_id) {
@@ -572,6 +579,9 @@ fn insert_sorted(deque: &mut VecDeque<Message>, msg: Message) {
 }
 
 mod compose;
+mod unread;
+
+pub use unread::NotifyFilter;
 
 #[cfg(test)]
 mod tests;
