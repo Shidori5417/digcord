@@ -99,6 +99,10 @@ Kaynak: CDP ile `discord.com/app` yüklenirken WebSocket kaydı. Ham kayıt `/ca
 - READY sonrası op 4 / op 3 / op 41 **gönderilmiyor**; sadece op 40 gönderiliyor.
 - RESUME (op 6) biçimi resmi istemciden **gözlenmedi**; standart `{token, session_id, seq}`.
 - `client_build_number` sabit (667580); zamanla eskir, config desteği sonraki aşamada.
+- (Aşama 2) REST'te `X-Installation-ID` **gönderilmiyor**; `X-Super-Properties`'te `launch_signature` yok.
+- (Aşama 2) Kanal açılınca op 37 ve op 8 gönderiliyor, **op 43 gönderilmiyor**.
+- (Aşama 2) Resmi istemcinin kanal açılışında yaptığı diğer REST istekleri (`GET /channels/{id}`,
+  `/science`, `/users/@me/...` vb.) yapılmıyor; sadece mesaj geçmişi.
 
 **READY — ✅ gözlendi** (`v: 9`, ~357 KB açılmış, ~53 KB sıkıştırılmış)
 - Üst anahtarlar: `user`, `users`, `guilds`, `private_channels`, `relationships`, `read_state`

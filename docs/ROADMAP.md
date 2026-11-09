@@ -25,14 +25,17 @@ ağ kesilip gelince otomatik resume oluyor.
 - [ ] Canlı test (yan hesap) — kullanıcı isteğiyle ertelendi (2026-11-09). Öncesinde
   PROTOCOL_NOTES §3.1'deki "bilinen farklar" için karar verilecek.
 
-## Aşama 2 — Okuma
-- Store (actor), sunucu şeridi, kanal ağacı (kategoriler, izinlere göre görünür kanallar).
-- Mesaj geçmişi çekme, yukarı kaydırınca sayfalama, canlı `MESSAGE_CREATE/UPDATE/DELETE`.
-- Markdown alt kümesi, mention çözümleme, gruplanmış mesajlar.
-- Sanal kaydırma; 10 000 mesajlık kanalda akıcı kaydırma.
+## Aşama 2 — Okuma ⏳ (kod tamam, canlı kabul testi bekliyor)
+- [x] Store, sunucu şeridi, kanal ağacı (kategoriler, izinlere göre görünür kanallar).
+- [x] Mesaj geçmişi çekme, yukarı kaydırınca sayfalama, canlı `MESSAGE_CREATE/UPDATE/DELETE`.
+- [x] Markdown alt kümesi, mention çözümleme, gruplanmış mesajlar.
+- [x] Sanal kaydırma; 10 000 mesajlık kanalda akıcı kaydırma.
 
 **Kabul:** Herhangi bir kanal açılıp geçmiş okunabiliyor, yeni mesajlar anında düşüyor,
 ölçülen kare süresi < 4 ms (release, 200×60 terminal).
+- [x] Kare süresi: ~0,54 ms (release, 200×60, 10 000 mesaj, `TestBackend`; terminal G/Ç hariç) —
+  `cargo test -p digcord-tui --release -- --ignored --nocapture frame_time`.
+- [ ] Canlı test (yan hesap): kanal açma, geçmiş, canlı mesajlar — Aşama 1 canlı testiyle birlikte.
 
 ## Aşama 3 — Yazma
 - Mesaj gönderme (nonce + iyimser güncelleme), yanıt, düzenleme, silme, tepki.
