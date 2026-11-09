@@ -28,3 +28,5 @@ rustls = { version = "0.23.46", default-features = false, features = ["ring", "s
 tokio = { version = "1.54.1", features = ["rt", "macros", "time", "sync", "net"] }
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
 tracing = "0.1.44"
+opus = "0.4.0"
+cpal = "0.18.2"
