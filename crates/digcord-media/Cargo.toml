@@ -1,0 +1,10 @@
+[package]
+name = "digcord-media"
+description = "CDN indirme, resim çözme/ölçekleme, disk önbelleği."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish.workspace = true
+
+[dependencies]
