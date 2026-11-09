@@ -10,6 +10,9 @@ fn main() -> anyhow::Result<()> {
     install_panic_logging();
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "digcord başlıyor");
 
+    // TLS: süreç genelinde tek kripto sağlayıcı (ring); gateway ve HTTP aynısını kullanır.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     // Ağ ve anahtarlık tokio'da; TUI ana thread'de.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -18,13 +21,15 @@ fn main() -> anyhow::Result<()> {
         .build()?;
     let (ui_tx, ui_rx) = std::sync::mpsc::channel();
     let (action_tx, action_rx) = tokio::sync::mpsc::unbounded_channel();
+    let shared = std::sync::Arc::new(digcord_tui::Shared::default());
     let controller = runtime.spawn(controller::run(
         action_rx,
         ui_tx.clone(),
-        controller::system_locale(),
+        shared.clone(),
+        controller::Env::detect(),
     ));
 
-    let result = digcord_tui::run(ui_tx, ui_rx, |action| {
+    let result = digcord_tui::run(ui_tx, ui_rx, shared, |action| {
         let _ = action_tx.send(action);
     });
 
