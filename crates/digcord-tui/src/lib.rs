@@ -5,6 +5,7 @@
 
 mod compose;
 mod editor;
+mod fuzzy;
 mod markdown;
 mod render;
 mod view;
@@ -130,6 +131,8 @@ pub enum Action {
     },
     /// Panoya kopyala.
     Copy(String),
+    /// Terminal penceresi odak kazandı/kaybetti (bildirim ve okundu kararları için).
+    Focus(bool),
     Quit,
 }
 
@@ -147,7 +150,14 @@ pub fn run(
     std::thread::Builder::new()
         .name("digcord-input".into())
         .spawn(move || input_loop(&tx))?;
-    ratatui::run(|terminal| App::new(shared).run(terminal, &events, &mut actions))
+    ratatui::run(|terminal| {
+        use ratatui::crossterm::event::{DisableFocusChange, EnableFocusChange};
+        // Odak olayları desteklenmiyorsa sorun değil: bildirim kararı "odakta" varsayar.
+        let _ = ratatui::crossterm::execute!(io::stdout(), EnableFocusChange);
+        let result = App::new(shared).run(terminal, &events, &mut actions);
+        let _ = ratatui::crossterm::execute!(io::stdout(), DisableFocusChange);
+        result
+    })
 }
 
 /// Terminal girdisini okur. Tek bir okuma hatası (ör. yeniden boyutlandırma sırasında boyut
@@ -215,7 +225,13 @@ struct Entry {
     label: String,
     depth: u8,
     kind: EntryKind,
+    unread: bool,
+    mentions: u32,
+    muted: bool,
 }
+
+/// DM panelindeki "ARKADAŞLAR" başlığının sahte id'si (gerçek snowflake'ler hep > 0).
+const FRIENDS_HEADER: Snowflake = Snowflake(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EntryKind {
@@ -356,6 +372,8 @@ impl App {
                 }
                 None
             }
+            UiEvent::Input(Event::FocusGained) => Some(Action::Focus(true)),
+            UiEvent::Input(Event::FocusLost) => Some(Action::Focus(false)),
             UiEvent::Input(_) => None,
             UiEvent::Status(status) => {
                 self.status = status;
@@ -412,11 +430,24 @@ impl App {
             compose::Mode::Insert => return self.insert_key(key),
             compose::Mode::Select => return self.select_key(key),
             compose::Mode::Command | compose::Mode::React => return self.command_key(key),
+            compose::Mode::Switcher => return self.switcher_key(key),
             compose::Mode::ConfirmDelete(id) => return self.confirm_key(key, id),
             compose::Mode::Normal => {}
         }
         if let Some(result) = self.normal_mode_key(key) {
             return result;
+        }
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Char('k') if ctrl => {
+                self.command.clear();
+                self.comp_sel = 0;
+                self.mode = compose::Mode::Switcher;
+                return None;
+            }
+            KeyCode::Down if alt => return self.jump_unread(true),
+            KeyCode::Up if alt => return self.jump_unread(false),
+            _ => {}
         }
         let half_page = usize::from(self.msg_area.get().1 / 2).max(1);
         match (key.code, ctrl) {
@@ -503,21 +534,7 @@ impl App {
                     }
                     EntryKind::Readable => {
                         let guild = self.selected_guild(&self.shared.read());
-                        let previous = self.open.map(|o| o.channel).filter(|c| *c != entry.id);
-                        self.open = Some(Open {
-                            guild,
-                            channel: entry.id,
-                        });
-                        self.scroll = Scroll::default();
-                        self.focus = Focus::Messages;
-                        self.editor.clear();
-                        self.target = compose::Target::New;
-                        self.selected = None;
-                        Some(Action::OpenChannel {
-                            guild,
-                            channel: entry.id,
-                            previous,
-                        })
+                        Some(self.open_channel(guild, entry.id))
                     }
                     EntryKind::Other => None,
                 }
@@ -526,11 +543,67 @@ impl App {
         }
     }
 
+    /// Kanalı açar: şerit ve liste seçimini ona taşır, mesaj görünümünü sıfırlar.
+    fn open_channel(&mut self, guild: Option<Snowflake>, channel: Snowflake) -> Action {
+        let previous = self.open.map(|o| o.channel).filter(|c| *c != channel);
+        self.guild_sel = {
+            let st = self.shared.read();
+            guild
+                .and_then(|g| st.guilds().iter().position(|x| x.id == g))
+                .map_or(0, |i| i + 1)
+        };
+        if let Some(cat) = self
+            .shared
+            .read()
+            .channel(channel)
+            .and_then(|c| c.parent_id)
+        {
+            self.collapsed.remove(&cat);
+        }
+        self.chan_sel = self
+            .entries()
+            .iter()
+            .position(|e| e.id == channel)
+            .unwrap_or(0);
+        self.open = Some(Open { guild, channel });
+        self.scroll = Scroll::default();
+        self.focus = Focus::Messages;
+        self.editor.clear();
+        self.target = compose::Target::New;
+        self.selected = None;
+        self.mode = compose::Mode::Normal;
+        Action::OpenChannel {
+            guild,
+            channel,
+            previous,
+        }
+    }
+
+    /// `Alt+↓`/`Alt+↑`: açık kanala göre sonraki/önceki okunmamış kanal.
+    fn jump_unread(&mut self, forward: bool) -> Option<Action> {
+        let list = self.shared.read().unread_channels(unix_now_i64());
+        if list.is_empty() {
+            self.notice = Some("Okunmamış kanal yok".into());
+            return None;
+        }
+        let current = self.open.map(|o| o.channel);
+        let pos = current.and_then(|c| list.iter().position(|(_, ch)| *ch == c));
+        let next = match (pos, forward) {
+            (Some(i), true) => (i + 1) % list.len(),
+            (Some(i), false) => (i + list.len() - 1) % list.len(),
+            (None, true) => 0,
+            (None, false) => list.len() - 1,
+        };
+        let (guild, channel) = list[next];
+        Some(self.open_channel(guild, channel))
+    }
+
     /// Seçili sunucunun (veya DM'lerin) kanal paneli satırları.
     fn entries(&self) -> Vec<Entry> {
         let st = self.shared.read();
+        let now = unix_now_i64();
         let Some(gid) = self.selected_guild(&st) else {
-            return st
+            let mut out: Vec<Entry> = st
                 .dm_channels()
                 .iter()
                 .map(|id| Entry {
@@ -538,8 +611,52 @@ impl App {
                     label: format!("@ {}", st.channel_title(*id)),
                     depth: 0,
                     kind: EntryKind::Readable,
+                    unread: st.is_unread(*id),
+                    mentions: st.mention_count(*id),
+                    muted: st.is_muted(*id, now),
                 })
                 .collect();
+            let friends = st.friends();
+            if !friends.is_empty() {
+                let collapsed = self.collapsed.contains(&FRIENDS_HEADER);
+                out.push(Entry {
+                    id: FRIENDS_HEADER,
+                    label: format!(
+                        "{} ARKADAŞLAR ({})",
+                        if collapsed { "▸" } else { "▾" },
+                        friends.len()
+                    ),
+                    depth: 0,
+                    kind: EntryKind::Category { collapsed },
+                    unread: false,
+                    mentions: 0,
+                    muted: false,
+                });
+                if !collapsed {
+                    for (uid, name) in friends {
+                        // Arkadaşla DM varsa Enter onu açar.
+                        let dm = st.dm_channels().iter().copied().find(|c| {
+                            st.channel(*c).is_some_and(|ch| {
+                                ch.kind == channel_kind::DM && ch.recipient_ids == [uid]
+                            })
+                        });
+                        out.push(Entry {
+                            id: dm.unwrap_or(uid),
+                            label: format!("  {name}"),
+                            depth: 0,
+                            kind: if dm.is_some() {
+                                EntryKind::Readable
+                            } else {
+                                EntryKind::Other
+                            },
+                            unread: false,
+                            mentions: 0,
+                            muted: false,
+                        });
+                    }
+                }
+            }
+            return out;
         };
         let mut out = Vec::new();
         let mut hidden_parent = false;
@@ -554,6 +671,9 @@ impl App {
                         label: format!("{arrow} {}", item.name.to_uppercase()),
                         depth: 0,
                         kind: EntryKind::Category { collapsed },
+                        unread: false,
+                        mentions: 0,
+                        muted: false,
                     });
                 }
                 TreeKind::Channel => {
@@ -576,6 +696,9 @@ impl App {
                         label: format!("{icon} {}", item.name),
                         depth: item.depth,
                         kind,
+                        unread: st.is_unread(item.id),
+                        mentions: st.mention_count(item.id),
+                        muted: st.is_muted(item.id, now),
                     });
                 }
             }
@@ -655,6 +778,10 @@ impl App {
     pub fn draw(&self, frame: &mut Frame) {
         view::draw(self, frame);
     }
+}
+
+pub(crate) fn unix_now_i64() -> i64 {
+    i64::try_from(unix_now()).unwrap_or(i64::MAX)
 }
 
 pub(crate) fn unix_now() -> u64 {

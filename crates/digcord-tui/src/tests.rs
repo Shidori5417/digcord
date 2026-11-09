@@ -564,3 +564,103 @@ fn upload_command() {
     press(&mut app, &[KeyCode::Enter]);
     assert!(app.should_quit);
 }
+
+#[test]
+fn switcher_fuzzy_opens_channel_and_moves_selection() {
+    let mut app = test_app(shared_with(vec![], true));
+    let ctrl_k = UiEvent::Input(Event::Key(KeyEvent::new(
+        KeyCode::Char('k'),
+        KeyModifiers::CONTROL,
+    )));
+    app.handle(ctrl_k);
+    assert_eq!(app.mode, compose::Mode::Switcher);
+    type_text(&mut app, "duy");
+    let screen = format!("{}", draw(&app, 100, 24));
+    assert!(screen.contains("#duyurular · Test Sunucusu"), "{screen}");
+    let a = press(&mut app, &[KeyCode::Enter]);
+    assert_eq!(
+        a,
+        [Action::OpenChannel {
+            guild: Some(Snowflake(GUILD)),
+            channel: Snowflake(12),
+            previous: None
+        }]
+    );
+    assert_eq!(app.guild_sel, 1, "şerit sunucuya geçti");
+    assert_eq!(app.entries()[app.chan_sel].id, Snowflake(12));
+    assert_eq!(app.mode, compose::Mode::Normal);
+}
+
+#[test]
+fn unread_mentions_shown_and_alt_down_jumps() {
+    let shared = shared_with(vec![msg(1, 0, FRIEND, "eski")], true);
+    let mut app = test_app(shared.clone());
+    {
+        let mut st = shared.state.write().expect("kilit");
+        // Okunma kaydı: sohbet 1. mesaja kadar okunmuş.
+        st.mark_read(Snowflake(SOHBET), msg(1, 0, FRIEND, "").id);
+        let mut m = msg(2, 5, FRIEND, "selam <@100>");
+        m.mentions = vec![digcord_model::User {
+            id: Snowflake(ME),
+            username: "ben".into(),
+            global_name: None,
+        }];
+        st.message_create(m);
+    }
+    press(&mut app, &[KeyCode::Char('j'), KeyCode::Enter]);
+    let screen = format!("{}", draw(&app, 100, 14));
+    assert!(screen.contains("# sohbet (1)"), "{screen}");
+    let alt_down = UiEvent::Input(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT)));
+    assert_eq!(
+        app.handle(alt_down),
+        Some(Action::OpenChannel {
+            guild: Some(Snowflake(GUILD)),
+            channel: Snowflake(SOHBET),
+            previous: None
+        })
+    );
+}
+
+#[test]
+fn friends_section_in_dm_panel_and_focus_events() {
+    let shared = Arc::new(Shared::default());
+    {
+        let mut st = shared.state.write().expect("kilit");
+        let mut r = ready();
+        r.relationships = serde_json::from_value(serde_json::json!([
+            {"id": FRIEND.to_string(), "type": 1, "nickname": null},
+            {"id": "300", "type": 1, "nickname": "Takma"}
+        ]))
+        .expect("ilişkiler");
+        st.load_ready(&r);
+    }
+    let mut app = test_app(shared);
+    let labels: Vec<String> = app.entries().into_iter().map(|e| e.label).collect();
+    assert_eq!(
+        labels,
+        ["@ Arkadaş", "▾ ARKADAŞLAR (2)", "  Arkadaş", "  Takma"]
+    );
+    // DM'si olan arkadaşta Enter DM'yi açar; olmayanda bir şey olmaz.
+    press(&mut app, &[KeyCode::Enter]);
+    app.chan_sel = 2;
+    assert_eq!(
+        press(&mut app, &[KeyCode::Enter]),
+        [Action::OpenChannel {
+            guild: None,
+            channel: Snowflake(DM),
+            previous: None
+        }]
+    );
+    app.focus = Focus::Channels;
+    app.chan_sel = 3;
+    assert!(press(&mut app, &[KeyCode::Enter]).is_empty());
+
+    assert_eq!(
+        app.handle(UiEvent::Input(Event::FocusLost)),
+        Some(Action::Focus(false))
+    );
+    assert_eq!(
+        app.handle(UiEvent::Input(Event::FocusGained)),
+        Some(Action::Focus(true))
+    );
+}

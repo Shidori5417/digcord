@@ -188,7 +188,51 @@ pub(crate) fn draw(app: &App, frame: &mut Frame) {
 
     if let Screen::Login { input, error } = &app.screen {
         draw_login(frame, input, error.as_deref());
+    } else if app.mode == Mode::Switcher {
+        draw_switcher(app, frame);
     }
+}
+
+/// `Ctrl+K` hızlı geçiş penceresi.
+fn draw_switcher(app: &App, frame: &mut Frame) {
+    let area = centered(
+        frame.area(),
+        64.min(frame.area().width),
+        16.min(frame.area().height),
+    );
+    frame.render_widget(Clear, area);
+    let block = Block::bordered()
+        .title(" Hızlı geçiş (Ctrl+K) ")
+        .border_style(Style::new().cyan());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let [input, list] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
+    let (rows, cur) = app.command.layout(input.width.saturating_sub(2).max(1));
+    let mut line = Line::from(Span::styled("> ", Style::new().dim()));
+    line.spans
+        .extend(rows.into_iter().next().unwrap_or_default().spans);
+    frame.render_widget(Paragraph::new(line), input);
+    frame.set_cursor_position((input.x + 2 + cur.1, input.y));
+
+    let matches = app.switcher_matches();
+    let sel = app.comp_sel.min(matches.len().saturating_sub(1));
+    let lines: Vec<Line> = if matches.is_empty() {
+        vec![Line::from("eşleşme yok").dim()]
+    } else {
+        matches
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let style = if i == sel {
+                    Style::new().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::new()
+                };
+                Line::styled(m.label.clone(), style)
+            })
+            .collect()
+    };
+    frame.render_widget(Paragraph::new(lines), list);
 }
 
 fn panel(title: String, focused: bool) -> Block<'static> {
@@ -223,19 +267,44 @@ fn draw_strip(app: &App, st: &State, frame: &mut Frame, area: Rect) {
     let focused = app.focus == Focus::Guilds && matches!(app.screen, Screen::Main);
     let open_guild = app.open.map(|o| o.guild);
     let mut lines = Vec::with_capacity(st.guilds().len() + 1);
-    let label = |i: usize, text: String, guild: Option<Snowflake>| {
-        let mut style = Style::new();
-        if open_guild == Some(guild) {
-            style = style.green();
-        }
-        if i == app.guild_sel {
-            style = style.patch(selected_style(focused));
-        }
-        Line::styled(text, style)
-    };
-    lines.push(label(0, "DM".to_owned(), None));
+    let now = crate::unix_now_i64();
+    let inner_w = usize::from(area.width.saturating_sub(2));
+    let label =
+        |i: usize, text: String, guild: Option<Snowflake>, (unread, mentions): (bool, u32)| {
+            let mut style = if unread || mentions > 0 {
+                Style::new().bold()
+            } else {
+                Style::new().dim()
+            };
+            if open_guild == Some(guild) {
+                style = style.green();
+            }
+            if i == app.guild_sel {
+                style = style.patch(selected_style(focused));
+            }
+            let mut spans = vec![Span::styled(text.clone(), style)];
+            if mentions > 0 {
+                let room = inner_w.saturating_sub(text.chars().count());
+                let count = if mentions > 99 {
+                    "+".to_owned()
+                } else {
+                    mentions.to_string()
+                };
+                if room > count.len() {
+                    spans.push(Span::raw(" ".repeat(room - count.len())));
+                    spans.push(Span::styled(count, Style::new().red().bold()));
+                }
+            }
+            Line::from(spans)
+        };
+    lines.push(label(0, "DM".to_owned(), None, st.dm_unread()));
     for (i, g) in st.guilds().iter().enumerate() {
-        lines.push(label(i + 1, initials(&g.name), Some(g.id)));
+        lines.push(label(
+            i + 1,
+            initials(&g.name),
+            Some(g.id),
+            st.guild_unread(g.id, now),
+        ));
     }
     let inner_h = usize::from(area.height.saturating_sub(2));
     let skip = app.guild_sel.saturating_sub(inner_h.saturating_sub(1));
@@ -275,7 +344,9 @@ fn draw_channels(app: &App, st: &State, frame: &mut Frame, area: Rect) {
         .map(|(i, e)| {
             let mut style = match e.kind {
                 EntryKind::Category { .. } => Style::new().dim().bold(),
-                EntryKind::Readable => Style::new(),
+                _ if e.muted => Style::new().dim(),
+                EntryKind::Readable if e.unread || e.mentions > 0 => Style::new().bold(),
+                EntryKind::Readable => Style::new().fg(ratatui::style::Color::Gray),
                 EntryKind::Other => Style::new().dim(),
             };
             if open == Some(e.id) {
@@ -285,7 +356,14 @@ fn draw_channels(app: &App, st: &State, frame: &mut Frame, area: Rect) {
                 style = style.patch(selected_style(focused));
             }
             let indent = "  ".repeat(usize::from(e.depth));
-            Line::styled(format!("{indent}{}", e.label), style)
+            let mut spans = vec![Span::styled(format!("{indent}{}", e.label), style)];
+            if e.mentions > 0 {
+                spans.push(Span::styled(
+                    format!(" ({})", e.mentions),
+                    Style::new().red().bold(),
+                ));
+            }
+            Line::from(spans)
         })
         .collect();
     let body = if lines.is_empty() {

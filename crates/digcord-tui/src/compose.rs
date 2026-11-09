@@ -24,6 +24,8 @@ pub(crate) enum Mode {
     Command,
     React,
     ConfirmDelete(Snowflake),
+    /// `Ctrl+K` hızlı geçiş.
+    Switcher,
 }
 
 /// Yazılan metnin hedefi.
@@ -514,6 +516,87 @@ impl App {
     }
 }
 
+/// Hızlı geçiş adayı.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SwitchItem {
+    pub guild: Option<Snowflake>,
+    pub channel: Snowflake,
+    pub label: String,
+}
+
+impl App {
+    /// Tüm okunabilir kanallar: DM'ler ve sunucu kanalları ("#kanal · Sunucu").
+    fn switch_items(&self) -> Vec<SwitchItem> {
+        let st = self.shared.read();
+        let mut out: Vec<SwitchItem> = st
+            .dm_channels()
+            .iter()
+            .map(|c| SwitchItem {
+                guild: None,
+                channel: *c,
+                label: format!("@{}", st.channel_title(*c)),
+            })
+            .collect();
+        for g in st.guilds() {
+            for item in st.guild_tree(g.id) {
+                if item.kind == digcord_store::TreeKind::Channel
+                    && matches!(
+                        item.channel_kind,
+                        digcord_model::channel_kind::TEXT
+                            | digcord_model::channel_kind::ANNOUNCEMENT
+                    )
+                {
+                    out.push(SwitchItem {
+                        guild: Some(g.id),
+                        channel: item.id,
+                        label: format!("#{} · {}", item.name, g.name),
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// Sorguya göre sıralı en fazla 12 aday.
+    pub(crate) fn switcher_matches(&self) -> Vec<SwitchItem> {
+        let items = self.switch_items();
+        let query = self.command.text();
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        crate::fuzzy::rank(query.trim(), &labels, 12)
+            .into_iter()
+            .filter_map(|i| items.get(i).cloned())
+            .collect()
+    }
+
+    pub(crate) fn switcher_key(&mut self, key: KeyEvent) -> Option<Action> {
+        let matches = self.switcher_matches();
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                None
+            }
+            KeyCode::Enter => {
+                let item = matches.get(self.comp_sel.min(matches.len().saturating_sub(1)))?;
+                Some(self.open_channel(item.guild, item.channel))
+            }
+            KeyCode::Down | KeyCode::Tab if !matches.is_empty() => {
+                self.comp_sel = (self.comp_sel + 1) % matches.len();
+                None
+            }
+            KeyCode::Up | KeyCode::BackTab if !matches.is_empty() => {
+                self.comp_sel = (self.comp_sel + matches.len() - 1) % matches.len();
+                None
+            }
+            _ => {
+                if self.command.handle_key(key) == EditOutcome::Changed {
+                    self.comp_sel = 0;
+                }
+                None
+            }
+        }
+    }
+}
+
 /// `👍`, `:thumbsup:`, `<:ad:id>`, `<a:ad:id>`, `ad:id` → tepki emojisi.
 pub(crate) fn parse_emoji(raw: &str) -> Option<ReactionEmoji> {
     let raw = raw.trim();
@@ -580,6 +663,7 @@ pub(crate) fn mode_label(mode: Mode) -> &'static str {
         Mode::Command => " [KOMUT] ",
         Mode::React => " [TEPKİ] ",
         Mode::ConfirmDelete(_) => " [SİL?] ",
+        Mode::Switcher => " [GEÇİŞ] ",
     }
 }
 
