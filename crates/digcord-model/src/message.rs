@@ -131,6 +131,47 @@ pub struct TypingStart {
     pub member: Option<crate::Member>,
 }
 
+/// `VOICE_STATE_UPDATE` (ve READY'deki guild ses durumları): kim hangi ses kanalında.
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoiceState {
+    pub guild_id: Option<Snowflake>,
+    /// `None`: kanaldan ayrıldı.
+    pub channel_id: Option<Snowflake>,
+    pub user_id: Snowflake,
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub self_mute: bool,
+    #[serde(default)]
+    pub self_deaf: bool,
+    #[serde(default)]
+    pub mute: bool,
+    #[serde(default)]
+    pub deaf: bool,
+}
+
+/// `VOICE_SERVER_UPDATE`: ses gateway'i adresi ve oturum token'ı.
+/// `token` gizlidir: log'a yazılmamalı (Debug elle, token'sız).
+#[derive(Clone, Deserialize)]
+pub struct VoiceServer {
+    pub token: String,
+    /// DM aramalarında `None`; o zaman `channel_id` gelir.
+    pub guild_id: Option<Snowflake>,
+    pub channel_id: Option<Snowflake>,
+    /// `None`: sunucu ayrıldı, yenisi bekleniyor.
+    pub endpoint: Option<String>,
+}
+
+impl std::fmt::Debug for VoiceServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VoiceServer")
+            .field("guild_id", &self.guild_id)
+            .field("channel_id", &self.channel_id)
+            .field("endpoint", &self.endpoint)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct StickerItem {
     pub name: String,

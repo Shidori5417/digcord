@@ -69,6 +69,13 @@ pub enum Command {
         guild: Snowflake,
         user_ids: Vec<Snowflake>,
     },
+    /// op 4: ses kanalına katıl/ayrıl, susturma durumu.
+    VoiceState {
+        guild: Option<Snowflake>,
+        channel: Option<Snowflake>,
+        self_mute: bool,
+        self_deaf: bool,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -231,6 +238,9 @@ async fn session_loop(
                 let text = match cmd {
                     Command::SubscribeGuild { guild, large } => protocol::subscribe_guild(guild, large),
                     Command::RequestMembers { guild, user_ids } => protocol::request_members(guild, &user_ids),
+                    Command::VoiceState { guild, channel, self_mute, self_deaf } => {
+                        protocol::voice_state_update(guild, channel, self_mute, self_deaf)
+                    }
                 };
                 ws.send(Message::text(text)).await?;
                 continue;

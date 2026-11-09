@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use digcord_model::{
     Channel, ClientProperties, Guild, GuildMembersChunk, Message, MessageAck, MessageDelete,
-    ReactionEvent, Ready, Snowflake, Token, TypingStart,
+    ReactionEvent, Ready, Snowflake, Token, TypingStart, VoiceServer, VoiceState,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -32,6 +32,7 @@ pub mod op {
     pub const HEARTBEAT_ACK: u8 = 11;
     /// Web istemcisinin op 1 yerine kullandığı QoS heartbeat (PROTOCOL_NOTES §3.1).
     pub const QOS_HEARTBEAT: u8 = 40;
+    pub const VOICE_STATE_UPDATE: u8 = 4;
     pub const REQUEST_GUILD_MEMBERS: u8 = 8;
     pub const GUILD_SUBSCRIPTIONS_BULK: u8 = 37;
 }
@@ -90,6 +91,8 @@ pub enum GatewayEvent {
     TypingStart(TypingStart),
     /// Başka oturumda okundu işareti (alanlar doğrulanmadı).
     MessageAck(MessageAck),
+    VoiceStateUpdate(Box<VoiceState>),
+    VoiceServerUpdate(VoiceServer),
 }
 
 #[derive(Deserialize)]
@@ -164,6 +167,8 @@ fn parse_event(t: &str, d: &str) -> Dispatch {
         "MESSAGE_REACTION_REMOVE" => de(t, d).map(E::ReactionRemove),
         "TYPING_START" => de(t, d).map(E::TypingStart),
         "MESSAGE_ACK" => de(t, d).map(E::MessageAck),
+        "VOICE_STATE_UPDATE" => de(t, d).map(E::VoiceStateUpdate),
+        "VOICE_SERVER_UPDATE" => de(t, d).map(E::VoiceServerUpdate),
         _ => None,
     };
     event.map_or(Dispatch::Other, Dispatch::Event)
@@ -314,6 +319,34 @@ pub fn request_members(guild: Snowflake, user_ids: &[Snowflake]) -> String {
             guild_id: [guild],
             user_ids,
             presences: false,
+        },
+    )
+}
+
+/// op 4: ses kanalına katıl (`channel: None` → ayrıl). DM aramasında `guild: None`.
+/// Alan seti belgelere göre; resmi istemcinin ek alanları (`flags` vb.) doğrulanmadı.
+pub fn voice_state_update(
+    guild: Option<Snowflake>,
+    channel: Option<Snowflake>,
+    self_mute: bool,
+    self_deaf: bool,
+) -> String {
+    #[derive(Serialize)]
+    struct Vs {
+        guild_id: Option<Snowflake>,
+        channel_id: Option<Snowflake>,
+        self_mute: bool,
+        self_deaf: bool,
+        self_video: bool,
+    }
+    to_json(
+        op::VOICE_STATE_UPDATE,
+        Vs {
+            guild_id: guild,
+            channel_id: channel,
+            self_mute,
+            self_deaf,
+            self_video: false,
         },
     )
 }
@@ -700,5 +733,53 @@ mod tests {
         assert_eq!(hb.on_tick(), Beat::Zombie);
         hb.on_ack();
         assert_eq!(hb.on_tick(), Beat::Send);
+    }
+
+    #[test]
+    fn voice_events_and_op4() {
+        let st = r#"{"t":"VOICE_STATE_UPDATE","s":3,"op":0,"d":{"guild_id":"1","channel_id":"2","user_id":"3","session_id":"abc","self_mute":true,"self_deaf":false,"mute":false,"deaf":false,"member":{}}}"#;
+        let Event::Dispatch {
+            dispatch: Dispatch::Event(GatewayEvent::VoiceStateUpdate(vs)),
+            ..
+        } = parse(st).expect("ses durumu")
+        else {
+            panic!("VOICE_STATE_UPDATE bekleniyordu");
+        };
+        assert_eq!(
+            (vs.channel_id, vs.session_id.as_str(), vs.self_mute),
+            (Some(Snowflake(2)), "abc", true)
+        );
+        let sv = r#"{"t":"VOICE_SERVER_UPDATE","s":4,"op":0,"d":{"token":"gizli","guild_id":null,"channel_id":"9","endpoint":"c-ist01.discord.media:443"}}"#;
+        let Event::Dispatch {
+            dispatch: Dispatch::Event(GatewayEvent::VoiceServerUpdate(server)),
+            ..
+        } = parse(sv).expect("ses sunucusu")
+        else {
+            panic!("VOICE_SERVER_UPDATE bekleniyordu");
+        };
+        assert_eq!(
+            server.endpoint.as_deref(),
+            Some("c-ist01.discord.media:443")
+        );
+        assert!(
+            !format!("{server:?}").contains("gizli"),
+            "token Debug'da görünmez"
+        );
+
+        let v: serde_json::Value = serde_json::from_str(&voice_state_update(
+            Some(Snowflake(1)),
+            Some(Snowflake(2)),
+            false,
+            true,
+        ))
+        .expect("json");
+        assert_eq!(
+            v,
+            serde_json::json!({"op": 4, "d": {"guild_id": "1", "channel_id": "2",
+                "self_mute": false, "self_deaf": true, "self_video": false}})
+        );
+        let leave: serde_json::Value =
+            serde_json::from_str(&voice_state_update(None, None, false, false)).expect("json");
+        assert_eq!(leave["d"]["channel_id"], serde_json::Value::Null);
     }
 }

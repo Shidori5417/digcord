@@ -10,7 +10,8 @@ mod token;
 pub use client::{ClientProperties, DEFAULT_BUILD_NUMBER, DEFAULT_CHROME_MAJOR};
 pub use message::{
     Attachment, Call, Embed, EmbedField, EmbedFooter, EmbedMedia, EmbedText, Message, MessageAck,
-    MessageDelete, Reaction, ReactionEmoji, ReactionEvent, StickerItem, TypingStart, message_kind,
+    MessageDelete, Reaction, ReactionEmoji, ReactionEvent, StickerItem, TypingStart, VoiceServer,
+    VoiceState, message_kind,
 };
 pub use permissions::{MemberContext, Overwrite, OverwriteKind, Permissions, Role};
 pub use ready::{
