@@ -4,7 +4,7 @@
 //! karıştırıcıya, mikrofon kareleri doğrudan bağlantıya gider. Durum olayları (bağlandı,
 //! konuşuyor, kapandı) `on_event` ile denetleyiciye döner.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use digcord_voice::audio::{self, FrameEncoder, Mixer, Playback};
@@ -13,25 +13,31 @@ use digcord_voice::dave::frame::OPUS_SILENCE;
 use digcord_voice::protocol::SessionInfo;
 use tokio::sync::{mpsc, watch};
 
-/// Konuşma eşiği (RMS) ve konuşma bittikten sonra bekleme (kare; 20 ms).
-const VAD_THRESHOLD: f32 = 0.012;
+/// Konuşma bittikten sonra bekleme (kare; 20 ms). Eşik (RMS) `Options::vad_threshold`'dan gelir.
 const VAD_HANGOVER_FRAMES: u32 = 15;
 /// Konuşma bitince gönderilen sessizlik kareleri (belgelenmiş).
 const SILENCE_FRAMES: usize = 5;
 
 /// Ses oturumu ayarları.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Options {
     pub muted: bool,
     pub deafened: bool,
     /// Bas-konuş: sadece tuş basılıyken gönder (yoksa ses algılama).
     pub push_to_talk: bool,
     pub jitter_frames: usize,
+    /// Ses algılama eşiği (RMS).
+    pub vad_threshold: f32,
+    /// cpal aygıt adları; `None` = sistem varsayılanı.
+    pub input_device: Option<String>,
+    pub output_device: Option<String>,
 }
 
 pub struct VoiceSession {
     stop: watch::Sender<bool>,
     muted: Arc<AtomicBool>,
+    /// Ses algılama eşiği (`f32` bitleri); çalışırken değiştirilebilir.
+    vad_threshold: Arc<AtomicU32>,
     /// Bas-konuş tuşu basılı mı (bas-konuş kapalıysa `None`).
     ptt: Option<Arc<AtomicBool>>,
     mixer: Arc<Mutex<Mixer>>,
@@ -56,6 +62,7 @@ impl VoiceSession {
             m.set_deafened(opts.deafened);
         }
         let muted = Arc::new(AtomicBool::new(opts.muted));
+        let vad_threshold = Arc::new(AtomicU32::new(opts.vad_threshold.to_bits()));
         let ptt = opts.push_to_talk.then(|| Arc::new(AtomicBool::new(false)));
 
         tokio::spawn(connection::run(
@@ -91,13 +98,20 @@ impl VoiceSession {
             }
         });
 
-        let playback = audio::start_playback(mixer.clone())
+        let playback = audio::start_playback(mixer.clone(), opts.output_device)
             .map_err(|e| tracing::warn!("ses çıkışı açılamadı: {e}"))
             .ok();
-        let capture = start_capture(cmd_tx, muted.clone(), ptt.clone());
+        let capture = start_capture(
+            cmd_tx,
+            muted.clone(),
+            ptt.clone(),
+            vad_threshold.clone(),
+            opts.input_device,
+        );
         Self {
             stop,
             muted,
+            vad_threshold,
             ptt,
             mixer,
             _playback: playback,
@@ -107,6 +121,12 @@ impl VoiceSession {
 
     pub fn set_muted(&self, muted: bool) {
         self.muted.store(muted, Ordering::Relaxed);
+    }
+
+    /// Ses algılama eşiğini (RMS) anında değiştirir.
+    pub fn set_vad_threshold(&self, threshold: f32) {
+        self.vad_threshold
+            .store(threshold.to_bits(), Ordering::Relaxed);
     }
 
     /// Bas-konuş tuşu durumu (bas-konuş kapalıysa etkisiz).
@@ -139,6 +159,8 @@ fn start_capture(
     commands: mpsc::Sender<Command>,
     muted: Arc<AtomicBool>,
     ptt: Option<Arc<AtomicBool>>,
+    threshold: Arc<AtomicU32>,
+    device: Option<String>,
 ) -> Option<Playback> {
     let mut encoder = match FrameEncoder::new() {
         Ok(e) => e,
@@ -149,33 +171,37 @@ fn start_capture(
     };
     let mut vad = Vad::default();
     let mut frame_pcm: Vec<f32> = Vec::new();
-    audio::start_capture(move |samples| {
-        // Kare seviyesi için PCM'i kare kare izle (kodlayıcı da 20 ms'de bir yayınlar).
-        frame_pcm.extend_from_slice(samples);
-        let level = audio::rms(&frame_pcm);
-        if frame_pcm.len() >= audio::FRAME_SAMPLES * audio::CHANNELS {
-            frame_pcm.clear();
-        }
-        let silent_mic = muted.load(Ordering::Relaxed);
-        // Bas-konuş: tuş basılıyken eşik aşılmış sayılır, değilken hiç.
-        let level = match &ptt {
-            Some(p) if p.load(Ordering::Relaxed) => 1.0,
-            Some(_) => 0.0,
-            None => level,
-        };
-        let _ = encoder.push(samples, |opus| match vad.step(level, silent_mic) {
-            VadOutput::Send => {
-                let _ = commands.try_send(Command::Opus(opus.to_vec()));
+    audio::start_capture(
+        move |samples| {
+            // Kare seviyesi için PCM'i kare kare izle (kodlayıcı da 20 ms'de bir yayınlar).
+            frame_pcm.extend_from_slice(samples);
+            let level = audio::rms(&frame_pcm);
+            if frame_pcm.len() >= audio::FRAME_SAMPLES * audio::CHANNELS {
+                frame_pcm.clear();
             }
-            VadOutput::Stop => {
-                for _ in 0..SILENCE_FRAMES {
-                    let _ = commands.try_send(Command::Opus(OPUS_SILENCE.to_vec()));
+            let silent_mic = muted.load(Ordering::Relaxed);
+            // Bas-konuş: tuş basılıyken eşik aşılmış sayılır, değilken hiç.
+            let level = match &ptt {
+                Some(p) if p.load(Ordering::Relaxed) => 1.0,
+                Some(_) => 0.0,
+                None => level,
+            };
+            let limit = f32::from_bits(threshold.load(Ordering::Relaxed));
+            let _ = encoder.push(samples, |opus| match vad.step(level, silent_mic, limit) {
+                VadOutput::Send => {
+                    let _ = commands.try_send(Command::Opus(opus.to_vec()));
                 }
-                let _ = commands.try_send(Command::StopSpeaking);
-            }
-            VadOutput::Quiet => {}
-        });
-    })
+                VadOutput::Stop => {
+                    for _ in 0..SILENCE_FRAMES {
+                        let _ = commands.try_send(Command::Opus(OPUS_SILENCE.to_vec()));
+                    }
+                    let _ = commands.try_send(Command::StopSpeaking);
+                }
+                VadOutput::Quiet => {}
+            });
+        },
+        device,
+    )
     .map_err(|e| tracing::warn!("mikrofon açılamadı: {e}"))
     .ok()
 }
@@ -195,8 +221,8 @@ struct Vad {
 }
 
 impl Vad {
-    fn step(&mut self, level: f32, muted: bool) -> VadOutput {
-        let loud = !muted && level >= VAD_THRESHOLD;
+    fn step(&mut self, level: f32, muted: bool, threshold: f32) -> VadOutput {
+        let loud = !muted && level >= threshold;
         if loud {
             self.active = true;
             self.quiet_frames = 0;
@@ -218,22 +244,37 @@ impl Vad {
 mod tests {
     use super::*;
 
+    const T: f32 = 0.012;
+
     #[test]
     fn vad_hangover_and_mute() {
         let mut v = Vad::default();
-        assert_eq!(v.step(0.0, false), VadOutput::Quiet);
-        assert_eq!(v.step(0.1, false), VadOutput::Send);
+        assert_eq!(v.step(0.0, false, T), VadOutput::Quiet);
+        assert_eq!(v.step(0.1, false, T), VadOutput::Send);
         for _ in 0..VAD_HANGOVER_FRAMES {
             assert_eq!(
-                v.step(0.0, false),
+                v.step(0.0, false, T),
                 VadOutput::Send,
                 "kısa duraklamada kesilmez"
             );
         }
-        assert_eq!(v.step(0.0, false), VadOutput::Stop);
-        assert_eq!(v.step(0.0, false), VadOutput::Quiet);
-        assert_eq!(v.step(0.1, false), VadOutput::Send);
-        assert_eq!(v.step(0.1, true), VadOutput::Stop, "susturunca hemen biter");
-        assert_eq!(v.step(0.5, true), VadOutput::Quiet);
+        assert_eq!(v.step(0.0, false, T), VadOutput::Stop);
+        assert_eq!(v.step(0.0, false, T), VadOutput::Quiet);
+        assert_eq!(v.step(0.1, false, T), VadOutput::Send);
+        assert_eq!(
+            v.step(0.1, true, T),
+            VadOutput::Stop,
+            "susturunca hemen biter"
+        );
+        assert_eq!(v.step(0.5, true, T), VadOutput::Quiet);
+    }
+
+    #[test]
+    fn vad_threshold_decides_loudness() {
+        let mut v = Vad::default();
+        assert_eq!(v.step(0.05, false, 0.1), VadOutput::Quiet, "eşiğin altında");
+        assert_eq!(v.step(0.05, false, 0.01), VadOutput::Send, "eşiğin üstünde");
+        let mut v = Vad::default();
+        assert_eq!(v.step(0.1, false, 0.1), VadOutput::Send, "eşit sayılır");
     }
 }

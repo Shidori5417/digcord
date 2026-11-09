@@ -14,10 +14,11 @@ use ratatui::widgets::{Block, Clear, Paragraph};
 use crate::{Action, App};
 
 /// Bir ayarın değeri (aynı zamanda diske yazılacak TOML değeri).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SettingValue {
     Bool(bool),
     Int(i64),
+    Float(f64),
     Str(String),
     List(Vec<String>),
 }
@@ -28,6 +29,7 @@ impl SettingValue {
             Self::Bool(true) => "açık".to_owned(),
             Self::Bool(false) => "kapalı".to_owned(),
             Self::Int(n) => n.to_string(),
+            Self::Float(x) => format!("{x:.3}"),
             Self::Str(s) => s.clone(),
             Self::List(l) => l.join(", "),
         }
@@ -35,13 +37,18 @@ impl SettingValue {
 }
 
 /// Bir ayarın nasıl değiştirileceği.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SettingKind {
     Bool,
     Int {
         min: i64,
         max: i64,
         step: i64,
+    },
+    Float {
+        min: f64,
+        max: f64,
+        step: f64,
     },
     /// Verilen değerler arasında dolaşılır.
     Choice(Vec<SettingValue>),
@@ -50,7 +57,7 @@ pub enum SettingKind {
 }
 
 /// Ayarlar ekranındaki bir satır.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SettingItem {
     /// `bölüm.anahtar` (config.toml yolu).
     pub key: String,
@@ -119,14 +126,19 @@ impl State {
                 };
                 opts[next].clone()
             }
-            (SettingKind::Int { .. }, _) if toggle => {
+            (SettingKind::Int { .. } | SettingKind::Float { .. }, _) if toggle => {
                 return Err("Sayıyı +/- (ya da ←/→) ile değiştir");
             }
             (SettingKind::Int { min, max, step }, SettingValue::Int(n)) => {
                 SettingValue::Int(n.saturating_add(step.saturating_mul(dir)).clamp(*min, *max))
             }
+            (SettingKind::Float { min, max, step }, SettingValue::Float(x)) => {
+                // Binde bire yuvarla: kayan nokta artığı config.toml'a sızmasın.
+                let next = ((x + step * dir as f64).clamp(*min, *max) * 1000.0).round() / 1000.0;
+                SettingValue::Float(next)
+            }
             (SettingKind::ReadOnly, _) => {
-                return Err("Bu ayar burada değişmez (tema için :theme <ad>)");
+                return Err("Bu ayar burada değişmez (tema: :theme <ad>; aygıtlar: :devices)");
             }
             _ => return Ok(false),
         };
@@ -326,6 +338,30 @@ mod tests {
         assert_eq!(s.adjust(1, false), Ok(false), "üst sınırda değişmez");
         s.sel = 3;
         assert!(s.adjust(1, true).is_err());
+    }
+
+    #[test]
+    fn float_steps_round_and_clamp() {
+        let mut s = State::new(vec![SettingItem::new(
+            "voice.vad_threshold",
+            SettingValue::Float(0.012),
+            SettingKind::Float {
+                min: 0.001,
+                max: 0.016,
+                step: 0.002,
+            },
+            true,
+        )]);
+        assert!(s.adjust(1, true).is_err(), "Enter sayıyı değiştirmez");
+        assert_eq!(s.adjust(1, false), Ok(true));
+        assert_eq!(s.items[0].value, SettingValue::Float(0.014));
+        assert_eq!(s.adjust(1, false), Ok(true));
+        assert_eq!(s.adjust(1, false), Ok(false), "üst sınırda değişmez");
+        assert_eq!(s.items[0].value, SettingValue::Float(0.016));
+        for _ in 0..20 {
+            let _ = s.adjust(-1, false);
+        }
+        assert_eq!(s.items[0].value, SettingValue::Float(0.001), "alt sınır");
     }
 
     #[test]

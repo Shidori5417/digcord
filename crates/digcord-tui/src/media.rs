@@ -36,7 +36,7 @@ pub enum ImageMode {
 }
 
 /// TUI ayarları (config.toml `[ui]`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Options {
     pub images: ImageMode,
     /// Bir resmin en fazla satır yüksekliği.

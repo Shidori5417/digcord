@@ -11,6 +11,11 @@ use digcord_tui::{SettingItem, SettingKind, SettingValue};
 use serde::Deserialize;
 
 /// Bu sürümde uygulanan bölümler. Bunların dışındaki bölümler uyarı üretir.
+/// Ses algılama eşiği (RMS) için varsayılan ve geçerli aralık.
+pub const VAD_THRESHOLD_DEFAULT: f32 = 0.012;
+const VAD_THRESHOLD_MIN: f32 = 0.001;
+const VAD_THRESHOLD_MAX: f32 = 0.5;
+
 const KNOWN_SECTIONS: &[&str] = &["ui", "behavior", "notifications", "voice", "client", "keys"];
 
 /// Bu sürümde uygulanan `bölüm.anahtar` yolları. Yeni ayar eklenince buraya da eklenmeli.
@@ -25,6 +30,9 @@ const KNOWN_KEYS: &[&str] = &[
     "notifications.on",
     "voice.mode",
     "voice.jitter_ms",
+    "voice.vad_threshold",
+    "voice.input_device",
+    "voice.output_device",
     "client.build_number",
     "client.chrome_major",
 ];
@@ -55,6 +63,11 @@ pub struct Voice {
     pub mode: VoiceMode,
     /// Çalmaya başlamadan önce biriktirilen ses (ms; 20'nin katına yuvarlanır).
     pub jitter_ms: u32,
+    /// Ses algılama eşiği (RMS, 0.001–0.5); aralık dışı değerler yüklemede uyarıyla düzeltilir.
+    pub vad_threshold: f32,
+    /// cpal giriş/çıkış aygıt adı (tam eşleşme). Boş ya da `default` = sistem varsayılanı.
+    pub input_device: String,
+    pub output_device: String,
 }
 
 impl Default for Voice {
@@ -62,6 +75,19 @@ impl Default for Voice {
         Self {
             mode: VoiceMode::Vad,
             jitter_ms: 60,
+            vad_threshold: VAD_THRESHOLD_DEFAULT,
+            input_device: String::new(),
+            output_device: String::new(),
+        }
+    }
+}
+
+impl Voice {
+    /// Aygıt ayarını `ses::start_*`'a verilecek biçime çevirir (`None` = varsayılan).
+    pub fn device(name: &str) -> Option<String> {
+        match name.trim() {
+            "" | "default" => None,
+            n => Some(n.to_owned()),
         }
     }
 }
@@ -296,6 +322,30 @@ impl Config {
                 },
                 false,
             ),
+            SettingItem::new(
+                "voice.vad_threshold",
+                SettingValue::Float(f64::from(self.voice.vad_threshold)),
+                SettingKind::Float {
+                    min: f64::from(VAD_THRESHOLD_MIN),
+                    max: f64::from(VAD_THRESHOLD_MAX),
+                    step: 0.002,
+                },
+                true,
+            ),
+            // Aygıtlar salt okunur: listeyi almak ses sürücüsünü yoklar (UI thread'inde olmaz);
+            // adlar `:devices` ile görülür, config.toml'a yazılır.
+            SettingItem::new(
+                "voice.input_device",
+                text(device_label(&self.voice.input_device)),
+                ReadOnly,
+                false,
+            ),
+            SettingItem::new(
+                "voice.output_device",
+                text(device_label(&self.voice.output_device)),
+                ReadOnly,
+                false,
+            ),
         ]
     }
 
@@ -328,12 +378,33 @@ impl Config {
 
 /// TOML metnini ayrıştırır ve tanınmayan ayarları `bilinmeyen ayar: ...` uyarılarıyla döner.
 pub fn parse_with_warnings(text: &str) -> anyhow::Result<(Config, Vec<String>)> {
-    let config: Config = toml::from_str(text).context("yapılandırma ayrıştırılamadı")?;
+    let mut config: Config = toml::from_str(text).context("yapılandırma ayrıştırılamadı")?;
     let table: toml::Table = toml::from_str(text).context("yapılandırma ayrıştırılamadı")?;
 
     let mut warnings = Vec::new();
+    let vad = config.voice.vad_threshold;
+    if !(VAD_THRESHOLD_MIN..=VAD_THRESHOLD_MAX).contains(&vad) {
+        let fixed = if vad.is_nan() {
+            VAD_THRESHOLD_DEFAULT
+        } else {
+            vad.clamp(VAD_THRESHOLD_MIN, VAD_THRESHOLD_MAX)
+        };
+        warnings.push(format!(
+            "voice.vad_threshold: {VAD_THRESHOLD_MIN}–{VAD_THRESHOLD_MAX} aralığında olmalı; {fixed} kullanılıyor"
+        ));
+        config.voice.vad_threshold = fixed;
+    }
     collect_unknown_keys(&table, &mut warnings);
     Ok((config, warnings))
+}
+
+/// Ayarlar ekranında aygıt adı (boş = varsayılan).
+fn device_label(name: &str) -> &str {
+    if name.trim().is_empty() {
+        "default"
+    } else {
+        name
+    }
 }
 
 fn collect_unknown_keys(table: &toml::Table, warnings: &mut Vec<String>) {
@@ -380,6 +451,7 @@ pub fn save_settings(path: &Path, changes: &[(String, SettingValue)]) -> anyhow:
         let mut new: Value = match value {
             SettingValue::Bool(b) => Value::from(*b),
             SettingValue::Int(n) => Value::from(*n),
+            SettingValue::Float(x) => Value::from(*x),
             SettingValue::Str(s) => Value::from(s.as_str()),
             SettingValue::List(l) => l.iter().map(String::as_str).collect(),
         };
@@ -507,6 +579,7 @@ chrome_major = 130
                 voice: Voice {
                     mode: VoiceMode::Ptt,
                     jitter_ms: 100,
+                    ..Voice::default()
                 },
                 client: Client {
                     build_number: 12345,
@@ -561,14 +634,14 @@ chrome_major = 130
 
     #[test]
     fn unknown_keys_and_sections_become_warnings() {
-        let text = "[ui]\nkeymap = \"x\"\n\n[voice]\ninput_device = \"default\"\n";
+        let text = "[ui]\nkeymap = \"x\"\n\n[voice]\nptt_key = \"f1\"\n";
         let (config, warnings) = parse_with_warnings(text).expect("bilinmeyen anahtar hata değil");
         assert_eq!(config, Config::default());
         assert_eq!(
             warnings,
             vec![
                 "bilinmeyen ayar: ui.keymap".to_string(),
-                "bilinmeyen ayar: voice.input_device".to_string(),
+                "bilinmeyen ayar: voice.ptt_key".to_string(),
             ]
         );
     }
@@ -582,7 +655,7 @@ chrome_major = 130
             config.notifications.on,
             vec![NotifyOn::Mention, NotifyOn::Dm]
         );
-        assert_eq!(warnings.len(), 6, "uyarılar: {warnings:?}");
+        assert_eq!(warnings.len(), 4, "uyarılar: {warnings:?}");
         assert_eq!(config.voice.mode, VoiceMode::Vad);
         assert_eq!(config.ui.images, Images::Thumbnail);
         assert_eq!(config.ui.image_max_rows, 10);
@@ -590,8 +663,6 @@ chrome_major = 130
             "bilinmeyen ayar: ui.keymap",
             "bilinmeyen ayar: ui.timestamp_format",
             "bilinmeyen ayar: behavior.message_window",
-            "bilinmeyen ayar: voice.input_device",
-            "bilinmeyen ayar: voice.output_device",
             "bilinmeyen ayar: voice.ptt_key",
         ] {
             assert!(
@@ -599,6 +670,49 @@ chrome_major = 130
                 "{expected} uyarısı yok: {warnings:?}"
             );
         }
+    }
+
+    #[test]
+    fn voice_device_and_vad_keys_parse() {
+        let text = "[voice]\ninput_device = \"USB Mic\"\noutput_device = \"default\"\nvad_threshold = 0.03\n";
+        let (config, warnings) = parse_with_warnings(text).expect("geçerli");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(config.voice.input_device, "USB Mic");
+        assert_eq!(
+            Voice::device(&config.voice.input_device).as_deref(),
+            Some("USB Mic")
+        );
+        assert_eq!(Voice::device(&config.voice.output_device), None);
+        assert_eq!(Voice::device(""), None);
+        assert!((config.voice.vad_threshold - 0.03).abs() < 1e-6);
+        // Yokken varsayılan: eski sabit.
+        let d = Config::default().voice;
+        assert!((d.vad_threshold - 0.012).abs() < 1e-6);
+        assert_eq!(Voice::device(&d.input_device), None);
+        // Tam sayı da kabul edilir.
+        let (c, _) = parse_with_warnings("[voice]\nvad_threshold = 1\n").expect("tam sayı");
+        assert!(
+            (c.voice.vad_threshold - 0.5).abs() < 1e-6,
+            "aralığa çekilir"
+        );
+    }
+
+    #[test]
+    fn invalid_vad_threshold_is_clamped_with_warning() {
+        for (text, want) in [
+            ("vad_threshold = 0.0", 0.001),
+            ("vad_threshold = -1.0", 0.001),
+            ("vad_threshold = 9.0", 0.5),
+            ("vad_threshold = nan", 0.012),
+        ] {
+            let (c, w) = parse_with_warnings(&format!("[voice]\n{text}\n")).expect("geçerli toml");
+            assert_eq!(w.len(), 1, "{text}: {w:?}");
+            assert!(w[0].starts_with("voice.vad_threshold"), "{}", w[0]);
+            assert!((c.voice.vad_threshold - want).abs() < 1e-6, "{text}");
+        }
+        // Metin değeri ayrıştırma hatasıdır.
+        assert!(Config::parse("[voice]\nvad_threshold = \"yüksek\"\n").is_err());
+        assert!(Config::parse("[voice]\ninput_device = 3\n").is_err());
     }
 
     #[test]

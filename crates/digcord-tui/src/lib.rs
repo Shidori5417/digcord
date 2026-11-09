@@ -170,6 +170,8 @@ pub enum Action {
     PushToTalk(bool),
     /// Bas-konuş istendi ama terminal tuş bırakmayı bildiremiyor: ses algılamaya dön.
     PushToTalkUnavailable,
+    /// `:devices`: ses giriş/çıkış aygıtlarını listele (sonuç [`UiEvent::Notice`]).
+    ListDevices,
     /// Bir kullanıcının ses seviyesi (0.0–2.0).
     SetVolume {
         user: Snowflake,

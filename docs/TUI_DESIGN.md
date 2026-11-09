@@ -62,6 +62,7 @@ Vim istemeyenler için config'de `keymap = "simple"` (her zaman yazma modu, ok t
 | `Enter` (ses kanalında) | Ses kanalına katıl |
 | `Ctrl+Space` (basılı tut) | Bas-konuş (`voice.mode = "ptt"`; kitty klavye protokolü gerekir) |
 | `:leave` / `:mute` / `:deaf` | Ses kanalından ayrıl / mikrofon / kulaklık |
+| `:devices` | Kullanılabilir ses giriş/çıkış aygıtlarını listele (durum çubuğuna tek satır; tam liste günlükte) |
 | `:call` | Açık DM'de aramaya katıl (çaldırmaz) |
 | `:vol <ad> <0-200>` | Ses kanalındaki kişinin ses seviyesi (yüzde) |
 | `Alt+↑/↓` | Okunmamış önceki/sonraki kanal (sessizdekiler atlanır) |
@@ -112,15 +113,19 @@ eylemlerde yok.
 - Durum çubuğu: bağlı kanal, aşama (katılınıyor/bağlanıyor/bağlı), "uçtan uca" (DAVE),
   mikrofon/kulaklık durumu. ✅ Gecikme gösterimi yok.
 - Kullanıcı ses seviyesi `:vol` ile. ✅ Kaydırıcı ve yerel susturma yok (sonra).
-- Ses ayarları penceresi (cihaz seçimi, PTT tuşu, VAD eşiği) yok: varsayılan aygıtlar, sabit
-  Ctrl+Space ve sabit eşik. (sonra)
+- Ses aygıtı ve VAD eşiği config'ten: `voice.input_device` / `voice.output_device` (cpal aygıt
+  adı, tam eşleşme; boş ya da `default` = sistem varsayılanı; bulunamazsa uyarılıp varsayılana
+  dönülür). Adlar `:devices` ile görülür. `voice.vad_threshold` (RMS, 0.001–0.5, varsayılan
+  0.012) `:settings`'ten `+`/`-` ile anında değişir. Aygıt değişikliği bir sonraki katılımda
+  geçerli. Ayrı bir ses ayarları penceresi ve ayarlanabilir PTT tuşu yok: Ctrl+Space sabit. (sonra)
 
 ## Config
 
 `~/.config/digcord/config.toml`
 
 **Şu an desteklenenler:** `ui.theme`, `ui.show_member_list`, `ui.images`, `ui.image_max_rows`,
-`voice.mode` (`"vad"`, `"ptt"`), `voice.jitter_ms`, `behavior.send_typing`,
+`voice.mode` (`"vad"`, `"ptt"`), `voice.jitter_ms`, `voice.vad_threshold` (0.001–0.5; aralık dışı
+uyarıyla düzeltilir), `voice.input_device`, `voice.output_device`, `behavior.send_typing`,
 `behavior.send_read_receipts`, `notifications.enabled`, `notifications.on` (`"mention"`, `"dm"`,
 `"all"`), `client.build_number`, `client.chrome_major` ve `[keys]` tablosu. Diğer anahtarlar okunur
 ama yok sayılır (açılışta uyarı); bozuk dosyada uygulama açılmaz ve hatayı gösterir.
@@ -144,9 +149,10 @@ enabled = true
 on = ["mention", "dm"]
 
 [voice]
-input_device = "default"
+input_device = "default" # cpal aygıt adı (:devices); "default" = sistem varsayılanı
 output_device = "default"
 mode = "vad"             # "vad" | "ptt"
+vad_threshold = 0.012    # ses algılama eşiği (RMS)
 jitter_ms = 60           # çalmadan önce biriktirilen ses
 ptt_key = "ctrl+space"
 
@@ -251,7 +257,10 @@ gibi biçimler temadan bağımsızdır. Embed'in kendi rengi (sol kenar) Discord
   (`←`/`→`) sayı ve seçenek, `s` kaydet, `Esc` kapat.
 - Satır sonundaki etiket: **anında geçerli** (`behavior.send_typing`, `behavior.send_read_receipts`,
   `notifications.enabled`, `notifications.on`: denetleyiciye `Action` olarak gider) ya da
-  **yeniden başlatınca geçerli** (diğerleri). `ui.theme` salt okunurdur; `:theme <ad>` kullanılır.
+  **yeniden başlatınca geçerli** (diğerleri). `voice.vad_threshold` da anında geçerlidir (açık
+  ses oturumuna atomik olarak yazılır). `ui.theme` salt okunurdur; `:theme <ad>` kullanılır.
+  `voice.input_device`/`output_device` salt okunurdur (listeyi almak ses sürücüsünü yoklar, UI
+  thread'inde yapılmaz): adlar `:devices` ile görülüp config.toml'a yazılır.
 - `s`: sadece bu oturumda değişenler `config.toml`'a yazılır (`toml_edit`: yorumlar, sıra ve biçim
   korunur; olmayan bölüm/anahtar eklenir). Disk işi denetleyicide, geçici dosya + yer değiştirme ile;
   sonuç durum çubuğunda bildirilir. `client.*` ve `[keys]` ekranda yok (dosyadan düzenlenir).

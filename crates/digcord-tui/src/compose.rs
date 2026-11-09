@@ -501,6 +501,7 @@ impl App {
                 }
             }
             "leave" => Some(Action::LeaveVoice),
+            "devices" => Some(Action::ListDevices),
             "vol" => self.volume_command(rest.trim()),
             "mute" => Some(Action::ToggleMute),
             "deaf" => Some(Action::ToggleDeaf),

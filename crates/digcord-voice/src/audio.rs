@@ -245,12 +245,85 @@ fn stream_config(channels: u16) -> cpal::StreamConfig {
     }
 }
 
-/// Varsayılan çıkış aygıtında karıştırıcıyı çalar (48 kHz stereo f32).
-pub fn start_playback(mixer: Arc<Mutex<Mixer>>) -> Result<Playback, AudioError> {
+/// İstenen aygıt adının mevcut adlar arasındaki karşılığı.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DeviceChoice {
+    /// İstek yok (boş / `default`): sistem varsayılanı.
+    Default,
+    /// Tam ad eşleşmesi: `names` içindeki sıra.
+    Named(usize),
+    /// İstendi ama yok: uyarıp varsayılana dönülür.
+    Missing,
+}
+
+/// Aygıt adını (tam eşleşme) mevcut adlar arasında seçer. Saf mantık; test edilir.
+pub fn choose_device(names: &[String], wanted: Option<&str>) -> DeviceChoice {
+    match wanted.map(str::trim) {
+        None | Some("" | "default") => DeviceChoice::Default,
+        Some(w) => names
+            .iter()
+            .position(|n| n == w)
+            .map_or(DeviceChoice::Missing, DeviceChoice::Named),
+    }
+}
+
+fn device_name(d: &cpal::Device) -> Option<String> {
+    d.description().ok().map(|d| d.name().to_owned())
+}
+
+/// Kullanılabilir `(giriş, çıkış)` aygıt adları. Hata olursa ilgili liste boş döner.
+/// Aygıtları yoklar (bloklayabilir): UI thread'inde çağrılmaz.
+pub fn list_devices() -> (Vec<String>, Vec<String>) {
+    let host = cpal::default_host();
+    let inputs = host
+        .input_devices()
+        .map(|it| it.filter_map(|d| device_name(&d)).collect())
+        .unwrap_or_default();
+    let outputs = host
+        .output_devices()
+        .map(|it| it.filter_map(|d| device_name(&d)).collect())
+        .unwrap_or_default();
+    (inputs, outputs)
+}
+
+/// `wanted` adlı aygıt; yoksa uyarıp (`kind`: "çıkış"/"giriş") `None` döner → varsayılan.
+fn find_device(
+    devices: impl Iterator<Item = cpal::Device>,
+    wanted: Option<&str>,
+    kind: &str,
+) -> Option<cpal::Device> {
+    if choose_device(&[], wanted) == DeviceChoice::Default {
+        return None;
+    }
+    let devices: Vec<cpal::Device> = devices.collect();
+    let names: Vec<String> = devices
+        .iter()
+        .map(|d| device_name(d).unwrap_or_default())
+        .collect();
+    match choose_device(&names, wanted) {
+        DeviceChoice::Named(i) => devices.into_iter().nth(i),
+        _ => {
+            tracing::warn!("ses {kind} aygıtı bulunamadı ({wanted:?}); varsayılan kullanılıyor");
+            None
+        }
+    }
+}
+
+/// Çıkış aygıtında (`device`: ad; yok/`default` = varsayılan) karıştırıcıyı çalar (48 kHz stereo f32).
+pub fn start_playback(
+    mixer: Arc<Mutex<Mixer>>,
+    device: Option<String>,
+) -> Result<Playback, AudioError> {
     spawn_stream("digcord-playback", move || {
-        let device = cpal::default_host()
-            .default_output_device()
-            .ok_or(AudioError::NoDevice)?;
+        let host = cpal::default_host();
+        let chosen = match host.output_devices() {
+            Ok(it) => find_device(it, device.as_deref(), "çıkış"),
+            Err(_) => None,
+        };
+        let device = match chosen {
+            Some(d) => d,
+            None => host.default_output_device().ok_or(AudioError::NoDevice)?,
+        };
         device
             .build_output_stream::<f32, _, _>(
                 stream_config(CHANNELS as u16),
@@ -266,14 +339,22 @@ pub fn start_playback(mixer: Arc<Mutex<Mixer>>) -> Result<Playback, AudioError> 
     })
 }
 
-/// Varsayılan giriş aygıtından 48 kHz örnekleri stereo iç içe olarak `on_samples`'a verir.
+/// Giriş aygıtından (`device`: ad; yok/`default` = varsayılan) 48 kHz örnekleri stereo iç içe
+/// olarak `on_samples`'a verir.
 pub fn start_capture(
     mut on_samples: impl FnMut(&[f32]) + Send + 'static,
+    device: Option<String>,
 ) -> Result<Playback, AudioError> {
     spawn_stream("digcord-capture", move || {
-        let device = cpal::default_host()
-            .default_input_device()
-            .ok_or(AudioError::NoDevice)?;
+        let host = cpal::default_host();
+        let chosen = match host.input_devices() {
+            Ok(it) => find_device(it, device.as_deref(), "giriş"),
+            Err(_) => None,
+        };
+        let device = match chosen {
+            Some(d) => d,
+            None => host.default_input_device().ok_or(AudioError::NoDevice)?,
+        };
         let mut stereo = Vec::new();
         device
             .build_input_stream::<f32, _, _>(
@@ -314,6 +395,30 @@ mod tests {
         let mut out = vec![0.0; FRAME_LEN];
         m.fill(&mut out);
         rms(&out)
+    }
+
+    #[test]
+    fn device_choice_exact_match_and_fallback() {
+        let names: Vec<String> = ["HDA Intel", "USB Mic", "usb mic"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(choose_device(&names, None), DeviceChoice::Default);
+        assert_eq!(choose_device(&names, Some("")), DeviceChoice::Default);
+        assert_eq!(
+            choose_device(&names, Some("default")),
+            DeviceChoice::Default
+        );
+        assert_eq!(
+            choose_device(&names, Some("USB Mic")),
+            DeviceChoice::Named(1)
+        );
+        assert_eq!(
+            choose_device(&names, Some("usb mic")),
+            DeviceChoice::Named(2)
+        );
+        assert_eq!(choose_device(&names, Some("USB")), DeviceChoice::Missing);
+        assert_eq!(choose_device(&[], Some("USB Mic")), DeviceChoice::Missing);
     }
 
     #[test]
@@ -388,7 +493,7 @@ mod tests {
     #[ignore = "ses aygıtı gerekir"]
     fn opens_default_output_silently() {
         let mixer = Arc::new(Mutex::new(Mixer::default()));
-        let playback = start_playback(mixer).expect("çıkış akışı");
+        let playback = start_playback(mixer, None).expect("çıkış akışı");
         std::thread::sleep(std::time::Duration::from_millis(500));
         drop(playback);
     }

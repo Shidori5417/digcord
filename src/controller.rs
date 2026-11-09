@@ -88,6 +88,11 @@ pub struct Settings {
     pub push_to_talk: bool,
     /// Ses çalmadan önce biriktirilen kare sayısı (20 ms).
     pub jitter_frames: usize,
+    /// Ses algılama eşiği (RMS).
+    pub vad_threshold: f32,
+    /// Ses aygıtı adları; `None` = sistem varsayılanı.
+    pub input_device: Option<String>,
+    pub output_device: Option<String>,
 }
 
 impl Settings {
@@ -112,6 +117,9 @@ impl Settings {
             },
             push_to_talk: c.voice.mode == VoiceMode::Ptt,
             jitter_frames: usize::try_from(c.voice.jitter_ms.div_ceil(20)).unwrap_or(3),
+            vad_threshold: c.voice.vad_threshold,
+            input_device: crate::config::Voice::device(&c.voice.input_device),
+            output_device: crate::config::Voice::device(&c.voice.output_device),
         }
     }
 }
@@ -128,6 +136,7 @@ impl Settings {
             ("behavior.send_typing", SettingValue::Bool(b)) => self.send_typing = *b,
             ("behavior.send_read_receipts", SettingValue::Bool(b)) => self.send_read_receipts = *b,
             ("notifications.enabled", SettingValue::Bool(b)) => self.notify_enabled = *b,
+            ("voice.vad_threshold", SettingValue::Float(x)) => self.vad_threshold = *x as f32,
             ("notifications.on", SettingValue::List(names)) => {
                 self.notify_filter = crate::config::notify_filter(names);
             }
@@ -664,6 +673,9 @@ impl Controller {
                 deafened: call.self_deaf,
                 push_to_talk: self.env.settings.push_to_talk,
                 jitter_frames: self.env.settings.jitter_frames,
+                vad_threshold: self.env.settings.vad_threshold,
+                input_device: self.env.settings.input_device.clone(),
+                output_device: self.env.settings.output_device.clone(),
             },
             move |ev| {
                 let _ = jobs.send(Box::new(move |c: &mut Controller| c.on_voice_event(ev)));
@@ -1064,6 +1076,29 @@ impl Controller {
         });
     }
 
+    /// Ses aygıtlarını (ayrı thread'de; sürücü yoklaması bloklayabilir) listeler ve durum
+    /// çubuğuna tek satır olarak bildirir; tam liste günlüğe de yazılır.
+    fn list_devices(&self) {
+        let ui = self.ui.clone();
+        tokio::task::spawn_blocking(move || {
+            let (inputs, outputs) = digcord_voice::audio::list_devices();
+            tracing::info!(?inputs, ?outputs, "ses aygıtları");
+            let join = |v: &[String]| {
+                if v.is_empty() {
+                    "yok".to_owned()
+                } else {
+                    v.join(" | ")
+                }
+            };
+            let text = format!(
+                "Giriş: {} — Çıkış: {} (config: voice.input_device / output_device)",
+                join(&inputs),
+                join(&outputs)
+            );
+            let _ = ui.send(UiEvent::Notice(text));
+        });
+    }
+
     /// Tema dosyasını okur (ayrı thread'de) ve sonucu TUI'ye yollar.
     fn load_theme(&self, name: String) {
         let ui = self.ui.clone();
@@ -1182,7 +1217,13 @@ impl Controller {
                 }
             }
             Action::OpenExternal(url) => self.open_external(url),
-            Action::ApplySetting { key, value } => self.env.settings.apply(&key, &value),
+            Action::ApplySetting { key, value } => {
+                self.env.settings.apply(&key, &value);
+                if let Some(v) = &self.voice {
+                    v.set_vad_threshold(self.env.settings.vad_threshold);
+                }
+            }
+            Action::ListDevices => self.list_devices(),
             Action::SaveSettings(changes) => self.save_settings(changes),
             Action::LoadTheme(name) => self.load_theme(name),
             Action::Quit => return false,

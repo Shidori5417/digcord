@@ -952,6 +952,7 @@ fn voice_members_status_and_commands() {
     // Komutlar ve kısayollar.
     for (cmd, action) in [
         ("leave", Action::LeaveVoice),
+        ("devices", Action::ListDevices),
         ("mute", Action::ToggleMute),
         ("deaf", Action::ToggleDeaf),
     ] {
