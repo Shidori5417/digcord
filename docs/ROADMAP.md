@@ -3,13 +3,13 @@
 Her aşama bir öncekinin üzerine kurulur. Bir aşama, **kabul kriterlerinin tamamı** sağlanmadan bitmiş sayılmaz.
 Testler yan hesapta, kendi açtığın test sunucusunda yapılır.
 
-## Aşama 0 — İskelet
-- Git deposu + **private** GitHub deposu (bkz. `GIT_WORKFLOW.md`), dokümanlar ilk commit olarak push'lanmış.
-- Cargo workspace, crate'ler boş ama derleniyor; `cargo clippy -- -D warnings` temiz.
-- Tüm crate'lerde `license-file = "LICENSE"` ve `publish = false`.
-- tracing → dosyaya log (`~/.local/state/digcord/digcord.log`), token maskeleme.
-- ratatui iskeleti: boş üç panel, `q` ile çıkış, panic'te terminal geri yükleniyor.
-- CI: fmt + clippy + test (GitHub Actions).
+## Aşama 0 — İskelet ✅ (v0.1.0)
+- [x] Git deposu + **private** GitHub deposu (bkz. `GIT_WORKFLOW.md`), dokümanlar ilk commit olarak push'lanmış.
+- [x] Cargo workspace, crate'ler boş ama derleniyor; `cargo clippy --all-targets -- -D warnings` temiz.
+- [x] Tüm crate'lerde `license-file = "LICENSE"` ve `publish = false`.
+- [x] tracing → dosyaya log (`~/.local/state/digcord/digcord.log`), token maskeleme.
+- [x] ratatui iskeleti: boş üç panel, `q` ile çıkış, panic'te terminal geri yükleniyor.
+- [x] CI: fmt + clippy + test (GitHub Actions).
 
 **Kabul:** `cargo run` boş arayüzü açıyor, çıkış ve panic sonrası terminal bozulmuyor;
 GitHub'da depo private görünüyor, CI yeşil, `v0.1.0` etiketi atılmış.
