@@ -28,6 +28,49 @@ pub struct Message {
     pub attachments: Vec<Attachment>,
     /// Yanıt verilen mesaj (varsa; silinmişse `null`).
     pub referenced_message: Option<Box<Message>>,
+    #[serde(default)]
+    pub sticker_items: Vec<StickerItem>,
+    #[serde(default)]
+    pub embeds: Vec<Embed>,
+    /// Arama mesajı (tür 3).
+    pub call: Option<Call>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StickerItem {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Embed {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Call {
+    pub ended_timestamp: Option<String>,
+}
+
+/// Mesaj türleri (kullanılanlar). Bunların dışındaki türler sistem mesajıdır.
+pub mod message_kind {
+    pub const DEFAULT: u8 = 0;
+    pub const RECIPIENT_ADD: u8 = 1;
+    pub const RECIPIENT_REMOVE: u8 = 2;
+    pub const CALL: u8 = 3;
+    pub const CHANNEL_NAME_CHANGE: u8 = 4;
+    pub const CHANNEL_ICON_CHANGE: u8 = 5;
+    pub const PINNED: u8 = 6;
+    pub const MEMBER_JOIN: u8 = 7;
+    pub const BOOST: u8 = 8;
+    pub const BOOST_TIER_1: u8 = 9;
+    pub const BOOST_TIER_2: u8 = 10;
+    pub const BOOST_TIER_3: u8 = 11;
+    pub const THREAD_CREATED: u8 = 18;
+    pub const REPLY: u8 = 19;
+    pub const CHAT_INPUT_COMMAND: u8 = 20;
+    pub const CONTEXT_MENU_COMMAND: u8 = 23;
 }
 
 impl Message {
@@ -38,6 +81,15 @@ impl Message {
 
     pub fn is_edited(&self) -> bool {
         self.edited_timestamp.is_some()
+    }
+
+    /// Kullanıcının yazdığı değil, Discord'un ürettiği mesaj (arama, katılma, sabitleme...).
+    pub fn is_system(&self) -> bool {
+        use message_kind::*;
+        !matches!(
+            self.kind,
+            DEFAULT | REPLY | CHAT_INPUT_COMMAND | CONTEXT_MENU_COMMAND
+        )
     }
 }
 
@@ -100,6 +152,22 @@ mod tests {
             m.referenced_message.as_ref().map(|r| r.content.as_str()),
             Some("selam")
         );
+    }
+
+    #[test]
+    fn parses_call_sticker_embed() {
+        let json = r#"{
+            "id":"10","channel_id":"2","author":{"id":"4","username":"a","global_name":null},
+            "content":"","type":3,"edited_timestamp":"2026-01-01T00:00:00+00:00",
+            "call":{"participants":["4"],"ended_timestamp":"2026-01-01T00:05:00+00:00"},
+            "sticker_items":[{"id":"1","name":"kedi","format_type":1}],
+            "embeds":[{"type":"rich","title":"Başlık","description":"açıklama"}]
+        }"#;
+        let m: Message = serde_json::from_str(json).expect("mesaj");
+        assert!(m.is_system());
+        assert!(m.call.is_some_and(|c| c.ended_timestamp.is_some()));
+        assert_eq!(m.sticker_items[0].name, "kedi");
+        assert_eq!(m.embeds[0].title.as_deref(), Some("Başlık"));
     }
 
     #[test]

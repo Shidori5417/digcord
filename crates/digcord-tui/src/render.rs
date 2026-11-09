@@ -2,7 +2,7 @@
 //!
 //! Saf fonksiyonlar: ağ/disk yok. Dış dünya (isim çözümleme, saat biçimi) `Resolver` ile gelir.
 
-use digcord_model::{Message, User};
+use digcord_model::{Message, User, message_kind as kind};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -38,7 +38,9 @@ pub trait Resolver {
 /// Aynı yazar, öncekinden 7 dakikadan az sonra ve yanıt değil → başlık satırı yok.
 pub fn is_grouped(prev: Option<&Message>, msg: &Message) -> bool {
     let Some(prev) = prev else { return false };
-    prev.author.id == msg.author.id
+    !prev.is_system()
+        && !msg.is_system()
+        && prev.author.id == msg.author.id
         && msg.referenced_message.is_none()
         && msg.kind != KIND_REPLY
         && msg.timestamp_ms().abs_diff(prev.timestamp_ms()) < GROUP_WINDOW_MS
@@ -55,6 +57,20 @@ pub fn message_lines(
 ) -> Vec<Line<'static>> {
     let width = usize::from(width).max(1);
     let mut out = Vec::new();
+
+    if let Some(text) = system_text(msg, r) {
+        out.push(Line::default());
+        out.push(fit_line(
+            vec![
+                ("→ ".into(), dim()),
+                (text, Style::new().add_modifier(Modifier::ITALIC)),
+                ("  ".into(), Style::new()),
+                (r.clock(msg.timestamp_ms()), dim()),
+            ],
+            width,
+        ));
+        return out;
+    }
 
     if !grouped {
         out.push(Line::default());
@@ -80,7 +96,8 @@ pub fn message_lines(
     }
 
     let mut content = content_lines(msg, r, width);
-    if content.is_empty() && msg.attachments.is_empty() {
+    let extras = extra_lines(msg, width);
+    if content.is_empty() && msg.attachments.is_empty() && extras.is_empty() {
         content.push(fit_line(vec![("  (boş mesaj)".into(), dim())], width));
     }
 
@@ -96,6 +113,7 @@ pub fn message_lines(
         }
     }
     out.extend(content);
+    out.extend(extras);
 
     for a in &msg.attachments {
         let info = match (a.width, a.height) {
@@ -104,6 +122,76 @@ pub fn message_lines(
         };
         let text = format!("  [ek: {} {info}]", a.filename);
         out.push(fit_line(vec![(text, dim())], width));
+    }
+    out
+}
+
+/// Sistem mesajının tek satırlık metni; normal mesajlarda `None`.
+fn system_text(msg: &Message, r: &dyn Resolver) -> Option<String> {
+    if !msg.is_system() {
+        return None;
+    }
+    let who = r.author_name(&msg.author);
+    let target = msg
+        .mentions
+        .first()
+        .map(|u| r.author_name(u))
+        .unwrap_or_else(|| "birini".into());
+    Some(match msg.kind {
+        kind::CALL => {
+            let ended = msg
+                .call
+                .as_ref()
+                .is_some_and(|c| c.ended_timestamp.is_some());
+            if ended {
+                format!("{who} bir arama başlattı (bitti)")
+            } else {
+                format!("{who} bir arama başlattı")
+            }
+        }
+        kind::RECIPIENT_ADD => format!("{who}, {target} kişisini gruba ekledi"),
+        kind::RECIPIENT_REMOVE if msg.mentions.first().is_none_or(|u| u.id == msg.author.id) => {
+            format!("{who} gruptan ayrıldı")
+        }
+        kind::RECIPIENT_REMOVE => format!("{who}, {target} kişisini gruptan çıkardı"),
+        kind::CHANNEL_NAME_CHANGE => format!("{who} adı değiştirdi: {}", msg.content),
+        kind::CHANNEL_ICON_CHANGE => format!("{who} grup simgesini değiştirdi"),
+        kind::PINNED => format!("{who} bir mesajı sabitledi"),
+        kind::MEMBER_JOIN => format!("{who} sunucuya katıldı"),
+        kind::BOOST => format!("{who} sunucuya takviye yaptı"),
+        kind::BOOST_TIER_1 | kind::BOOST_TIER_2 | kind::BOOST_TIER_3 => {
+            format!("{who} sunucuya takviye yaptı, sunucu seviye atladı")
+        }
+        kind::THREAD_CREATED => format!("{who} bir konu başlattı: {}", msg.content),
+        other => format!("{who} · sistem mesajı (tür {other})"),
+    })
+}
+
+/// Çıkartma ve embed satırları.
+fn extra_lines(msg: &Message, width: usize) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    for s in &msg.sticker_items {
+        out.push(fit_line(
+            vec![(format!("  [çıkartma: {}]", s.name), dim())],
+            width,
+        ));
+    }
+    for e in &msg.embeds {
+        let title = e.title.as_deref().filter(|t| !t.is_empty());
+        let desc = e
+            .description
+            .as_deref()
+            .and_then(|d| d.lines().next())
+            .filter(|d| !d.is_empty());
+        let text = match (title, desc) {
+            (Some(t), Some(d)) => format!("{t} — {d}"),
+            (Some(t), None) => t.to_owned(),
+            (None, Some(d)) => d.to_owned(),
+            // Sadece bağlantı önizlemesi: bağlantı içerikte zaten görünüyor.
+            (None, None) if !msg.content.is_empty() => continue,
+            (None, None) => e.url.clone().unwrap_or_else(|| "(içerik yok)".into()),
+        };
+        out.push(fit_line(vec![(format!("  [embed: {text}]"), dim())], width));
     }
     out
 }
@@ -835,5 +923,71 @@ mod tests {
         // Aradaki boş satırlar korunur.
         let lines = body(&msg(T0, 1, "a\n\nb"), 30);
         assert_eq!(texts(&lines), ["  a", "", "  b"]);
+    }
+
+    #[test]
+    fn system_messages_are_single_line_and_break_groups() {
+        let mut call: Message = serde_json::from_value(serde_json::json!({
+            "id": "1000000000000000000", "channel_id": "2",
+            "author": {"id": "4", "username": "ali", "global_name": null},
+            "content": "", "type": 3, "edited_timestamp": "2026-01-01T00:00:00+00:00",
+            "call": {"participants": ["4"], "ended_timestamp": "2026-01-01T00:05:00+00:00"}
+        }))
+        .expect("arama");
+        let lines = message_lines(&call, false, &SysRes, 60);
+        assert_eq!(lines.len(), 2, "ayırıcı + tek satır");
+        let text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("ali bir arama başlattı (bitti)"), "{text}");
+        assert!(!text.contains("düzenlendi"));
+
+        let normal: Message = serde_json::from_value(serde_json::json!({
+            "id": "1000000000000000001", "channel_id": "2",
+            "author": {"id": "4", "username": "ali", "global_name": null}, "content": "selam"
+        }))
+        .expect("mesaj");
+        assert!(!is_grouped(Some(&call), &normal));
+        call.kind = 0;
+        assert!(is_grouped(Some(&call), &normal));
+    }
+
+    #[test]
+    fn stickers_and_embeds_shown_instead_of_empty() {
+        let m: Message = serde_json::from_value(serde_json::json!({
+            "id": "1000000000000000000", "channel_id": "2",
+            "author": {"id": "4", "username": "ali", "global_name": null}, "content": "",
+            "sticker_items": [{"id": "1", "name": "kedi", "format_type": 1}],
+            "embeds": [{"type": "rich", "title": "Başlık", "description": "açıklama\nikinci"}]
+        }))
+        .expect("mesaj");
+        let text: Vec<String> = message_lines(&m, true, &SysRes, 60)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(text, ["  [çıkartma: kedi]", "  [embed: Başlık — açıklama]"]);
+    }
+
+    struct SysRes;
+    impl Resolver for SysRes {
+        fn user_name(&self, _: u64) -> Option<String> {
+            None
+        }
+        fn channel_name(&self, _: u64) -> Option<String> {
+            None
+        }
+        fn role_name(&self, _: u64) -> Option<String> {
+            None
+        }
+        fn is_me(&self, _: u64) -> bool {
+            false
+        }
+        fn author_name(&self, user: &User) -> String {
+            user.username.clone()
+        }
+        fn clock(&self, _: u64) -> String {
+            "12:00".into()
+        }
+        fn timestamp(&self, _: i64, _: Option<char>) -> String {
+            String::new()
+        }
     }
 }
