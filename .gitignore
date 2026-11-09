@@ -1,0 +1,22 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Editör / sistem
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Yerel ortam ve gizli bilgiler — ASLA commit'leme
+.env
+.env.*
+*.token
+secrets/
+
+# Log ve önbellek
+*.log
+/logs/
+
+# Ham ağ kayıtları (anonimleştirilmemiş)
+/captures/

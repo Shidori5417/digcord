@@ -1,0 +1,131 @@
+# TUI Tasarımı
+
+## Ana düzen
+
+```
+┌──┬──────────────────┬─────────────────────────────────────────┬────────────────┐
+│DM│ ▾ BİLGİ           │ #genel  — Sunucu konusu                 │ ÇEVRİMİÇİ — 12 │
+│──│   # duyurular    │─────────────────────────────────────────│ ● Ahmet        │
+│S1│   # genel     3  │ Ahmet  14:02                            │ ● Ayşe         │
+│S2│ ▾ SES            │   selam herkese                         │ ◐ Can          │
+│S3│   🔊 Sohbet       │ Ayşe  14:03                             │                │
+│  │     ● Can        │   ↳ Ahmet: selam herkese                │ ÇEVRİMDIŞI — 30│
+│  │                  │   naber 👋                               │ ○ ...          │
+│  │                  │   [resim: ekran.png 1280×720]           │                │
+│  │                  │                                         │                │
+│  │                  │─────────────────────────────────────────│                │
+│  │ 🔊 Sohbet  🎤 🎧   │ > mesaj yaz...                          │                │
+└──┴──────────────────┴─────────────────────────────────────────┴────────────────┘
+ [NORMAL]  Digcord · bağlı · 42 ms                              Ayşe yazıyor...
+```
+
+- **Sunucu şeridi** (en sol, dar): DM + sunucu kısaltmaları/ikonları, okunmamış noktası, mention sayısı.
+- **Kanal ağacı:** kategoriler katlanabilir, okunmamış kalın, mention sayısı sağda. Altta ses durumu çubuğu.
+- **Mesaj görünümü:** gruplanmış mesajlar (aynı yazar, < 7 dk), yanıt önizlemesi, tepkiler, ekler, embed'ler.
+- **Üye listesi:** isteğe bağlı (`Ctrl+M` aç/kapat), dar terminalde otomatik gizlenir.
+- **Durum çubuğu:** mod, bağlantı durumu/gecikme, yazıyor bilgisi, hatalar.
+
+Duyarlı düzen: < 100 sütun → üye listesi kapanır; < 70 sütun → kanal ağacı açılır pencereye döner.
+
+## Modlar (vim benzeri, opsiyonel)
+
+| Mod | Açıklama |
+|---|---|
+| NORMAL | Gezinme, mesaj seçme |
+| INSERT | Mesaj yazma |
+| SELECT | Mesaj üzerinde eylem (yanıtla, düzenle, sil, tepki, kopyala, eki aç) |
+| COMMAND | `:` komutları (`:join`, `:quit`, `:theme`) |
+
+Vim istemeyenler için config'de `keymap = "simple"` (her zaman yazma modu, ok tuşlarıyla gezinme).
+
+## Varsayılan kısayollar
+
+| Tuş | Eylem |
+|---|---|
+| `Ctrl+K` | Hızlı geçiş (kanal/sunucu/DM bulanık arama) |
+| `Tab` / `Shift+Tab` | Paneller arası odak |
+| `j` / `k` | Aşağı / yukarı |
+| `i` | Yazma moduna geç |
+| `Esc` | NORMAL moda dön / pencereyi kapat |
+| `Enter` (INSERT) | Gönder; `Shift+Enter`/`Alt+Enter` yeni satır |
+| `r` | Seçili mesaja yanıt |
+| `e` | Kendi mesajını düzenle (INSERT'te boşken `↑` de son mesajı düzenler) |
+| `d d` | Sil (onay ister) |
+| `+` | Tepki ekle (emoji seçici) |
+| `o` | Eki/linki aç (xdg-open) veya resmi tam ekran göster |
+| `y` | Mesaj metnini kopyala |
+| `Ctrl+M` | Üye listesi aç/kapat |
+| `Ctrl+Shift+M` / `Ctrl+Shift+D` | Mikrofon / kulaklık sessize al |
+| `Alt+↑/↓` | Okunmamış önceki/sonraki kanal |
+| `q` / `:q` | Çıkış |
+
+Tüm kısayollar `config.toml` içinden değiştirilebilir.
+
+## Mesaj işleme
+
+- Markdown alt kümesi: **kalın**, *italik*, __altı çizili__, ~~üstü çizili~~, `kod`, kod blokları
+  (dil adına göre sözdizimi renklendirme — `syntect` opsiyonel), `> alıntı`, `||spoiler||` (gizli, `o` ile aç),
+  başlıklar, listeler.
+- Mention'lar (`<@id>`, `<#id>`, `<@&rol>`) isimle ve renkle; kendine mention vurgulu arka plan.
+- Özel emoji: grafik destekliyse küçük resim, değilse `:isim:`.
+- Unicode emoji genişliği `unicode-width` ile; hizalama bozulmalarına dikkat.
+- Zaman damgaları `<t:...:R>` biçimleri yerelleştirilmiş gösterilir.
+
+## Resim gösterimi
+
+- Algılama sırası: Kitty grafik protokolü → iTerm2 → Sixel → yarım blok (`▀`) yedeği.
+- Mesaj içinde küçük önizleme (en fazla N satır yükseklik, config), `o` ile tam ekran görüntüleyici.
+- Kaydırma sırasında resimler yeniden kodlanmaz; hücre boyutuna göre önbellekten basılır.
+- `images = "off" | "thumbnail" | "full"` ayarı.
+
+## Bildirimler
+
+- Mention, DM ve "tüm mesajlar" bildirimi açık kanallarda masaüstü bildirimi (notify-rust → KDE).
+- Sunucu/kanal sessize alma ayarlarına (READY'deki kullanıcı guild ayarları) uyulur.
+- Terminal odaktaysa ve ilgili kanal açıksa bildirim gönderilmez.
+- Opsiyonel terminal zili / pencere başlığında okunmamış sayısı.
+
+## Ses arayüzü
+
+- Kanal ağacında ses kanalındaki kullanıcılar; konuşan kişi vurgulanır (speaking olayları).
+- Alt çubuk: bağlı kanal, mikrofon/kulaklık durumu, gecikme, şifreleme durumu (DAVE ✓).
+- Kullanıcıya tıklama/seçme → ses seviyesi kaydırıcısı, yerel susturma.
+- Ses ayarları penceresi: giriş/çıkış cihazı, PTT tuşu, VAD eşiği.
+
+## Config
+
+`~/.config/digcord/config.toml`
+
+```toml
+[ui]
+keymap = "vim"           # "vim" | "simple"
+theme = "default"        # temalar ~/.config/digcord/themes/*.toml
+timestamp_format = "%H:%M"
+show_member_list = true
+images = "thumbnail"     # "off" | "thumbnail" | "full"
+image_max_rows = 10
+
+[behavior]
+send_typing = true
+send_read_receipts = true
+message_window = 200      # kanal başına bellekte tutulan mesaj
+
+[notifications]
+enabled = true
+on = ["mention", "dm"]
+
+[voice]
+input_device = "default"
+output_device = "default"
+mode = "vad"             # "vad" | "ptt"
+ptt_key = "ctrl+space"
+
+[client]
+# İstemci kimliği profili — bkz. docs/PROTOCOL_NOTES.md
+build_number = 0          # 0 = otomatik/varsayılan
+
+[keys]
+# "eylem" = "tuş" geçersiz kılmaları
+```
+
+Token config'de **tutulmaz** (keyring).
