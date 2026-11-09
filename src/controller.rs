@@ -12,12 +12,16 @@ use digcord_model::{
     ClientProperties, DEFAULT_BUILD_NUMBER, DEFAULT_CHROME_MAJOR, Message, MessageDelete,
     ReactionEmoji, Ready, Snowflake, Token,
 };
-use digcord_store::State;
+use digcord_store::{NotifyFilter, State};
 use digcord_tui::{Action, Shared, Status, UiEvent};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
+use crate::config::{Config as AppConfig, NotifyOn};
 use crate::keystore;
+
+/// Aynı kanala okundu isteği en fazla bu aralıkla (fazlası birleştirilir).
+const ACK_EVERY: Duration = Duration::from_secs(3);
 
 /// Kanal açılışında ve yukarı kaydırınca istenen mesaj sayıları (PROTOCOL_NOTES §4.1).
 const FIRST_PAGE: u8 = 10;
@@ -34,8 +38,11 @@ struct Session {
 
 impl Session {
     fn start(token: Token, env: &Env, updates: mpsc::Sender<Update>) -> Result<Self, HttpError> {
-        let properties =
-            ClientProperties::chrome_linux(&env.locale, DEFAULT_CHROME_MAJOR, DEFAULT_BUILD_NUMBER);
+        let properties = ClientProperties::chrome_linux(
+            &env.locale,
+            env.settings.chrome_major,
+            env.settings.build_number,
+        );
         let http = Arc::new(Http::new(&token, &properties, &env.timezone)?);
         let (stop, stop_rx) = watch::channel(false);
         let (commands, commands_rx) = mpsc::channel(64);
@@ -63,16 +70,51 @@ impl Session {
 pub struct Env {
     pub locale: String,
     pub timezone: String,
+    pub settings: Settings,
+}
+
+/// config.toml'dan gelen davranış ayarları.
+#[derive(Debug, Clone)]
+pub struct Settings {
+    pub send_typing: bool,
+    pub send_read_receipts: bool,
+    pub notify: Option<NotifyFilter>,
+    pub build_number: u32,
+    pub chrome_major: u32,
+}
+
+impl Settings {
+    pub fn from_config(c: &AppConfig) -> Self {
+        let on = &c.notifications.on;
+        Self {
+            send_typing: c.behavior.send_typing,
+            send_read_receipts: c.behavior.send_read_receipts,
+            notify: c.notifications.enabled.then(|| NotifyFilter {
+                mention: on.contains(&NotifyOn::Mention),
+                dm: on.contains(&NotifyOn::Dm),
+                all: on.contains(&NotifyOn::All),
+            }),
+            build_number: match c.client.build_number {
+                0 => DEFAULT_BUILD_NUMBER,
+                n => n,
+            },
+            chrome_major: match c.client.chrome_major {
+                0 => DEFAULT_CHROME_MAJOR,
+                n => n,
+            },
+        }
+    }
 }
 
 impl Env {
-    pub fn detect() -> Self {
+    pub fn detect(settings: Settings) -> Self {
         Self {
             locale: system_locale(),
             timezone: jiff::tz::TimeZone::system()
                 .iana_name()
                 .unwrap_or("UTC")
                 .to_owned(),
+            settings,
         }
     }
 }
@@ -114,6 +156,11 @@ struct Controller {
     loading: HashSet<Snowflake>,
     /// op 8 ile zaten istenmiş (guild, kullanıcı) çiftleri.
     requested_members: HashSet<(Snowflake, Snowflake)>,
+    /// Terminal odakta mı (odak olayları desteklenmiyorsa hep `true`).
+    focused: bool,
+    last_ack: std::collections::HashMap<Snowflake, std::time::Instant>,
+    /// Kısıtlama yüzünden ertelenmiş okundu: kanal → mesaj.
+    ack_due: std::collections::HashMap<Snowflake, Snowflake>,
 }
 
 impl Controller {
@@ -411,6 +458,107 @@ impl Controller {
         } else {
             self.fetch(open, None, FIRST_PAGE);
         }
+        self.mark_seen(open.channel);
+    }
+
+    /// Açık ve görülen kanal: yerelde okundu, ayar açıksa sunucuya okundu (kısıtlamalı).
+    fn mark_seen(&mut self, channel: Snowflake) {
+        if !self.focused || self.open.is_none_or(|o| o.channel != channel) {
+            return;
+        }
+        let latest = self.shared.read_state(|st| {
+            let pending = st.is_unread(channel) || st.mention_count(channel) > 0;
+            let last = st.channel(channel).and_then(|c| c.last_message_id);
+            pending.then_some(last).flatten()
+        });
+        let Some(message) = latest else { return };
+        self.write(|st| st.mark_read(channel, message));
+        if !self.env.settings.send_read_receipts {
+            return;
+        }
+        let now = std::time::Instant::now();
+        match self.last_ack.get(&channel) {
+            Some(t) if now.duration_since(*t) < ACK_EVERY => {
+                if self.ack_due.insert(channel, message).is_none() {
+                    let wait = ACK_EVERY - now.duration_since(*t);
+                    self.spawn(tokio::time::sleep(wait), move |c, ()| c.flush_ack(channel));
+                }
+            }
+            _ => self.send_ack(channel, message),
+        }
+    }
+
+    fn flush_ack(&mut self, channel: Snowflake) {
+        if let Some(message) = self.ack_due.remove(&channel) {
+            self.send_ack(channel, message);
+        }
+    }
+
+    fn send_ack(&mut self, channel: Snowflake, message: Snowflake) {
+        let Some(http) = self.session.as_ref().map(|s| s.http.clone()) else {
+            return;
+        };
+        self.last_ack.insert(channel, std::time::Instant::now());
+        let guild = self
+            .shared
+            .read_state(|st| st.channel(channel).and_then(|c| c.guild_id));
+        tokio::spawn(async move {
+            if let Err(e) = http.ack(Page { guild, channel }, message).await {
+                tracing::debug!("okundu gönderilemedi: {e}");
+            }
+        });
+    }
+
+    /// Yeni mesaj için masaüstü bildirimi (açık+odaktaki kanal hariç).
+    fn maybe_notify(&self, msg: &Message) {
+        let Some(filter) = self.env.settings.notify else {
+            return;
+        };
+        if self.focused && self.open.is_some_and(|o| o.channel == msg.channel_id) {
+            return;
+        }
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+        )
+        .unwrap_or(i64::MAX);
+        let content = self.shared.read_state(|st| {
+            if !st.should_notify(msg, filter, now) {
+                return None;
+            }
+            let author = st.author_name(msg.guild_id, &msg.author);
+            let place = match msg.guild_id {
+                Some(g) => {
+                    let guild = st
+                        .guilds()
+                        .iter()
+                        .find(|x| x.id == g)
+                        .map_or("?", |x| x.name.as_str());
+                    format!("{author} · #{} ({guild})", st.channel_title(msg.channel_id))
+                }
+                None => author,
+            };
+            Some((place, msg.content.chars().take(200).collect::<String>()))
+        });
+        let Some((summary, body)) = content else {
+            return;
+        };
+        tokio::task::spawn_blocking(move || {
+            let body = if body.is_empty() {
+                "(ek veya embed)".to_owned()
+            } else {
+                body
+            };
+            if let Err(e) = notify_rust::Notification::new()
+                .appname("Digcord")
+                .summary(&summary)
+                .body(&body)
+                .show()
+            {
+                tracing::debug!("bildirim gösterilemedi: {e}");
+            }
+        });
     }
 
     fn load_older(&mut self, channel: Snowflake) {
@@ -457,13 +605,12 @@ impl Controller {
                 });
                 if let Some(open) = self.open.filter(|o| o.channel == h.channel) {
                     self.request_members(open);
+                    self.mark_seen(open.channel);
                 }
             }
             Err(e) => {
                 tracing::warn!("geçmiş alınamadı: {e}");
-                self.send(UiEvent::Status(Status::Failed(format!(
-                    "geçmiş alınamadı: {e}"
-                ))));
+                self.notice(format!("Geçmiş alınamadı: {e}"));
             }
         }
     }
@@ -521,7 +668,12 @@ impl Controller {
     fn on_event(&mut self, event: GatewayEvent) {
         use GatewayEvent as E;
         match event {
-            E::MessageCreate(m) => self.write(|st| st.message_create(*m)),
+            E::MessageCreate(m) => {
+                self.maybe_notify(&m);
+                let channel = m.channel_id;
+                self.write(|st| st.message_create(*m));
+                self.mark_seen(channel);
+            }
             E::MessageUpdate(m) => self.write(|st| st.message_update(*m)),
             E::MessageDelete(d) => self.write(|st| st.message_delete(&d)),
             E::ChannelCreate(c) | E::ChannelUpdate(c) => self.write(|st| st.upsert_channel(&c)),
@@ -587,7 +739,17 @@ impl Controller {
                 emoji,
                 add,
             } => self.react(Page { guild, channel }, message, emoji, add),
-            Action::Typing { guild, channel } => self.typing(Page { guild, channel }),
+            Action::Typing { guild, channel } => {
+                if self.env.settings.send_typing {
+                    self.typing(Page { guild, channel });
+                }
+            }
+            Action::Focus(focused) => {
+                self.focused = focused;
+                if let Some(open) = self.open {
+                    self.mark_seen(open.channel);
+                }
+            }
             Action::Upload {
                 guild,
                 channel,
@@ -651,6 +813,9 @@ pub async fn run(
         subscribed: HashSet::new(),
         loading: HashSet::new(),
         requested_members: HashSet::new(),
+        focused: true,
+        last_ack: std::collections::HashMap::new(),
+        ack_due: std::collections::HashMap::new(),
     };
 
     let stored = blocking(|| {

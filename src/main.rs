@@ -1,3 +1,4 @@
+mod config;
 mod controller;
 mod keystore;
 mod logging;
@@ -9,6 +10,15 @@ fn main() -> anyhow::Result<()> {
     // TUI kendi (terminali geri yükleyen) hook'unu bundan sonra kurar; sıra önemli.
     install_panic_logging();
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "digcord başlıyor");
+
+    // Ayarlar: dosya yoksa varsayılanlar; bozuksa açılmadan hata ver (sessizce yok saymak yerine).
+    let (config, warnings) = match config::Config::default_path() {
+        Some(path) => config::Config::load(&path)?,
+        None => (config::Config::default(), Vec::new()),
+    };
+    for w in &warnings {
+        tracing::warn!("{w}");
+    }
 
     // TLS: süreç genelinde tek kripto sağlayıcı (ring); gateway ve HTTP aynısını kullanır.
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -26,9 +36,18 @@ fn main() -> anyhow::Result<()> {
         action_rx,
         ui_tx.clone(),
         shared.clone(),
-        controller::Env::detect(),
+        controller::Env::detect(controller::Settings::from_config(&config)),
     ));
 
+    if let Some(w) = warnings.first() {
+        let more = warnings.len() - 1;
+        let text = if more > 0 {
+            format!("config: {w} (+{more})")
+        } else {
+            format!("config: {w}")
+        };
+        let _ = ui_tx.send(digcord_tui::UiEvent::Notice(text));
+    }
     let result = digcord_tui::run(ui_tx, ui_rx, shared, |action| {
         let _ = action_tx.send(action);
     });

@@ -42,3 +42,6 @@ tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
 zbus-secret-service-keyring-store = { version = "1.0.1", features = ["crypto-rust"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+notify-rust = "4.17.0"
+toml = "1.2.1"
+serde = { version = "1.0.229", features = ["derive"] }
