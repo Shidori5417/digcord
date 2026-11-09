@@ -376,6 +376,128 @@ fn frame_time_10k_messages() {
     assert!(bottom.as_millis() < 4 && middle.as_millis() < 4);
 }
 
+/// Bellek (RSS, `/proc/self/statm`; `unsafe` gerektirmez), MiB.
+fn rss_mib() -> f64 {
+    let s = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
+    let pages: f64 = s
+        .split_whitespace()
+        .nth(1)
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(0.0);
+    pages * 4096.0 / 1_048_576.0
+}
+
+/// Zirve RSS (`VmHWM`), MiB.
+fn peak_rss_mib() -> f64 {
+    let s = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    s.lines()
+        .find_map(|l| l.strip_prefix("VmHWM:"))
+        .and_then(|l| l.split_whitespace().next())
+        .and_then(|kb| kb.parse::<f64>().ok())
+        .map_or(0.0, |kb| kb / 1024.0)
+}
+
+/// Sentetik büyük hesap (100 sunucu / ~5000 kanal / 2000 kullanıcı / 300 DM): ayrıştırma,
+/// `load_ready`, bellek ve kare süresi. Çalıştırma:
+/// `cargo test -p digcord-tui --release -- --ignored --nocapture large_account_profile`
+#[test]
+#[ignore]
+fn large_account_profile() {
+    use crate::perf_synth as syn;
+    use std::time::Instant;
+
+    // Üretim ayrı iş parçacığında (kendi malloc arena'sı): üretim çöpü ölçülen yığını
+    // kirletmesin. Taban RSS üretimden sonra alınır.
+    let (json, raw_msgs) = std::thread::spawn(|| {
+        let json = syn::ready_json();
+        let mut rng = syn::Lcg::new(99);
+        let raw: Vec<(u64, u64, Vec<u8>)> = syn::text_channels()
+            .step_by(8)
+            .take(50)
+            .map(|(g, ch)| (g, ch, syn::messages_json(ch, g, 200, &mut rng)))
+            .collect();
+        (json, raw)
+    })
+    .join()
+    .expect("üretim");
+    let base = rss_mib();
+    println!(
+        "READY JSON: {:.2} MiB; RSS taban {base:.1} MiB",
+        json.len() as f64 / 1_048_576.0
+    );
+    let before_parse = rss_mib();
+
+    let t = Instant::now();
+    let ready: Ready = serde_json::from_slice(&json).expect("ready ayrıştırma");
+    println!("(a) READY JSON ayrıştırma: {:?}", t.elapsed());
+    println!(
+        "    kanal {}, sunucu {}, DM {}, kullanıcı {}, read_state {}",
+        ready.channel_count(),
+        ready.guilds.len(),
+        ready.private_channels.len(),
+        ready.users.len(),
+        ready.read_state.entries.len()
+    );
+    println!(
+        "    RSS ayrıştırma sonrası: +{:.1} MiB",
+        rss_mib() - before_parse
+    );
+
+    let shared = Arc::new(Shared::default());
+    let before_load = rss_mib();
+    {
+        let mut st = shared.state.write().expect("kilit");
+        let t = Instant::now();
+        st.load_ready(&ready);
+        println!("(b) State::load_ready: {:?}", t.elapsed());
+    }
+    drop(ready);
+    drop(json);
+    let after_load = rss_mib();
+    println!(
+        "(c) RSS: yükleme öncesi {before_load:.1}, ready bırakıldıktan sonra {after_load:.1} MiB (üst sınır, başlangıca göre +{:.1})",
+        after_load - base
+    );
+
+    // 50 kanal x 200 mesaj
+    let mut parse_total = std::time::Duration::ZERO;
+    let bytes: usize = raw_msgs.iter().map(|(_, _, r)| r.len()).sum();
+    let before_msgs = rss_mib();
+    {
+        let mut st = shared.state.write().expect("kilit");
+        for (_, ch, raw) in &raw_msgs {
+            let t = Instant::now();
+            let msgs: Vec<Message> = serde_json::from_slice(raw).expect("mesajlar");
+            parse_total += t.elapsed();
+            st.history_loaded(Snowflake(*ch), None, 201, msgs);
+        }
+    }
+    println!(
+        "    50x200 mesaj: JSON {:.1} MiB, ayrıştırma {parse_total:?}",
+        bytes as f64 / 1_048_576.0
+    );
+    println!(
+        "(d) RSS 10k mesaj sonrası: {:.1} MiB (mesajlar +{:.1} MiB); zirve RSS {:.1} MiB",
+        rss_mib(),
+        rss_mib() - before_msgs,
+        peak_rss_mib()
+    );
+
+    // (e) bir kare: ilk sunucunun ilk kanalı (mesajları yüklü)
+    let mut app = test_app(shared);
+    open_sohbet(&mut app);
+    let mut terminal = Terminal::new(TestBackend::new(200, 60)).expect("terminal");
+    let t = Instant::now();
+    terminal.draw(|f| app.draw(f)).expect("çizim");
+    println!("(e) ilk kare (soğuk): {:?}", t.elapsed());
+    let n = 200;
+    let t = Instant::now();
+    for _ in 0..n {
+        terminal.draw(|f| app.draw(f)).expect("çizim");
+    }
+    println!("    kare başına (sıcak): {:?}", t.elapsed() / n);
+}
+
 fn type_text(app: &mut App, text: &str) -> Vec<Action> {
     text.chars()
         .filter_map(|c| app.handle(key(KeyCode::Char(c))))

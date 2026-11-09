@@ -88,6 +88,8 @@ reddedilmiyor, 30 dk kesintisiz çalışıyor, ses thread'i CPU'nun < %3'ünü k
 - Thread'ler ve forum kanalları.
 - Arama (`/search` uç noktası), sabitlenen mesajlar.
 - Performans profili: açılış süresi, bellek (hedef: büyük hesapta < 150 MB).
+  - [x] Sentetik büyük hesapla ölçüldü (veri işleme < 10 ms, ~50 MiB; bkz. `docs/PERFORMANCE.md`).
+  - [ ] Gerçek hesapla canlı ölçüm (bekliyor).
 - Paketleme: AUR paketi (`digcord-git`).
 
 ## Sonraki opsiyonel aşamalar (ana yapının dışında)

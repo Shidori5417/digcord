@@ -953,4 +953,6 @@ fn top_scroll(
 }
 
 #[cfg(test)]
+mod perf_synth;
+#[cfg(test)]
 mod tests;
