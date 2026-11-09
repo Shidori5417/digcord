@@ -83,6 +83,14 @@ impl Resolver for Res<'_> {
         }
     }
 
+    fn is_pending(&self, id: u64) -> bool {
+        self.st.is_pending(Snowflake(id))
+    }
+
+    fn is_failed(&self, id: u64) -> bool {
+        self.st.is_failed(Snowflake(id))
+    }
+
     fn timestamp(&self, unix_secs: i64, format: Option<char>) -> String {
         let Some(z) = unix_secs.checked_mul(1000).and_then(|ms| self.zoned(ms)) else {
             return "?".to_owned();

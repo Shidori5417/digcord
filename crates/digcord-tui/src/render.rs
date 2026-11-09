@@ -33,6 +33,14 @@ pub trait Resolver {
     fn clock(&self, unix_ms: u64) -> String;
     /// Discord `<t:unix:F>` zaman damgası metni.
     fn timestamp(&self, unix_secs: i64, format: Option<char>) -> String;
+    /// İyimser gönderim durumu: mesaj henüz sunucuya ulaşmadı.
+    fn is_pending(&self, _id: u64) -> bool {
+        false
+    }
+    /// İyimser gönderim başarısız oldu.
+    fn is_failed(&self, _id: u64) -> bool {
+        false
+    }
 }
 
 /// Aynı yazar, öncekinden 7 dakikadan az sonra ve yanıt değil → başlık satırı yok.
@@ -115,6 +123,18 @@ pub fn message_lines(
     out.extend(content);
     out.extend(extras);
 
+    if r.is_failed(msg.id.0) {
+        out.push(fit_line(
+            vec![(
+                "  ✗ gönderilemedi (seçip Enter: tekrar dene, d d: sil)".into(),
+                Style::new().fg(Color::Red),
+            )],
+            width,
+        ));
+    } else if r.is_pending(msg.id.0) {
+        out.push(fit_line(vec![("  gönderiliyor…".into(), dim())], width));
+    }
+
     for a in &msg.attachments {
         let info = match (a.width, a.height) {
             (Some(w), Some(h)) => format!("{w}×{h}"),
@@ -122,6 +142,9 @@ pub fn message_lines(
         };
         let text = format!("  [ek: {} {info}]", a.filename);
         out.push(fit_line(vec![(text, dim())], width));
+    }
+    if let Some(line) = reactions_line(msg, width) {
+        out.push(line);
     }
     out
 }
@@ -194,6 +217,28 @@ fn extra_lines(msg: &Message, width: usize) -> Vec<Line<'static>> {
         out.push(fit_line(vec![(format!("  [embed: {text}]"), dim())], width));
     }
     out
+}
+
+/// `  👍 2  :kedi: 1` — benim tepkilerim vurgulu.
+fn reactions_line(msg: &Message, width: usize) -> Option<Line<'static>> {
+    if msg.reactions.is_empty() {
+        return None;
+    }
+    let mut parts: Vec<(String, Style)> = vec![("  ".into(), Style::new())];
+    for (i, r) in msg.reactions.iter().enumerate() {
+        if i > 0 {
+            parts.push(("  ".into(), Style::new()));
+        }
+        let style = if r.me {
+            Style::new()
+                .fg(Color::LightBlue)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            dim()
+        };
+        parts.push((format!("{} {}", r.emoji.display(), r.count), style));
+    }
+    Some(fit_line(parts, width))
 }
 
 fn dim() -> Style {
@@ -964,6 +1009,61 @@ mod tests {
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
         assert_eq!(text, ["  [çıkartma: kedi]", "  [embed: Başlık — açıklama]"]);
+    }
+
+    #[test]
+    fn reactions_and_send_state_lines() {
+        let m: Message = serde_json::from_value(serde_json::json!({
+            "id": "1000000000000000000", "channel_id": "2",
+            "author": {"id": "4", "username": "ali", "global_name": null}, "content": "selam",
+            "reactions": [{"count": 2, "me": true, "emoji": {"id": null, "name": "👍"}},
+                          {"count": 1, "me": false, "emoji": {"id": "7", "name": "kedi"}}]
+        }))
+        .expect("mesaj");
+        let text = |lines: Vec<Line<'static>>| -> Vec<String> {
+            lines
+                .iter()
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+                .collect()
+        };
+        assert_eq!(
+            text(message_lines(&m, true, &SysRes, 60)),
+            ["  selam", "  👍 2  :kedi: 1"]
+        );
+        struct Pending(bool);
+        impl Resolver for Pending {
+            fn user_name(&self, _: u64) -> Option<String> {
+                None
+            }
+            fn channel_name(&self, _: u64) -> Option<String> {
+                None
+            }
+            fn role_name(&self, _: u64) -> Option<String> {
+                None
+            }
+            fn is_me(&self, _: u64) -> bool {
+                false
+            }
+            fn author_name(&self, user: &User) -> String {
+                user.username.clone()
+            }
+            fn clock(&self, _: u64) -> String {
+                String::new()
+            }
+            fn timestamp(&self, _: i64, _: Option<char>) -> String {
+                String::new()
+            }
+            fn is_pending(&self, _: u64) -> bool {
+                !self.0
+            }
+            fn is_failed(&self, _: u64) -> bool {
+                self.0
+            }
+        }
+        let t = text(message_lines(&m, true, &Pending(false), 60));
+        assert_eq!(t[1], "  gönderiliyor…");
+        let t = text(message_lines(&m, true, &Pending(true), 80));
+        assert!(t[1].starts_with("  ✗ gönderilemedi"));
     }
 
     struct SysRes;

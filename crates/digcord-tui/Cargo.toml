@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 digcord-model.workspace = true
 digcord-store.workspace = true
+emojis = "0.9.1"
 jiff = "0.2.41"
 ratatui = "0.30"
 tracing = "0.1.44"
