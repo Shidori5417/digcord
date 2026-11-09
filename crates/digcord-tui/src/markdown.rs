@@ -415,10 +415,7 @@ fn url_len(chars: &[char], i: usize) -> Option<usize> {
     } else {
         return None;
     };
-    let mut len = chars[i..]
-        .iter()
-        .take_while(|c| !c.is_whitespace())
-        .count();
+    let mut len = chars[i..].iter().take_while(|c| !c.is_whitespace()).count();
     loop {
         let url = &chars[i..i + len];
         let last = url[len - 1];
@@ -525,10 +522,7 @@ mod tests {
             s.underline = true;
         });
         assert_eq!(inline("__**x**__"), vec![ts("x", bu)]);
-        assert_eq!(
-            inline("**a *b***"),
-            vec![ts("a ", bold()), ts("b", both)]
-        );
+        assert_eq!(inline("**a *b***"), vec![ts("a ", bold()), ts("b", both)]);
     }
 
     #[test]
@@ -556,7 +550,10 @@ mod tests {
     #[test]
     fn escapes() {
         assert_eq!(inline(r"\*not\*"), vec![t("*not*")]);
-        assert_eq!(inline(r"\_ \~ \| \` \\ \> \< \# \-"), vec![t(r"_ ~ | ` \ > < # -")]);
+        assert_eq!(
+            inline(r"\_ \~ \| \` \\ \> \< \# \-"),
+            vec![t(r"_ ~ | ` \ > < # -")]
+        );
         assert_eq!(inline(r"\a"), vec![t(r"\a")]);
         assert_eq!(inline(r"**a\*\***"), vec![ts("a**", bold())]);
     }
@@ -567,10 +564,7 @@ mod tests {
             inline("a `b **c**` d"),
             vec![t("a "), Span::Code("b **c**".into()), t(" d")]
         );
-        assert_eq!(
-            inline("``co`de``"),
-            vec![Span::Code("co`de".into())]
-        );
+        assert_eq!(inline("``co`de``"), vec![Span::Code("co`de".into())]);
         // Markers inside code do not close an outer style.
         assert_eq!(
             inline("**a `**` b**"),
@@ -651,7 +645,10 @@ mod tests {
     #[test]
     fn headings() {
         for (src, lvl) in [("# a", 1), ("## a", 2), ("### a", 3)] {
-            assert_eq!(parse(src), vec![block(BlockKind::Heading(lvl), vec![t("a")])]);
+            assert_eq!(
+                parse(src),
+                vec![block(BlockKind::Heading(lvl), vec![t("a")])]
+            );
         }
         assert_eq!(inline("#a"), vec![t("#a")]);
         assert_eq!(inline("#### a"), vec![t("#### a")]);
@@ -663,10 +660,16 @@ mod tests {
 
     #[test]
     fn subtext_and_lists() {
-        assert_eq!(parse("-# small"), vec![block(BlockKind::Subtext, vec![t("small")])]);
+        assert_eq!(
+            parse("-# small"),
+            vec![block(BlockKind::Subtext, vec![t("small")])]
+        );
         assert_eq!(parse("- a"), vec![block(BlockKind::ListItem, vec![t("a")])]);
         assert_eq!(parse("* a"), vec![block(BlockKind::ListItem, vec![t("a")])]);
-        assert_eq!(parse("  - a"), vec![block(BlockKind::ListItem, vec![t("a")])]);
+        assert_eq!(
+            parse("  - a"),
+            vec![block(BlockKind::ListItem, vec![t("a")])]
+        );
         assert_eq!(inline("-a"), vec![t("-a")]);
         assert_eq!(inline("*a*"), vec![ts("a", italic())]);
     }
@@ -696,7 +699,10 @@ mod tests {
         assert_eq!(inline("<@abc>"), vec![t("<@abc>")]);
         assert_eq!(inline("<@>"), vec![t("<@>")]);
         assert_eq!(inline("<#12x>"), vec![t("<#12x>")]);
-        assert_eq!(inline("<@99999999999999999999999>"), vec![t("<@99999999999999999999999>")]);
+        assert_eq!(
+            inline("<@99999999999999999999999>"),
+            vec![t("<@99999999999999999999999>")]
+        );
         assert_eq!(inline("<@1"), vec![t("<@1")]);
     }
 
@@ -754,7 +760,10 @@ mod tests {
         );
         assert_eq!(
             inline("https://en.wikipedia.org/wiki/A_(b)!?"),
-            vec![Span::Link("https://en.wikipedia.org/wiki/A_(b)".into())]
+            vec![
+                Span::Link("https://en.wikipedia.org/wiki/A_(b)".into()),
+                t("!?")
+            ]
         );
         assert_eq!(inline("https://"), vec![t("https://")]);
         assert_eq!(inline("http://,"), vec![t("http://,")]);
@@ -771,7 +780,12 @@ mod tests {
         assert_eq!(inline("ç_ğ_ş"), vec![t("ç_ğ_ş")]);
         assert_eq!(
             inline("`ç` <@5> İ"),
-            vec![Span::Code("ç".into()), t(" "), Span::UserMention(5), t(" İ")]
+            vec![
+                Span::Code("ç".into()),
+                t(" "),
+                Span::UserMention(5),
+                t(" İ")
+            ]
         );
     }
 
@@ -779,19 +793,11 @@ mod tests {
     fn adjacent_text_is_merged() {
         assert_eq!(inline(r"a\*b\*c"), vec![t("a*b*c")]);
         assert_eq!(inline("a ** b ~ c"), vec![t("a ** b ~ c")]);
+        // Literal marker chars inside a styled region merge with its text.
+        assert_eq!(inline("**a ~ b**"), vec![ts("a ~ b", bold())]);
         assert_eq!(
-            inline("**a****b**"),
-            vec![ts("a", bold()), ts("b", bold())]
-                .into_iter()
-                .fold(Vec::new(), |mut v: Vec<Span>, s| {
-                    v.push(s);
-                    v
-                })
-                .len()
-                .min(1)
-                .eq(&1)
-                .then(|| inline("**a****b**"))
-                .unwrap_or_default()
+            inline("x *y* *z*"),
+            vec![t("x "), ts("y", italic()), t(" "), ts("z", italic())]
         );
     }
 }
