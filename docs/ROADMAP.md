@@ -46,14 +46,16 @@ ağ kesilip gelince otomatik resume oluyor.
 **Kabul:** Resmi istemciyle yan yana açıkken tüm eylemler iki tarafta tutarlı görünüyor.
 - [ ] Önce yazma isteklerinin resmi istemci trafiğiyle karşılaştırılması (PROTOCOL_NOTES §4.2), sonra canlı test.
 
-## Aşama 4 — DM, okunmamış, bildirim
-- DM ve grup DM listesi, arkadaş listesi (salt okunur başlangıç).
-- read_state, okundu gönderme (ack), okunmamış/mention sayaçları.
-- Masaüstü bildirimleri, sessize alma ayarlarına uyma.
-- `Ctrl+K` hızlı geçiş.
+## Aşama 4 — DM, okunmamış, bildirim ⏳ (kod tamam, canlı kabul testi bekliyor)
+- [x] DM ve grup DM listesi, arkadaş listesi (salt okunur başlangıç).
+- [x] read_state, okundu gönderme (ack), okunmamış/mention sayaçları.
+- [x] Masaüstü bildirimleri, sessize alma ayarlarına uyma.
+- [x] `Ctrl+K` hızlı geçiş (+ `Alt+↑/↓` okunmamış kanallar).
+- [x] `config.toml` (davranış, bildirim, istemci build numarası).
 
 **Kabul:** Başka hesaptan gelen DM ve mention'lar bildirim + sayaç olarak doğru görünüyor;
 kanal açılınca sayaçlar resmi istemcide de sıfırlanıyor.
+- [ ] Canlı test + ack isteğinin resmi istemciyle karşılaştırılması (PROTOCOL_NOTES §4.3).
 
 ## Aşama 5 — Medya
 - Terminal grafik algılama, resim ekleri ve özel emoji gösterimi, LRU + disk önbelleği.

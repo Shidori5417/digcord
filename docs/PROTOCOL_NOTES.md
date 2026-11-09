@@ -179,6 +179,22 @@ resmi web istemcisinin trafiğiyle karşılaştırılacak (kullanıcı kararı: 
   token'sız PUT → mesajda `uploaded_filename`. Yükleme sınırı 10 MB varsayıldı.
 - Rate limit: `X-RateLimit-*` başlıkları varsa bucket yönetimi, yoksa sadece 429.
 
+### 4.3 Aşama 4 — okunma durumu ve bildirim ayarları
+
+- ✅ READY yapısı (2026-11-09 kaydından): `read_state.entries[]` = `{id (kanal), last_message_id
+  (string, bazen sayı veya null), mention_count, flags, last_pin_timestamp, last_viewed?}`;
+  `read_state_type` dolu kayıtlar kanal değil (atlanıyor). `user_guild_settings.entries[]` =
+  `{guild_id (null = DM'ler), muted, mute_config{end_time}?, message_notifications (0 tümü,
+  1 bahsetmeler, 2 hiçbiri), suppress_everyone, suppress_roles, channel_overrides[{channel_id,
+  muted, mute_config, message_notifications (3 = üst ayar)}]}`. `relationships[]` = `{id, type
+  (1 arkadaş, 2 engelli, 3 gelen, 4 giden), nickname}`.
+- ⚠️ doğrulanmadı: `POST /channels/{c}/messages/{m}/ack` gövde `{"token":null}` (resmi istemci
+  `last_viewed` gönderiyor olabilir); `MESSAGE_ACK` olayı alanları `{channel_id, message_id,
+  mention_count?}`; ack sıklığı (biz kanal başına en fazla 3 sn'de bir).
+- ⚠️ Okunma kaydı olmayan kanal "okunmuş" sayılıyor; resmi istemcinin davranışı doğrulanmadı.
+- ⚠️ Kullanıcı bildirim ayarı olmayan sunucuda sunucunun varsayılan bildirim seviyesi yerine
+  "sadece bahsetmeler" varsayılıyor.
+
 ## 5. Davranış kuralları (ban riskini azaltmak için)
 
 - Resmi istemcinin **yapmadığı** şeyi yapma: toplu geçmiş indirme, otomatik yanıt, çok hızlı

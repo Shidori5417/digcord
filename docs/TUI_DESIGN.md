@@ -59,7 +59,7 @@ Vim istemeyenler için config'de `keymap = "simple"` (her zaman yazma modu, ok t
 | `y` | Mesaj metnini kopyala |
 | `Ctrl+M` | Üye listesi aç/kapat |
 | `Ctrl+Shift+M` / `Ctrl+Shift+D` | Mikrofon / kulaklık sessize al |
-| `Alt+↑/↓` | Okunmamış önceki/sonraki kanal |
+| `Alt+↑/↓` | Okunmamış önceki/sonraki kanal (sessizdekiler atlanır) |
 | `q` / `:q` | Çıkış |
 
 Tüm kısayollar `config.toml` içinden değiştirilebilir.
@@ -98,6 +98,11 @@ Tüm kısayollar `config.toml` içinden değiştirilebilir.
 ## Config
 
 `~/.config/digcord/config.toml`
+
+**Şu an desteklenenler:** `ui.show_member_list`, `behavior.send_typing`,
+`behavior.send_read_receipts`, `notifications.enabled`, `notifications.on` (`"mention"`, `"dm"`,
+`"all"`), `client.build_number`, `client.chrome_major`. Diğer anahtarlar okunur ama yok sayılır
+(açılışta uyarı); bozuk dosyada uygulama açılmaz ve hatayı gösterir.
 
 ```toml
 [ui]
