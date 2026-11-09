@@ -3,6 +3,8 @@
 //! TUI ağ katmanını bilmez: dışarıdan [`UiEvent`] alır, dışarıya [`Action`] verir ve
 //! paylaşılan store'u ([`Shared`]) sadece okur.
 
+mod compose;
+mod editor;
 mod markdown;
 mod render;
 mod view;
@@ -14,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, RwLock, RwLockReadGuard};
 
-use digcord_model::{Snowflake, channel_kind};
+use digcord_model::{ReactionEmoji, Snowflake, channel_kind};
 use digcord_store::{State, TreeKind};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{DefaultTerminal, Frame};
@@ -50,6 +52,8 @@ pub enum UiEvent {
     },
     /// Store değişti, yeniden çiz.
     StoreChanged,
+    /// Durum çubuğunda bir sonraki tuşa kadar gösterilecek kısa bilgi/hata.
+    Notice(String),
 }
 
 /// Bağlantı durumu (durum çubuğunda gösterilir).
@@ -83,6 +87,49 @@ pub enum Action {
     LoadOlder {
         channel: Snowflake,
     },
+    SendMessage {
+        guild: Option<Snowflake>,
+        channel: Snowflake,
+        content: String,
+        reply_to: Option<Snowflake>,
+    },
+    EditMessage {
+        guild: Option<Snowflake>,
+        channel: Snowflake,
+        message: Snowflake,
+        content: String,
+    },
+    DeleteMessage {
+        guild: Option<Snowflake>,
+        channel: Snowflake,
+        message: Snowflake,
+    },
+    /// Başarısız iyimser mesajı yeniden gönder.
+    Retry {
+        guild: Option<Snowflake>,
+        channel: Snowflake,
+        message: Snowflake,
+    },
+    React {
+        guild: Option<Snowflake>,
+        channel: Snowflake,
+        message: Snowflake,
+        emoji: ReactionEmoji,
+        add: bool,
+    },
+    Typing {
+        guild: Option<Snowflake>,
+        channel: Snowflake,
+    },
+    Upload {
+        guild: Option<Snowflake>,
+        channel: Snowflake,
+        path: std::path::PathBuf,
+        content: String,
+        max_bytes: u64,
+    },
+    /// Panoya kopyala.
+    Copy(String),
     Quit,
 }
 
@@ -199,6 +246,19 @@ pub struct App {
     msg_area: Cell<(u16, u16)>,
     chan_offset: Cell<usize>,
     want_older: Cell<bool>,
+    mode: compose::Mode,
+    editor: editor::Editor,
+    /// COMMAND ve tepki istemi girişi.
+    command: editor::Editor,
+    target: compose::Target,
+    selected: Option<Snowflake>,
+    /// SELECT'te ilk `d` basıldı (`d d` silme).
+    pending_d: bool,
+    comp_sel: usize,
+    last_typing: Option<(Snowflake, std::time::Instant)>,
+    notice: Option<String>,
+    /// Son çizimde görünen en eski ve en yeni mesaj.
+    visible: Cell<Option<(Snowflake, Snowflake)>>,
 }
 
 impl App {
@@ -218,6 +278,16 @@ impl App {
             msg_area: Cell::new((0, 0)),
             chan_offset: Cell::new(0),
             want_older: Cell::new(false),
+            mode: compose::Mode::Normal,
+            editor: editor::Editor::new(),
+            command: editor::Editor::new(),
+            target: compose::Target::New,
+            selected: None,
+            pending_d: false,
+            comp_sel: 0,
+            last_typing: None,
+            notice: None,
+            visible: Cell::new(None),
         }
     }
 
@@ -232,13 +302,33 @@ impl App {
             if let Some(a) = self.take_older_request() {
                 actions(a);
             }
-            let Ok(ev) = events.recv() else { break };
+            // "Yazıyor" göstergesi süresi dolunca kaybolsun diye: biri yazıyorsa saniyede bir çiz.
+            let ev = if self.typing_visible() {
+                match events.recv_timeout(std::time::Duration::from_secs(1)) {
+                    Ok(ev) => ev,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            } else {
+                let Ok(ev) = events.recv() else { break };
+                ev
+            };
             if let Some(action) = self.handle(ev) {
                 actions(action);
             }
         }
         actions(Action::Quit);
         Ok(())
+    }
+
+    fn typing_visible(&self) -> bool {
+        self.open.is_some_and(|o| {
+            !self
+                .shared
+                .read()
+                .typing_names(o.channel, unix_now())
+                .is_empty()
+        })
     }
 
     /// Son çizim en eski yüklü mesaja ulaştıysa daha eski sayfa isteği.
@@ -254,8 +344,15 @@ impl App {
         match ev {
             UiEvent::Input(Event::Key(key)) => self.handle_key(key),
             UiEvent::Input(Event::Paste(text)) => {
-                if let Screen::Login { input, .. } = &mut self.screen {
-                    input.extend(text.chars().filter(|c| !c.is_control()));
+                match (&mut self.screen, self.mode) {
+                    (Screen::Login { input, .. }, _) => {
+                        input.extend(text.chars().filter(|c| !c.is_control()));
+                    }
+                    (Screen::Main, compose::Mode::Insert) => self.editor.insert_str(&text),
+                    (Screen::Main, compose::Mode::Command | compose::Mode::React) => {
+                        self.command.insert_str(&text.replace('\n', " "));
+                    }
+                    _ => {}
                 }
                 None
             }
@@ -273,6 +370,10 @@ impl App {
             }
             UiEvent::StoreChanged => {
                 self.shared.dirty.store(false, Ordering::Release);
+                None
+            }
+            UiEvent::Notice(text) => {
+                self.notice = Some(text);
                 None
             }
         }
@@ -306,6 +407,17 @@ impl App {
             return None;
         }
 
+        self.notice = None;
+        match self.mode {
+            compose::Mode::Insert => return self.insert_key(key),
+            compose::Mode::Select => return self.select_key(key),
+            compose::Mode::Command | compose::Mode::React => return self.command_key(key),
+            compose::Mode::ConfirmDelete(id) => return self.confirm_key(key, id),
+            compose::Mode::Normal => {}
+        }
+        if let Some(result) = self.normal_mode_key(key) {
+            return result;
+        }
         let half_page = usize::from(self.msg_area.get().1 / 2).max(1);
         match (key.code, ctrl) {
             (KeyCode::Char('q'), false) => self.should_quit = true,
@@ -398,6 +510,9 @@ impl App {
                         });
                         self.scroll = Scroll::default();
                         self.focus = Focus::Messages;
+                        self.editor.clear();
+                        self.target = compose::Target::New;
+                        self.selected = None;
                         Some(Action::OpenChannel {
                             guild,
                             channel: entry.id,
@@ -540,6 +655,12 @@ impl App {
     pub fn draw(&self, frame: &mut Frame) {
         view::draw(self, frame);
     }
+}
+
+pub(crate) fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// En üst konum: ilk satır başlangıç işareti, ardından en eski mesajdan itibaren ekran dolar.

@@ -12,8 +12,12 @@ use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
+use crate::compose::{self, Mode, Target};
 use crate::render::{self, Resolver};
-use crate::{App, EntryKind, Focus, Screen, Status};
+use crate::{App, EntryKind, Focus, Open, Screen, Status};
+
+/// Giriş kutusunun en fazla satır sayısı (fazlası kaydırılır).
+const MAX_INPUT_ROWS: u16 = 8;
 
 /// Üye paneli bu genişliğin altında gizlenir (TUI_DESIGN "duyarlı düzen").
 const MEMBERS_MIN_WIDTH: u16 = 100;
@@ -319,23 +323,43 @@ fn draw_messages(app: &App, st: &State, frame: &mut Frame, area: Rect) {
         title.push_str("[geçmiş] ");
     }
     let block = panel(title, focused);
-    let inner = block.inner(area);
+    let full = block.inner(area);
     frame.render_widget(block, area);
+    let input_h = input_height(app, st, open, full.width);
+    let [inner, input] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(input_h)]).areas(full);
     app.msg_area.set((inner.width, inner.height));
 
     let Some(msgs) = st.messages(open.channel) else {
         frame.render_widget(Paragraph::new(Line::from("yükleniyor…").dim()), inner);
+        draw_input(app, st, open, frame, input);
         return;
     };
     let res = Res::new(st, open.guild, &app.tz);
     let h = usize::from(inner.height);
     let mut out: VecDeque<Line<'static>> = VecDeque::with_capacity(h + 1);
     let mut reached_oldest = msgs.is_empty();
+    let selected =
+        if app.mode == Mode::Select || matches!(app.mode, Mode::React | Mode::ConfirmDelete(_)) {
+            app.selected
+        } else {
+            None
+        };
+    app.visible.set(None);
     if !msgs.is_empty() {
         let mut idx = anchor_index(msgs, app.scroll.anchor);
+        let bottom_id = msgs[idx].id;
         let mut skip_bottom = app.scroll.offset;
         loop {
             let mut ls = lines(msgs, idx, &res, inner.width);
+            if selected == Some(msgs[idx].id) {
+                for l in &mut ls {
+                    l.style = l
+                        .style
+                        .patch(Style::new().bg(ratatui::style::Color::Rgb(45, 45, 60)));
+                }
+            }
+            app.visible.set(Some((msgs[idx].id, bottom_id)));
             ls.truncate(ls.len().saturating_sub(skip_bottom));
             skip_bottom = 0;
             for l in ls.into_iter().rev() {
@@ -370,13 +394,118 @@ fn draw_messages(app: &App, st: &State, frame: &mut Frame, area: Rect) {
         app.want_older.set(true);
     }
     frame.render_widget(Paragraph::new(Vec::from(out)), inner);
+    // Tamamlama penceresi mesaj listesinin üstüne çizildiği için en son.
+    draw_input(app, st, open, frame, input);
+}
+
+fn input_height(app: &App, st: &State, open: Open, width: u16) -> u16 {
+    if !st.can_send(open.channel) {
+        return 1;
+    }
+    match app.mode {
+        Mode::Command | Mode::React => 2,
+        _ => {
+            1 + app
+                .editor
+                .height(width.saturating_sub(2))
+                .min(MAX_INPUT_ROWS)
+        }
+    }
+}
+
+/// Mesaj panelinin altı: ayraç/etiket satırı + giriş; üstünde tamamlama penceresi.
+fn draw_input(app: &App, st: &State, open: Open, frame: &mut Frame, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+    if !st.can_send(open.channel) {
+        frame.render_widget(
+            Paragraph::new(Line::from("(bu kanala yazma iznin yok)").dim()),
+            area,
+        );
+        return;
+    }
+    let [label, body] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+    let name = |id| {
+        st.find_message(open.channel, id)
+            .map(|m| st.author_name(open.guild, &m.author))
+            .unwrap_or_else(|| "?".to_owned())
+    };
+    let label_text = match (app.mode, app.target) {
+        (Mode::Command, _) => "komut (Esc: iptal)".to_owned(),
+        (Mode::React, _) => "tepki: emoji veya :kısa_ad: (Tab/Enter: seç, Esc: iptal)".to_owned(),
+        (_, Target::Reply(id)) => format!("↳ yanıtlanıyor: {} (Esc: iptal)", name(id)),
+        (_, Target::Edit(_)) => "✎ düzenleniyor (Enter: kaydet, Esc: iptal)".to_owned(),
+        (Mode::Insert, Target::New) => {
+            "Enter: gönder · Alt+Enter: yeni satır · Esc: çık".to_owned()
+        }
+        (Mode::Select, _) => {
+            "j/k seç · r yanıt · e düzenle · dd sil · + tepki · y kopyala · Esc".to_owned()
+        }
+        _ => "i: yaz · v: mesaj seç · :upload <yol>".to_owned(),
+    };
+    frame.render_widget(Paragraph::new(Line::from(label_text).dim()), label);
+
+    let (cursor, top) = if matches!(app.mode, Mode::Command | Mode::React) {
+        let (rows, cur) = app.command.layout(body.width.saturating_sub(2).max(1));
+        let first = rows.into_iter().next().unwrap_or_default();
+        let mut l = Line::from(Span::raw(if app.mode == Mode::React { "+ " } else { ": " }));
+        l.spans.extend(first.spans);
+        frame.render_widget(Paragraph::new(l), body);
+        (Some(cur), body.y)
+    } else {
+        let (rows, cur) = app.editor.layout(body.width.saturating_sub(2).max(1));
+        let skip = cur.0.saturating_sub(body.height.saturating_sub(1));
+        let lines: Vec<Line> = rows
+            .into_iter()
+            .enumerate()
+            .skip(usize::from(skip))
+            .map(|(i, mut l)| {
+                let prefix = if i == 0 { "> " } else { "  " };
+                l.spans.insert(0, Span::styled(prefix, Style::new().dim()));
+                l
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(lines), body);
+        let cur = (cur.0.saturating_sub(skip), cur.1);
+        (app.mode == Mode::Insert)
+            .then_some(cur)
+            .map_or((None, body.y), |c| (Some(c), body.y))
+    };
+    if let Some((row, col)) = cursor {
+        let x = (body.x + 2 + col).min(body.right().saturating_sub(1));
+        frame.set_cursor_position((x, top + row));
+    }
+
+    let candidates = app.candidates();
+    if !candidates.is_empty() {
+        let n = u16::try_from(candidates.len()).unwrap_or(u16::MAX);
+        let h = n.min(area.y.saturating_sub(1));
+        let w = area.width.min(48);
+        let popup = Rect::new(area.x, area.y.saturating_sub(h), w, h);
+        frame.render_widget(Clear, popup);
+        let sel = app.comp_sel.min(candidates.len() - 1);
+        let lines: Vec<Line> = candidates
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let style = if i == sel {
+                    Style::new().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::new().bg(ratatui::style::Color::Rgb(30, 30, 40))
+                };
+                Line::styled(format!(" {} ", c.label), style)
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(lines), popup);
+    }
 }
 
 fn status_line(app: &App) -> Line<'static> {
     let mode = if matches!(app.screen, Screen::Login { .. }) {
         " [GİRİŞ] "
     } else {
-        " [NORMAL] "
+        compose::mode_label(app.mode)
     };
     let text = match &app.status {
         Status::Starting => "Digcord · başlatılıyor…".to_owned(),
@@ -397,7 +526,29 @@ fn status_line(app: &App) -> Line<'static> {
         Status::Failed(_) => Style::new().red(),
         _ => Style::new(),
     };
-    Line::from(vec![mode.bold(), Span::styled(text, style)])
+    let mut spans = vec![mode.bold(), Span::styled(text, style)];
+    if let Mode::ConfirmDelete(_) = app.mode {
+        spans.push(Span::styled(
+            "  Mesaj silinsin mi? (e/h)",
+            Style::new().yellow().bold(),
+        ));
+    } else if let Some(n) = &app.notice {
+        spans.push(Span::styled(format!("  {n}"), Style::new().yellow()));
+    } else if let Some(open) = app.open {
+        let names = app
+            .shared
+            .read()
+            .typing_names(open.channel, crate::unix_now());
+        if !names.is_empty() {
+            let who = match names.len() {
+                1 => format!("{} yazıyor…", names[0]),
+                2 => format!("{} ve {} yazıyor…", names[0], names[1]),
+                n => format!("{n} kişi yazıyor…"),
+            };
+            spans.push(Span::styled(format!("  {who}"), Style::new().dim()));
+        }
+    }
+    Line::from(spans)
 }
 
 fn draw_login(frame: &mut Frame, input: &str, error: Option<&str>) {

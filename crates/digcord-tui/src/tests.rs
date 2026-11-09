@@ -23,7 +23,8 @@ fn ready() -> Ready {
         "guilds": [{
             "id": GUILD.to_string(), "large": false,
             "properties": {"name": "Test Sunucusu", "owner_id": "999"},
-            "roles": [{"id": GUILD.to_string(), "name": "@everyone", "permissions": "3072", "position": 0}],
+            // VIEW_CHANNEL + SEND_MESSAGES + ADD_REACTIONS + ATTACH_FILES
+            "roles": [{"id": GUILD.to_string(), "name": "@everyone", "permissions": "35904", "position": 0}],
             "channels": [
                 {"id": "10", "type": 4, "name": "Genel", "position": 0},
                 {"id": SOHBET.to_string(), "type": 0, "name": "sohbet", "parent_id": "10", "position": 0, "topic": "konu"},
@@ -370,4 +371,196 @@ fn frame_time_10k_messages() {
     }
     println!("kaydırma + çizim (30 satır): {:?}", scroll_total / 100);
     assert!(bottom.as_millis() < 4 && middle.as_millis() < 4);
+}
+
+fn type_text(app: &mut App, text: &str) -> Vec<Action> {
+    text.chars()
+        .filter_map(|c| app.handle(key(KeyCode::Char(c))))
+        .collect()
+}
+
+#[test]
+fn insert_send_and_typing_throttle() {
+    let mut app = test_app(shared_with(vec![msg(1, 0, FRIEND, "selam")], true));
+    open_sohbet(&mut app);
+    press(&mut app, &[KeyCode::Char('i')]);
+    assert_eq!(app.mode, compose::Mode::Insert);
+    let typed = type_text(&mut app, "merhaba");
+    // İlk tuşta bir kez "yazıyor", sonra 8 sn içinde tekrar yok.
+    assert_eq!(
+        typed,
+        [Action::Typing {
+            guild: Some(Snowflake(GUILD)),
+            channel: Snowflake(SOHBET)
+        }]
+    );
+    assert_eq!(
+        press(&mut app, &[KeyCode::Enter]),
+        [Action::SendMessage {
+            guild: Some(Snowflake(GUILD)),
+            channel: Snowflake(SOHBET),
+            content: "merhaba".into(),
+            reply_to: None
+        }]
+    );
+    assert!(app.editor.is_empty());
+    assert_eq!(
+        app.mode,
+        compose::Mode::Insert,
+        "gönderdikten sonra yazmaya devam"
+    );
+    // Boş Enter bir şey göndermez.
+    assert!(press(&mut app, &[KeyCode::Enter]).is_empty());
+    press(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.mode, compose::Mode::Normal);
+}
+
+#[test]
+fn select_reply_edit_delete_react_copy() {
+    let msgs = vec![msg(1, 0, FRIEND, "soru"), msg(2, 1, ME, "benim mesajım")];
+    let mut app = test_app(shared_with(msgs.clone(), true));
+    open_sohbet(&mut app);
+    draw(&app, 100, 20);
+    press(&mut app, &[KeyCode::Char('v')]);
+    assert_eq!(app.mode, compose::Mode::Select);
+    assert_eq!(app.selected, Some(msgs[1].id), "en alttaki mesajdan başlar");
+
+    // Kendi mesajım: e → düzenleme, metin dolu gelir; aynı metinle Enter bir şey göndermez.
+    press(&mut app, &[KeyCode::Char('e')]);
+    assert_eq!(app.target, compose::Target::Edit(msgs[1].id));
+    assert_eq!(app.editor.text(), "benim mesajım");
+    assert!(press(&mut app, &[KeyCode::Enter]).is_empty());
+    press(&mut app, &[KeyCode::Char('v')].map(|_| KeyCode::Esc));
+    press(&mut app, &[KeyCode::Char('v')]);
+
+    // y → kopyala
+    assert_eq!(
+        press(&mut app, &[KeyCode::Char('y')]),
+        [Action::Copy("benim mesajım".into())]
+    );
+    // d d → onay → e → sil
+    assert!(press(&mut app, &[KeyCode::Char('d'), KeyCode::Char('d')]).is_empty());
+    assert_eq!(app.mode, compose::Mode::ConfirmDelete(msgs[1].id));
+    assert!(format!("{}", draw(&app, 100, 20)).contains("silinsin mi"));
+    assert_eq!(
+        press(&mut app, &[KeyCode::Char('e')]),
+        [Action::DeleteMessage {
+            guild: Some(Snowflake(GUILD)),
+            channel: Snowflake(SOHBET),
+            message: msgs[1].id
+        }]
+    );
+
+    // k → arkadaşın mesajı; e düzenlemez, d d silmez (izin yok), r yanıt.
+    press(&mut app, &[KeyCode::Char('k')]);
+    assert_eq!(app.selected, Some(msgs[0].id));
+    press(&mut app, &[KeyCode::Char('e')]);
+    assert_eq!(app.mode, compose::Mode::Select);
+    assert!(app.notice.is_some());
+    press(&mut app, &[KeyCode::Char('d'), KeyCode::Char('d')]);
+    assert_eq!(app.mode, compose::Mode::Select);
+
+    // + → tepki istemi; ":+1" Enter → 👍 ekle.
+    press(&mut app, &[KeyCode::Char('+')]);
+    assert_eq!(app.mode, compose::Mode::React);
+    type_text(&mut app, "+1");
+    assert_eq!(
+        press(&mut app, &[KeyCode::Enter]),
+        [Action::React {
+            guild: Some(Snowflake(GUILD)),
+            channel: Snowflake(SOHBET),
+            message: msgs[0].id,
+            emoji: digcord_model::ReactionEmoji::unicode("👍"),
+            add: true
+        }]
+    );
+
+    press(&mut app, &[KeyCode::Char('r')]);
+    assert_eq!(app.target, compose::Target::Reply(msgs[0].id));
+    assert!(format!("{}", draw(&app, 100, 20)).contains("yanıtlanıyor: arkadas"));
+    type_text(&mut app, "cevap");
+    assert_eq!(
+        press(&mut app, &[KeyCode::Enter]),
+        [Action::SendMessage {
+            guild: Some(Snowflake(GUILD)),
+            channel: Snowflake(SOHBET),
+            content: "cevap".into(),
+            reply_to: Some(msgs[0].id)
+        }]
+    );
+}
+
+#[test]
+fn up_on_empty_input_edits_last_own_message() {
+    let msgs = vec![msg(1, 0, ME, "eski"), msg(2, 1, FRIEND, "araya")];
+    let mut app = test_app(shared_with(msgs.clone(), true));
+    open_sohbet(&mut app);
+    press(&mut app, &[KeyCode::Char('i'), KeyCode::Up]);
+    assert_eq!(app.target, compose::Target::Edit(msgs[0].id));
+    assert_eq!(app.editor.text(), "eski");
+    type_text(&mut app, "!");
+    assert_eq!(
+        press(&mut app, &[KeyCode::Enter]),
+        [Action::EditMessage {
+            guild: Some(Snowflake(GUILD)),
+            channel: Snowflake(SOHBET),
+            message: msgs[0].id,
+            content: "eski!".into()
+        }]
+    );
+    assert_eq!(app.mode, compose::Mode::Normal);
+}
+
+#[test]
+fn mention_autocomplete_popup_and_tab() {
+    let mut app = test_app(shared_with(vec![msg(1, 0, FRIEND, "selam")], true));
+    open_sohbet(&mut app);
+    press(&mut app, &[KeyCode::Char('i')]);
+    type_text(&mut app, "naber @ark");
+    let screen = format!("{}", draw(&app, 100, 20));
+    assert!(screen.contains("@arkadas"), "{screen}");
+    press(&mut app, &[KeyCode::Tab]);
+    assert_eq!(app.editor.text(), format!("naber <@{FRIEND}> "));
+    // Emoji: ":fi" → aday listesi, Tab unicode emoji ekler.
+    type_text(&mut app, ":fire");
+    assert!(!app.candidates().is_empty());
+    press(&mut app, &[KeyCode::Tab]);
+    assert!(app.editor.text().ends_with("🔥 "), "{}", app.editor.text());
+}
+
+#[test]
+fn no_send_permission_blocks_insert() {
+    let shared = shared_with(vec![], true);
+    let mut app = test_app(shared);
+    // duyurular (12): @everyone 3072 = VIEW+SEND → yazılabilir; izni kaldırmak için yeni ready gerekmez:
+    // DM'de her zaman yazılabilir, sunucu kanalında izin yoksa giriş kapalı olmalı.
+    open_sohbet(&mut app);
+    {
+        let mut st = app.shared.state.write().expect("kilit");
+        let mut ready = ready();
+        ready.guilds[0].roles[0].permissions = digcord_model::Permissions::VIEW_CHANNEL;
+        st.load_ready(&ready);
+    }
+    press(&mut app, &[KeyCode::Char('i')]);
+    assert_eq!(app.mode, compose::Mode::Normal);
+    assert!(app.notice.as_deref().is_some_and(|n| n.contains("izni")));
+    assert!(format!("{}", draw(&app, 100, 12)).contains("yazma iznin yok"));
+}
+
+#[test]
+fn upload_command() {
+    let mut app = test_app(shared_with(vec![], true));
+    open_sohbet(&mut app);
+    press(&mut app, &[KeyCode::Esc, KeyCode::Char(':')]);
+    assert_eq!(app.mode, compose::Mode::Command);
+    type_text(&mut app, "upload /tmp/a.png bak");
+    let a = press(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(
+        &a[..],
+        [Action::Upload { path, content, .. }] if path == std::path::Path::new("/tmp/a.png") && content == "bak"
+    ));
+    press(&mut app, &[KeyCode::Char(':')]);
+    type_text(&mut app, "q");
+    press(&mut app, &[KeyCode::Enter]);
+    assert!(app.should_quit);
 }
