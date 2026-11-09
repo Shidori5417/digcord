@@ -57,13 +57,17 @@ ağ kesilip gelince otomatik resume oluyor.
 kanal açılınca sayaçlar resmi istemcide de sıfırlanıyor.
 - [ ] Canlı test + ack isteğinin resmi istemciyle karşılaştırılması (PROTOCOL_NOTES §4.3).
 
-## Aşama 5 — Medya
-- Terminal grafik algılama, resim ekleri ve özel emoji gösterimi, LRU + disk önbelleği.
-- Tam ekran resim görüntüleyici, `o` ile harici açma.
-- Embed'ler (başlık, açıklama, renkli kenar, küçük resim).
+## Aşama 5 — Medya ⏳ (kod tamam, canlı kabul testi bekliyor)
+- [x] Terminal grafik algılama, resim ekleri ve özel emoji gösterimi, LRU + disk önbelleği.
+  (Özel emoji satır içinde metin; sadece-emoji mesajlarda büyük resim — kullanıcı onayıyla.)
+- [x] Tam ekran resim görüntüleyici, `o` ile harici açma.
+- [x] Embed'ler (başlık, açıklama, renkli kenar, küçük resim).
 
 **Kabul:** Kitty/WezTerm/Konsole'da resimler görünüyor, Alacritty'de yarım blok yedeği çalışıyor,
 resimli kanalda kaydırma takılmıyor.
+- [x] Çevrimdışı: yarım blok yedeği TestBackend'de çiziliyor; 10k mesajda kare ~0,7 ms.
+- [ ] Canlı test: Kitty, WezTerm, Konsole, Alacritty; CDN isteklerinin resmi istemciyle
+  karşılaştırılması (PROTOCOL_NOTES §6.1).
 
 ## Aşama 6 — Ses (DAVE ile)
 Alt adımlar sırayla:

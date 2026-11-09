@@ -55,7 +55,7 @@ Vim istemeyenler için config'de `keymap = "simple"` (her zaman yazma modu, ok t
 | `e` | Kendi mesajını düzenle (INSERT'te boşken `↑` de son mesajı düzenler) |
 | `d d` | Sil (onay ister) |
 | `+` | Tepki ekle/kaldır (emoji veya `:kısa_ad:` istemi) |
-| `o` | Eki/linki aç (xdg-open) veya resmi tam ekran göster |
+| `o` | Resimli mesajda tam ekran görüntüleyici; orada `o` harici açar (xdg-open), `←/→` (`h/l`) resimler arası, `Esc` kapatır. Resimsiz mesajda ilk bağlantıyı/eki harici açar |
 | `y` | Mesaj metnini kopyala |
 | `Ctrl+M` | Üye listesi aç/kapat |
 | `Ctrl+Shift+M` / `Ctrl+Shift+D` | Mikrofon / kulaklık sessize al |
@@ -70,16 +70,24 @@ Tüm kısayollar `config.toml` içinden değiştirilebilir.
   (dil adına göre sözdizimi renklendirme — `syntect` opsiyonel), `> alıntı`, `||spoiler||` (gizli, `o` ile aç),
   başlıklar, listeler.
 - Mention'lar (`<@id>`, `<#id>`, `<@&rol>`) isimle ve renkle; kendine mention vurgulu arka plan.
-- Özel emoji: grafik destekliyse küçük resim, değilse `:isim:`.
+- Özel emoji: satır içinde `:isim:` (terminal hücre yapısı yüzünden satır içi resim yok);
+  sadece emojiden oluşan mesajlarda (en fazla 27) emojiler büyük resim olarak yan yana.
 - Unicode emoji genişliği `unicode-width` ile; hizalama bozulmalarına dikkat.
 - Zaman damgaları `<t:...:R>` biçimleri yerelleştirilmiş gösterilir.
 
 ## Resim gösterimi
 
-- Algılama sırası: Kitty grafik protokolü → iTerm2 → Sixel → yarım blok (`▀`) yedeği.
-- Mesaj içinde küçük önizleme (en fazla N satır yükseklik, config), `o` ile tam ekran görüntüleyici.
-- Kaydırma sırasında resimler yeniden kodlanmaz; hücre boyutuna göre önbellekten basılır.
-- `images = "off" | "thumbnail" | "full"` ayarı.
+- Algılama açılışta bir kez (`ratatui-image` picker; terminal sorgusu): Kitty → iTerm2 → Sixel →
+  yarım blok (`▀`) yedeği. WezTerm/Konsole'da kitty ve sixel kapalı (iTerm2 kullanılır).
+- Mesaj içinde önizleme: `thumbnail` en fazla 48 sütun, `full` mesaj alanı genişliği; ikisinde de
+  en fazla `image_max_rows` satır. `off`: sadece `[ek: ad boyut]` satırı.
+- Resim için sabit satır ayrılır (kaydırma hesabı resimden bağımsız). Resim sadece tamamen
+  görünürken çizilir; kısmen görünürken yerinde `[resim]` yazar.
+- İndirme, çözme, ölçekleme ve terminal protokolüne kodlama arka planda; UI sadece hazır resmi
+  basar. Hazır resimler bellekte LRU (96), ham dosyalar diskte.
+- Hareketli GIF/WebP: sadece ilk kare. Video ekleri: önizleme yok, `o` ile harici açılır.
+- Embed: renkli sol kenar, sağlayıcı, yazar, başlık, açıklama (en fazla 12 satır), alanlar,
+  alt bilgi ve (varsa) resim/küçük resim.
 
 ## Bildirimler
 
@@ -99,7 +107,7 @@ Tüm kısayollar `config.toml` içinden değiştirilebilir.
 
 `~/.config/digcord/config.toml`
 
-**Şu an desteklenenler:** `ui.show_member_list`, `behavior.send_typing`,
+**Şu an desteklenenler:** `ui.show_member_list`, `ui.images`, `ui.image_max_rows`, `behavior.send_typing`,
 `behavior.send_read_receipts`, `notifications.enabled`, `notifications.on` (`"mention"`, `"dm"`,
 `"all"`), `client.build_number`, `client.chrome_major`. Diğer anahtarlar okunur ama yok sayılır
 (açılışta uyarı); bozuk dosyada uygulama açılmaz ve hatayı gösterir.

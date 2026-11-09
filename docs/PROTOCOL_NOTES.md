@@ -208,6 +208,26 @@ resmi web istemcisinin trafiğiyle karşılaştırılacak (kullanıcı kararı: 
 - Boyut parametresiyle (`?size=64`, `?width=&height=`) küçük sürüm iste → bant genişliği tasarrufu.
 - Ek URL'leri imzalı ve süreli olabilir; süresi dolanlar yeniden çözülmeli (refresh uç noktası).
 
+### 6.1 Aşama 5 uygulaması
+
+- **İzin listesi** (`digcord-media::ALLOWED_HOSTS`): `cdn.discordapp.com`, `media.discordapp.net`,
+  `images-ext-1.discordapp.net`, `images-ext-2.discordapp.net`; sadece `https`, varsayılan port.
+  Yönlendirmeler de listeye tabi. Embed'lerin dış `url`'sine **gidilmez**, sadece `proxy_url`'ye.
+- CDN isteklerinde `Authorization` yok; User-Agent `ClientProperties`'ten (tarayıcıyla aynı).
+  Diğer tarayıcı başlıkları (`sec-ch-ua`, `Referer`...) gönderilmiyor. ⚠️ doğrulanmadı
+  (resmi istemcinin CDN istek başlıkları kayıtla karşılaştırılmalı).
+- Özel emoji: `https://cdn.discordapp.com/emojis/{id}.png?size=48` (belgelenmiş "Image
+  Formatting"; hareketli emojide PNG ilk kareyi verir).
+- Ek ve embed önizlemesi: `proxy_url` + `width=W&height=H` (hedef piksel boyutu). Vekilin
+  küçültülmüş resim döndürdüğü varsayılıyor. ⚠️ doğrulanmadı (resmi istemcinin önizleme
+  isteğiyle karşılaştırılmalı; resmi istemci ayrıca `format=webp` vb. ekleyebilir).
+- İmzalı adresin süresi dolarsa (CDN 403/404/410 ve URL'de `ex=`): refresh uç noktası **kullanılmıyor**;
+  mesaj bir kez `GET /channels/{id}/messages?before={id+1}&limit=1` ile yeniden çekilip yeni
+  adres kullanılıyor (resmi istemcinin geçmiş isteğiyle aynı uç nokta). ⚠️ resmi istemcinin bu
+  durumda ne yaptığı doğrulanmadı.
+- Disk önbelleği `~/.cache/digcord/media` (0700); dosya adı imza parametreleri (`ex`, `is`, `hm`)
+  atılmış URL'nin özeti. Açılışta 512 MB'ı aşan en eski dosyalar silinir. Tek yanıt en fazla 16 MB.
+
 ## 7. Ses
 
 Ses en zor ve en kırılgan kısım; ayrı aşamada (bkz. ROADMAP) ele alınır.
