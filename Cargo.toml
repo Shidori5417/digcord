@@ -13,6 +13,7 @@ publish = false
 [workspace.dependencies]
 digcord-gateway = { path = "crates/digcord-gateway" }
 digcord-http = { path = "crates/digcord-http" }
+digcord-media = { path = "crates/digcord-media" }
 digcord-model = { path = "crates/digcord-model" }
 digcord-store = { path = "crates/digcord-store" }
 digcord-tui = { path = "crates/digcord-tui" }
@@ -30,6 +31,7 @@ publish.workspace = true
 anyhow = "1.0.104"
 digcord-gateway.workspace = true
 digcord-http.workspace = true
+digcord-media.workspace = true
 digcord-store.workspace = true
 digcord-model.workspace = true
 digcord-tui.workspace = true

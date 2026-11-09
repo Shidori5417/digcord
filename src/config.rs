@@ -14,6 +14,8 @@ const KNOWN_SECTIONS: &[&str] = &["ui", "behavior", "notifications", "client"];
 /// Bu sürümde uygulanan `bölüm.anahtar` yolları. Yeni ayar eklenince buraya da eklenmeli.
 const KNOWN_KEYS: &[&str] = &[
     "ui.show_member_list",
+    "ui.images",
+    "ui.image_max_rows",
     "behavior.send_typing",
     "behavior.send_read_receipts",
     "notifications.enabled",
@@ -35,6 +37,18 @@ pub struct Config {
 #[serde(default)]
 pub struct Ui {
     pub show_member_list: bool,
+    pub images: Images,
+    /// Bir resmin en fazla satır yüksekliği.
+    pub image_max_rows: u16,
+}
+
+/// `ui.images`: resim gösterimi.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Images {
+    Off,
+    Thumbnail,
+    Full,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -72,6 +86,8 @@ impl Default for Ui {
     fn default() -> Self {
         Self {
             show_member_list: true,
+            images: Images::Thumbnail,
+            image_max_rows: 10,
         }
     }
 }
@@ -95,6 +111,18 @@ impl Default for Notifications {
 }
 
 impl Config {
+    /// TUI'ye giden ayarlar.
+    pub fn tui_options(&self) -> digcord_tui::Options {
+        digcord_tui::Options {
+            images: match self.ui.images {
+                Images::Off => digcord_tui::ImageMode::Off,
+                Images::Thumbnail => digcord_tui::ImageMode::Thumbnail,
+                Images::Full => digcord_tui::ImageMode::Full,
+            },
+            image_max_rows: self.ui.image_max_rows.clamp(1, 100),
+        }
+    }
+
     /// TOML metnini ayrıştırır; uyarıları atar (uygulama `load` kullanır).
     #[cfg(test)]
     pub fn parse(text: &str) -> anyhow::Result<Config> {
@@ -201,6 +229,8 @@ build_number = 0          # 0 = otomatik/varsayılan
         let text = r#"
 [ui]
 show_member_list = false
+images = "full"
+image_max_rows = 20
 
 [behavior]
 send_typing = false
@@ -220,7 +250,9 @@ chrome_major = 130
             config,
             Config {
                 ui: Ui {
-                    show_member_list: false
+                    show_member_list: false,
+                    images: Images::Full,
+                    image_max_rows: 20,
                 },
                 behavior: Behavior {
                     send_typing: false,
@@ -236,6 +268,16 @@ chrome_major = 130
                 },
             }
         );
+    }
+
+    #[test]
+    fn bad_image_mode_is_an_error() {
+        assert!(Config::parse("[ui]\nimages = \"big\"\n").is_err());
+        let opts = Config::parse("[ui]\nimages = \"off\"\nimage_max_rows = 0\n")
+            .expect("geçerli")
+            .tui_options();
+        assert_eq!(opts.images, digcord_tui::ImageMode::Off);
+        assert_eq!(opts.image_max_rows, 1);
     }
 
     #[test]
@@ -292,13 +334,13 @@ chrome_major = 130
             config.notifications.on,
             vec![NotifyOn::Mention, NotifyOn::Dm]
         );
-        assert_eq!(warnings.len(), 8, "uyarılar: {warnings:?}");
+        assert_eq!(warnings.len(), 6, "uyarılar: {warnings:?}");
+        assert_eq!(config.ui.images, Images::Thumbnail);
+        assert_eq!(config.ui.image_max_rows, 10);
         for expected in [
             "bilinmeyen ayar: ui.keymap",
             "bilinmeyen ayar: ui.theme",
             "bilinmeyen ayar: ui.timestamp_format",
-            "bilinmeyen ayar: ui.images",
-            "bilinmeyen ayar: ui.image_max_rows",
             "bilinmeyen ayar: behavior.message_window",
             "bilinmeyen ayar: voice",
             "bilinmeyen ayar: keys",

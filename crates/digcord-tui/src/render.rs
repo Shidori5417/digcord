@@ -2,7 +2,7 @@
 //!
 //! Saf fonksiyonlar: ağ/disk yok. Dış dünya (isim çözümleme, saat biçimi) `Resolver` ile gelir.
 
-use digcord_model::{Message, User, message_kind as kind};
+use digcord_model::{Embed, Message, User, message_kind as kind};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -41,7 +41,48 @@ pub trait Resolver {
     fn is_failed(&self, _id: u64) -> bool {
         false
     }
+    /// `w`×`h` piksellik resmin en fazla `max_cols` sütuna sığan hücre boyutu.
+    /// `None`: resimler kapalı ya da terminal desteklemiyor (metin yedeği çizilir).
+    fn image_fit(&self, _w: u32, _h: u32, _max_cols: u16) -> Option<ImageFit> {
+        None
+    }
 }
+
+/// Bir resmin terminaldeki boyutu ve o boyut için istenecek piksel boyutu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageFit {
+    pub cols: u16,
+    pub rows: u16,
+    pub px_w: u32,
+    pub px_h: u32,
+}
+
+/// Mesaj satırları içinde bir resmin yeri.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageSlot {
+    /// Resmin ilk satırının mesaj satırları içindeki dizini.
+    pub line: usize,
+    /// Soldan sütun.
+    pub col: u16,
+    pub cols: u16,
+    pub rows: u16,
+    /// İndirilecek adres (boyut parametreleri dahil).
+    pub url: String,
+}
+
+/// Bir mesajın satırları ve satırların arasına ayrılmış resim yerleri.
+#[derive(Debug, Default)]
+pub struct Layout {
+    pub lines: Vec<Line<'static>>,
+    pub images: Vec<ImageSlot>,
+}
+
+/// Özel emoji büyük gösterimde istenen piksel boyutu.
+const EMOJI_PX: u32 = 48;
+/// Bu kadar emojiye kadar "sadece emoji" mesajı büyük gösterilir (Discord'un sınırı).
+const JUMBO_MAX: usize = 27;
+/// Embed açıklamasının en fazla satır sayısı.
+const EMBED_DESC_LINES: usize = 12;
 
 /// Aynı yazar, öncekinden 7 dakikadan az sonra ve yanıt değil → başlık satırı yok.
 pub fn is_grouped(prev: Option<&Message>, msg: &Message) -> bool {
@@ -57,14 +98,22 @@ pub fn is_grouped(prev: Option<&Message>, msg: &Message) -> bool {
 /// Bir mesajın tüm terminal satırları (`width` >= 1; hiçbir satır `width`'ten geniş olmaz).
 ///
 /// Gruplanmamış mesajın ilk satırı boş ayırıcıdır; çağıran ilk mesajda atar.
+#[cfg(test)]
 pub fn message_lines(
     msg: &Message,
     grouped: bool,
     r: &dyn Resolver,
     width: u16,
 ) -> Vec<Line<'static>> {
+    message_layout(msg, grouped, r, width).lines
+}
+
+/// [`message_lines`] ve resimlerin satırlar içindeki yerleri. Resim yerleri boş satırdır;
+/// resmi çağıran çizer.
+pub fn message_layout(msg: &Message, grouped: bool, r: &dyn Resolver, width: u16) -> Layout {
     let width = usize::from(width).max(1);
     let mut out = Vec::new();
+    let mut images = Vec::new();
 
     if let Some(text) = system_text(msg, r) {
         out.push(Line::default());
@@ -77,7 +126,7 @@ pub fn message_lines(
             ],
             width,
         ));
-        return out;
+        return Layout { lines: out, images };
     }
 
     if !grouped {
@@ -103,10 +152,29 @@ pub fn message_lines(
         ));
     }
 
-    let mut content = content_lines(msg, r, width);
-    let extras = extra_lines(msg, width);
-    if content.is_empty() && msg.attachments.is_empty() && extras.is_empty() {
+    let jumbo = jumbo_emoji(msg, r, width);
+    let mut content = if jumbo.is_some() {
+        Vec::new()
+    } else {
+        content_lines(msg, r, width)
+    };
+    let extras = sticker_lines(msg, width);
+    let has_embeds = msg.embeds.iter().any(|e| embed_visible(e, msg));
+    if content.is_empty()
+        && jumbo.is_none()
+        && msg.attachments.is_empty()
+        && extras.is_empty()
+        && !has_embeds
+    {
         content.push(fit_line(vec![("  (boş mesaj)".into(), dim())], width));
+    }
+    if let Some((rows, slots)) = jumbo {
+        let base = out.len();
+        images.extend(slots.into_iter().map(|mut s| {
+            s.line += base;
+            s
+        }));
+        out.extend(std::iter::repeat_n(Line::default(), rows));
     }
 
     if msg.is_edited() {
@@ -122,6 +190,9 @@ pub fn message_lines(
     }
     out.extend(content);
     out.extend(extras);
+    for e in &msg.embeds {
+        embed_lines(e, msg, r, width, &mut out, &mut images);
+    }
 
     if r.is_failed(msg.id.0) {
         out.push(fit_line(
@@ -142,11 +213,97 @@ pub fn message_lines(
         };
         let text = format!("  [ek: {} {info}]", a.filename);
         out.push(fit_line(vec![(text, dim())], width));
+        if let (true, Some(w), Some(h)) = (a.is_image(), a.width, a.height) {
+            let src = if a.proxy_url.is_empty() {
+                &a.url
+            } else {
+                &a.proxy_url
+            };
+            push_image(src, w, h, r, width, &mut out, &mut images);
+        }
     }
     if let Some(line) = reactions_line(msg, width) {
         out.push(line);
     }
-    out
+    Layout { lines: out, images }
+}
+
+/// Resim için boş satırlar ayırır ve yerini kaydeder; resimler kapalıysa hiçbir şey yapmaz.
+fn push_image(
+    src: &str,
+    w: u32,
+    h: u32,
+    r: &dyn Resolver,
+    width: usize,
+    out: &mut Vec<Line<'static>>,
+    images: &mut Vec<ImageSlot>,
+) {
+    let indent = indent_for(width);
+    let max_cols = u16::try_from(width.saturating_sub(indent)).unwrap_or(u16::MAX);
+    if src.is_empty() || max_cols == 0 {
+        return;
+    }
+    let Some(fit) = r.image_fit(w, h, max_cols) else {
+        return;
+    };
+    images.push(ImageSlot {
+        line: out.len(),
+        col: u16::try_from(indent).unwrap_or(0),
+        cols: fit.cols,
+        rows: fit.rows,
+        url: sized_url(src, fit.px_w, fit.px_h),
+    });
+    out.extend(std::iter::repeat_n(Line::default(), usize::from(fit.rows)));
+}
+
+/// Vekil adrese boyut parametreleri ekler (vekil küçültülmüş resim döner; doğrulanmadı,
+/// bkz. PROTOCOL_NOTES §5).
+pub(crate) fn sized_url(src: &str, w: u32, h: u32) -> String {
+    let sep = match src.chars().last() {
+        _ if !src.contains('?') => "?",
+        Some('?' | '&') => "",
+        _ => "&",
+    };
+    format!("{src}{sep}width={w}&height={h}")
+}
+
+/// Sadece özel emoji (ve boşluk) içeren mesaj: emojiler resim olarak, yan yana.
+/// Döner: ayrılan satır sayısı ve resim yerleri (satırlar 0'dan).
+fn jumbo_emoji(msg: &Message, r: &dyn Resolver, width: usize) -> Option<(usize, Vec<ImageSlot>)> {
+    let blocks = markdown::parse(&msg.content);
+    let mut ids = Vec::new();
+    for b in &blocks {
+        if !matches!(b.kind, BlockKind::Text) {
+            return None;
+        }
+        for sp in &b.spans {
+            match sp {
+                Md::Emoji { id, .. } => ids.push(*id),
+                Md::Text { text, .. } if text.trim().is_empty() => {}
+                _ => return None,
+            }
+        }
+    }
+    if ids.is_empty() || ids.len() > JUMBO_MAX {
+        return None;
+    }
+    let indent = indent_for(width);
+    let fit = r.image_fit(EMOJI_PX, EMOJI_PX, 8)?;
+    let (cols, rows) = (usize::from(fit.cols), usize::from(fit.rows));
+    let per_line = (width.saturating_sub(indent) / (cols + 1)).max(1);
+    let slots = ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| ImageSlot {
+            line: (i / per_line) * rows,
+            col: u16::try_from(indent + (i % per_line) * (cols + 1)).unwrap_or(0),
+            cols: fit.cols,
+            rows: fit.rows,
+            // Hareketli emojide de PNG: ilk kare (belgelenmiş CDN biçimi).
+            url: format!("https://cdn.discordapp.com/emojis/{id}.png?size={EMOJI_PX}"),
+        })
+        .collect();
+    Some((ids.len().div_ceil(per_line) * rows, slots))
 }
 
 /// Sistem mesajının tek satırlık metni; normal mesajlarda `None`.
@@ -190,33 +347,121 @@ fn system_text(msg: &Message, r: &dyn Resolver) -> Option<String> {
     })
 }
 
-/// Çıkartma ve embed satırları.
-fn extra_lines(msg: &Message, width: usize) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
-    for s in &msg.sticker_items {
-        out.push(fit_line(
-            vec![(format!("  [çıkartma: {}]", s.name), dim())],
-            width,
-        ));
+/// Çıkartma satırları.
+fn sticker_lines(msg: &Message, width: usize) -> Vec<Line<'static>> {
+    msg.sticker_items
+        .iter()
+        .map(|s| fit_line(vec![(format!("  [çıkartma: {}]", s.name), dim())], width))
+        .collect()
+}
+
+/// Sadece bağlantı önizlemesi olan (metinsiz, resimsiz) embed, içerikte bağlantı zaten
+/// göründüğü için çizilmez.
+fn embed_visible(e: &Embed, msg: &Message) -> bool {
+    let text = [&e.title, &e.description]
+        .iter()
+        .any(|t| t.as_deref().is_some_and(|t| !t.is_empty()))
+        || !e.fields.is_empty();
+    text || embed_media(e).is_some() || msg.content.is_empty()
+}
+
+/// Embed'in gösterilecek resmi: büyük resim, yoksa küçük resim; sadece vekil adresi.
+fn embed_media(e: &Embed) -> Option<(&str, u32, u32)> {
+    [&e.image, &e.thumbnail]
+        .into_iter()
+        .flatten()
+        .find_map(|m| {
+            Some((
+                m.proxy_url.as_deref().filter(|u| !u.is_empty())?,
+                m.width?,
+                m.height?,
+            ))
+        })
+}
+
+/// Embed: renkli sol kenar, yazar, başlık, açıklama, alanlar, alt bilgi ve resim.
+fn embed_lines(
+    e: &Embed,
+    msg: &Message,
+    r: &dyn Resolver,
+    width: usize,
+    out: &mut Vec<Line<'static>>,
+    images: &mut Vec<ImageSlot>,
+) {
+    if !embed_visible(e, msg) {
+        return;
     }
-    for e in &msg.embeds {
-        let title = e.title.as_deref().filter(|t| !t.is_empty());
-        let desc = e
-            .description
-            .as_deref()
-            .and_then(|d| d.lines().next())
-            .filter(|d| !d.is_empty());
-        let text = match (title, desc) {
-            (Some(t), Some(d)) => format!("{t} — {d}"),
-            (Some(t), None) => t.to_owned(),
-            (None, Some(d)) => d.to_owned(),
-            // Sadece bağlantı önizlemesi: bağlantı içerikte zaten görünüyor.
-            (None, None) if !msg.content.is_empty() => continue,
-            (None, None) => e.url.clone().unwrap_or_else(|| "(içerik yok)".into()),
+    let indent = indent_for(width);
+    let border = match e.color {
+        Some(c) if c != 0 => Style::new().fg(Color::Rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)),
+        _ => dim(),
+    };
+    let prefix = take_width("▎ ", width.saturating_sub(indent + 1));
+    let avail = width.saturating_sub(indent + prefix.width()).max(1);
+    let mut body: Vec<Vec<Run>> = Vec::new();
+    let mut add = |text: &str, style: Style, max: usize| {
+        let mut lines = Vec::new();
+        for para in text.lines() {
+            lines.extend(wrap_words(&[(para.to_owned(), style)], avail));
+        }
+        if lines.len() > max {
+            lines.truncate(max);
+            if let Some(last) = lines.last_mut() {
+                last.push(("…".into(), dim()));
+            }
+        }
+        body.extend(lines);
+    };
+    let nonempty = |t: &Option<String>| {
+        t.as_deref()
+            .filter(|t| !t.trim().is_empty())
+            .map(str::to_owned)
+    };
+    if let Some(p) = e.provider.as_ref().and_then(|p| nonempty(&p.name)) {
+        add(&p, dim(), 1);
+    }
+    if let Some(a) = e.author.as_ref().and_then(|a| nonempty(&a.name)) {
+        add(&a, Style::new().add_modifier(Modifier::BOLD), 1);
+    }
+    if let Some(t) = nonempty(&e.title) {
+        let style = if e.url.is_some() {
+            Style::new()
+                .fg(Color::LightBlue)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().add_modifier(Modifier::BOLD)
         };
-        out.push(fit_line(vec![(format!("  [embed: {text}]"), dim())], width));
+        add(&t, style, 2);
     }
-    out
+    if let Some(d) = nonempty(&e.description) {
+        add(&d, Style::new(), EMBED_DESC_LINES);
+    }
+    for f in &e.fields {
+        add(&f.name, Style::new().add_modifier(Modifier::BOLD), 1);
+        add(&f.value, Style::new(), 4);
+    }
+    if let Some(f) = e.footer.as_ref().and_then(|f| nonempty(&f.text)) {
+        add(&f, dim(), 1);
+    }
+    let text_only = body.is_empty();
+    for line in body {
+        let mut spans = Vec::with_capacity(line.len() + 2);
+        if indent > 0 {
+            spans.push(Span::raw(" ".repeat(indent)));
+        }
+        spans.push(Span::styled(prefix.clone(), border));
+        spans.extend(line.into_iter().map(|(t, s)| Span::styled(t, s)));
+        out.push(Line::from(spans));
+    }
+    let before = images.len();
+    if let Some((src, w, h)) = embed_media(e) {
+        push_image(src, w, h, r, width, out, images);
+    }
+    // Ne metin ne (çizilebilen) resim: içerik boşsa bağlantıyı göster.
+    if text_only && images.len() == before && msg.content.is_empty() {
+        let url = e.url.clone().unwrap_or_else(|| "(içerik yok)".into());
+        out.push(fit_line(vec![(format!("  [embed: {url}]"), dim())], width));
+    }
 }
 
 /// `  👍 2  :kedi: 1` — benim tepkilerim vurgulu.
@@ -1008,7 +1253,188 @@ mod tests {
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
-        assert_eq!(text, ["  [çıkartma: kedi]", "  [embed: Başlık — açıklama]"]);
+        assert_eq!(
+            text,
+            [
+                "  [çıkartma: kedi]",
+                "  ▎ Başlık",
+                "  ▎ açıklama",
+                "  ▎ ikinci"
+            ]
+        );
+    }
+
+    /// Resimleri 10×20 piksel hücreli bir terminalde, en fazla 6 satır gösteren çözücü.
+    struct ImgRes;
+    impl Resolver for ImgRes {
+        fn user_name(&self, _: u64) -> Option<String> {
+            None
+        }
+        fn channel_name(&self, _: u64) -> Option<String> {
+            None
+        }
+        fn role_name(&self, _: u64) -> Option<String> {
+            None
+        }
+        fn is_me(&self, _: u64) -> bool {
+            false
+        }
+        fn author_name(&self, user: &User) -> String {
+            user.username.clone()
+        }
+        fn clock(&self, _: u64) -> String {
+            "12:00".into()
+        }
+        fn timestamp(&self, _: i64, _: Option<char>) -> String {
+            String::new()
+        }
+        fn image_fit(&self, w: u32, h: u32, max_cols: u16) -> Option<ImageFit> {
+            let scale = (f64::from(max_cols) * 10.0 / f64::from(w))
+                .min(6.0 * 20.0 / f64::from(h))
+                .min(1.0);
+            let (px_w, px_h) = ((f64::from(w) * scale) as u32, (f64::from(h) * scale) as u32);
+            Some(ImageFit {
+                cols: px_w.div_ceil(10) as u16,
+                rows: px_h.div_ceil(20) as u16,
+                px_w,
+                px_h,
+            })
+        }
+    }
+
+    #[test]
+    fn image_attachment_reserves_rows() {
+        let m: Message = serde_json::from_value(serde_json::json!({
+            "id": "1000000000000000000", "channel_id": "2",
+            "author": {"id": "4", "username": "ali"}, "content": "bak",
+            "attachments": [{"id": "9", "filename": "a.png", "size": 10, "width": 400,
+                "height": 240, "content_type": "image/png",
+                "url": "https://cdn.discordapp.com/attachments/2/9/a.png?ex=1&is=2&hm=3&",
+                "proxy_url": "https://media.discordapp.net/attachments/2/9/a.png?ex=1&is=2&hm=3&"}]
+        }))
+        .expect("mesaj");
+        let layout = message_layout(&m, true, &ImgRes, 60);
+        // İçerik + etiket + 6 satır resim.
+        assert_eq!(layout.lines.len(), 8);
+        assert_eq!(
+            layout.images,
+            [ImageSlot {
+                line: 2,
+                col: 2,
+                cols: 20,
+                rows: 6,
+                url: "https://media.discordapp.net/attachments/2/9/a.png?ex=1&is=2&hm=3&width=200&height=120".into(),
+            }]
+        );
+        // Resimler kapalıyken sadece etiket.
+        let plain = message_layout(&m, true, &SysRes, 60);
+        assert!(plain.images.is_empty());
+        assert_eq!(texts(&plain.lines), ["  bak", "  [ek: a.png 400×240]"]);
+    }
+
+    #[test]
+    fn video_attachment_has_no_preview() {
+        let m: Message = serde_json::from_value(serde_json::json!({
+            "id": "1000000000000000000", "channel_id": "2",
+            "author": {"id": "4", "username": "ali"}, "content": "",
+            "attachments": [{"id": "9", "filename": "a.mp4", "size": 10, "width": 400,
+                "height": 240, "content_type": "video/mp4", "url": "u", "proxy_url": "p"}]
+        }))
+        .expect("mesaj");
+        assert!(message_layout(&m, true, &ImgRes, 60).images.is_empty());
+    }
+
+    #[test]
+    fn emoji_only_message_is_jumbo() {
+        let m: Message = serde_json::from_value(serde_json::json!({
+            "id": "1000000000000000000", "channel_id": "2",
+            "author": {"id": "4", "username": "ali"}, "content": "<:a:11> <a:b:12>"
+        }))
+        .expect("mesaj");
+        let layout = message_layout(&m, true, &ImgRes, 60);
+        // 48 px → 5×3 hücre, aralarında bir sütun.
+        assert_eq!(layout.lines.len(), 3);
+        let pos: Vec<_> = layout
+            .images
+            .iter()
+            .map(|s| (s.line, s.col, s.cols, s.rows))
+            .collect();
+        assert_eq!(pos, [(0, 2, 5, 3), (0, 8, 5, 3)]);
+        assert_eq!(
+            layout.images[1].url,
+            "https://cdn.discordapp.com/emojis/12.png?size=48"
+        );
+        // Metinle karışıksa ya da resimler kapalıysa normal metin.
+        assert!(message_layout(&m, true, &SysRes, 60).images.is_empty());
+        let mixed: Message = serde_json::from_value(serde_json::json!({
+            "id": "1000000000000000000", "channel_id": "2",
+            "author": {"id": "4", "username": "ali"}, "content": "selam <:a:11>"
+        }))
+        .expect("mesaj");
+        assert!(message_layout(&mixed, true, &ImgRes, 60).images.is_empty());
+    }
+
+    #[test]
+    fn rich_embed_with_fields_footer_and_thumbnail() {
+        let m: Message = serde_json::from_value(serde_json::json!({
+            "id": "1000000000000000000", "channel_id": "2",
+            "author": {"id": "4", "username": "ali"}, "content": "",
+            "embeds": [{"type": "rich", "title": "T", "url": "https://x.example",
+                "color": 16711680, "author": {"name": "Yazar"},
+                "fields": [{"name": "Ad", "value": "Değer", "inline": true}],
+                "footer": {"text": "alt"},
+                "thumbnail": {"url": "https://x.example/t.png",
+                    "proxy_url": "https://images-ext-1.discordapp.net/external/abc/t.png",
+                    "width": 80, "height": 80}}]
+        }))
+        .expect("mesaj");
+        let layout = message_layout(&m, true, &ImgRes, 60);
+        assert_eq!(
+            texts(&layout.lines[..5]),
+            ["  ▎ Yazar", "  ▎ T", "  ▎ Ad", "  ▎ Değer", "  ▎ alt"]
+        );
+        assert_eq!(
+            layout.lines[0].spans[1].style.fg,
+            Some(Color::Rgb(255, 0, 0))
+        );
+        assert_eq!(layout.images.len(), 1);
+        assert_eq!(layout.images[0].line, 5);
+        assert!(layout.images[0].url.ends_with("t.png?width=80&height=80"));
+    }
+
+    #[test]
+    fn image_embed_with_link_content() {
+        let m: Message = serde_json::from_value(serde_json::json!({
+            "id": "1000000000000000000", "channel_id": "2",
+            "author": {"id": "4", "username": "ali"}, "content": "https://x.example/a.png",
+            "embeds": [{"type": "image", "url": "https://x.example/a.png",
+                "thumbnail": {"url": "https://x.example/a.png",
+                    "proxy_url": "https://images-ext-1.discordapp.net/external/q/a.png",
+                    "width": 100, "height": 100}}]
+        }))
+        .expect("mesaj");
+        // Resimler kapalı: bağlantı içerikte; embed satırı yok.
+        assert_eq!(
+            texts(&message_lines(&m, true, &SysRes, 60)),
+            ["  https://x.example/a.png"]
+        );
+        assert_eq!(message_layout(&m, true, &ImgRes, 60).images.len(), 1);
+    }
+
+    #[test]
+    fn sized_url_separators() {
+        assert_eq!(
+            sized_url("https://a/b.png", 1, 2),
+            "https://a/b.png?width=1&height=2"
+        );
+        assert_eq!(
+            sized_url("https://a/b.png?x=1&", 1, 2),
+            "https://a/b.png?x=1&width=1&height=2"
+        );
+        assert_eq!(
+            sized_url("https://a/b.png?x=1", 1, 2),
+            "https://a/b.png?x=1&width=1&height=2"
+        );
     }
 
     #[test]

@@ -26,6 +26,8 @@ pub(crate) enum Mode {
     ConfirmDelete(Snowflake),
     /// `Ctrl+K` hızlı geçiş.
     Switcher,
+    /// Tam ekran resim görüntüleyici.
+    Viewer,
 }
 
 /// Yazılan metnin hedefi.
@@ -265,12 +267,58 @@ impl App {
                     .map(|m| m.content.clone())?;
                 return Some(Action::Copy(text));
             }
+            KeyCode::Char('o') => return self.open_media(open.channel, sel),
             KeyCode::Enter if self.shared.read().is_failed(sel) => {
                 return Some(Action::Retry {
                     guild: open.guild,
                     channel: open.channel,
                     message: sel,
                 });
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// Resimli mesajda görüntüleyiciyi açar; yoksa (ya da resimler kapalıysa) ilk bağlantıyı
+    /// harici açar.
+    fn open_media(&mut self, channel: Snowflake, sel: Snowflake) -> Option<Action> {
+        let (items, link) = {
+            let st = self.shared.read();
+            let msg = st.find_message(channel, sel)?;
+            (crate::viewer::items(msg), crate::viewer::external_link(msg))
+        };
+        if self.images.enabled() && !items.is_empty() {
+            self.viewer = Some(crate::viewer::Viewer {
+                items,
+                index: 0,
+                origin: (channel, sel),
+            });
+            self.mode = Mode::Viewer;
+            return None;
+        }
+        match items.into_iter().next().map(|i| i.original).or(link) {
+            Some(url) => Some(Action::OpenExternal(url)),
+            None => {
+                self.notice = Some("Açılacak resim ya da bağlantı yok".into());
+                None
+            }
+        }
+    }
+
+    pub(crate) fn viewer_key(&mut self, key: KeyEvent) -> Option<Action> {
+        let viewer = self.viewer.as_mut()?;
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.viewer = None;
+                self.mode = Mode::Select;
+            }
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('j') => viewer.step(true),
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('k') => viewer.step(false),
+            KeyCode::Char('o') => {
+                return viewer
+                    .current()
+                    .map(|i| Action::OpenExternal(i.original.clone()));
             }
             _ => {}
         }
@@ -664,6 +712,7 @@ pub(crate) fn mode_label(mode: Mode) -> &'static str {
         Mode::React => " [TEPKİ] ",
         Mode::ConfirmDelete(_) => " [SİL?] ",
         Mode::Switcher => " [GEÇİŞ] ",
+        Mode::Viewer => " [RESİM] ",
     }
 }
 

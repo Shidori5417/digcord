@@ -8,12 +8,13 @@ use std::time::Duration;
 
 use digcord_gateway::{Command, Config, GatewayEvent, Update};
 use digcord_http::{Http, HttpError, NewMessage, Page};
+use digcord_media::{Fetcher, MediaError};
 use digcord_model::{
     ClientProperties, DEFAULT_BUILD_NUMBER, DEFAULT_CHROME_MAJOR, Message, MessageDelete,
     ReactionEmoji, Ready, Snowflake, Token,
 };
 use digcord_store::{NotifyFilter, State};
-use digcord_tui::{Action, Shared, Status, UiEvent};
+use digcord_tui::{Action, ImageJob, Shared, Status, UiEvent};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
@@ -28,6 +29,8 @@ const FIRST_PAGE: u8 = 10;
 const OLDER_PAGE: u8 = 20;
 /// op 8 isteği başına en fazla kullanıcı.
 const MEMBERS_PER_REQUEST: usize = 100;
+/// Medya disk önbelleğinin üst sınırı; açılışta en eskiler silinir.
+const MEDIA_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 
 struct Session {
     stop: watch::Sender<bool>,
@@ -161,6 +164,10 @@ struct Controller {
     last_ack: std::collections::HashMap<Snowflake, std::time::Instant>,
     /// Kısıtlama yüzünden ertelenmiş okundu: kanal → mesaj.
     ack_due: std::collections::HashMap<Snowflake, Snowflake>,
+    /// CDN istemcisi; kurulamazsa resimler yüklenmez.
+    media: Option<Arc<Fetcher>>,
+    /// Resim adresinin süresi dolduğu için bir kez yeniden çekilmiş mesajlar.
+    refetched: HashSet<Snowflake>,
 }
 
 impl Controller {
@@ -373,6 +380,94 @@ impl Controller {
                     c.notice("Dosya gönderildi");
                 }
                 Err(e) => c.notice(format!("Yüklenemedi: {e}")),
+            },
+        );
+    }
+
+    /// Resmi indirir; çözme ve kodlama engelleyici havuzda. Sonuç doğrudan TUI'ye gider.
+    fn load_image(&mut self, job: ImageJob) {
+        let Some(fetcher) = self.media.clone() else {
+            self.send(job.failed("medya istemcisi yok".into()));
+            return;
+        };
+        let ui = self.ui.clone();
+        self.spawn(
+            async move {
+                match fetcher.get(job.url()).await {
+                    Ok(bytes) => {
+                        match tokio::task::spawn_blocking(move || job.encode(&bytes)).await {
+                            Ok(ev) => {
+                                let _ = ui.send(ev);
+                            }
+                            Err(e) => tracing::warn!("resim kodlanamadı: {e}"),
+                        }
+                        None
+                    }
+                    Err(e) => Some((job, e)),
+                }
+            },
+            |c, failed| {
+                if let Some((job, e)) = failed {
+                    c.image_failed(job, e);
+                }
+            },
+        );
+    }
+
+    /// İmzalı ek adresinin süresi dolmuşsa mesaj bir kez yeniden çekilir: gelen yeni adres
+    /// TUI'de yeni bir istek doğurur.
+    fn image_failed(&mut self, job: ImageJob, e: MediaError) {
+        if e.maybe_expired()
+            && job.url().contains("ex=")
+            && let Some((channel, message)) = job.origin()
+            && self.refetched.insert(message)
+            && let Some(http) = self.session.as_ref().map(|s| s.http.clone())
+        {
+            let guild = self
+                .shared
+                .read_state(|st| st.channel(channel).and_then(|c| c.guild_id));
+            let after = Snowflake(message.0.saturating_add(1));
+            self.spawn(
+                async move {
+                    http.get_messages(Page { guild, channel }, Some(after), 1)
+                        .await
+                },
+                move |c, result| match result {
+                    Ok(msgs) => {
+                        if let Some(m) = msgs.into_iter().find(|m| m.id == message) {
+                            c.write(|st| st.message_update(m));
+                        }
+                    }
+                    Err(e) => tracing::debug!("mesaj yenilenemedi: {e}"),
+                },
+            );
+        }
+        self.send(job.failed(e.to_string()));
+    }
+
+    /// Adresi `xdg-open` ile açar (sadece http/https; kabuk yok, tek argüman).
+    fn open_external(&self, url: String) {
+        if !(url.starts_with("https://") || url.starts_with("http://")) {
+            self.notice("Sadece http/https bağlantıları açılır");
+            return;
+        }
+        self.spawn(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    std::process::Command::new("xdg-open")
+                        .arg(&url)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status()
+                })
+                .await
+            },
+            |c, result| match result {
+                Ok(Ok(status)) if status.success() => {}
+                Ok(Ok(status)) => c.notice(format!("Açılamadı: xdg-open {status}")),
+                Ok(Err(e)) => c.notice(format!("Açılamadı: {e}")),
+                Err(e) => c.notice(format!("Açılamadı: {e}")),
             },
         );
     }
@@ -758,6 +853,8 @@ impl Controller {
                 max_bytes,
             } => self.upload(Page { guild, channel }, path, content, max_bytes),
             Action::Copy(text) => self.copy(text),
+            Action::LoadImage(job) => self.load_image(job),
+            Action::OpenExternal(url) => self.open_external(url),
             Action::Quit => return false,
         }
         true
@@ -788,6 +885,31 @@ async fn blocking<T: Send + 'static>(
     tokio::task::spawn_blocking(f).await?
 }
 
+/// CDN istemcisi: tarayıcıyla aynı User-Agent, `~/.cache/digcord/media` önbelleği.
+fn media_fetcher(env: &Env) -> Option<Arc<Fetcher>> {
+    let props = ClientProperties::chrome_linux(
+        &env.locale,
+        env.settings.chrome_major,
+        env.settings.build_number,
+    );
+    let dir = dirs::cache_dir().map(|d| d.join("digcord").join("media"));
+    let fetcher = match Fetcher::new(props.user_agent(), dir.clone()) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("medya istemcisi kurulamadı: {e}");
+            return None;
+        }
+    };
+    if let Some(dir) = dir {
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = digcord_media::prune(&dir, MEDIA_CACHE_BYTES) {
+                tracing::debug!("medya önbelleği temizlenemedi: {e}");
+            }
+        });
+    }
+    Some(Arc::new(fetcher))
+}
+
 /// `actions` kapanana veya `Action::Quit` gelene kadar çalışır.
 pub async fn run(
     mut actions: mpsc::UnboundedReceiver<Action>,
@@ -816,7 +938,10 @@ pub async fn run(
         focused: true,
         last_ack: std::collections::HashMap::new(),
         ack_due: std::collections::HashMap::new(),
+        media: None,
+        refetched: HashSet::new(),
     };
+    c.media = media_fetcher(&c.env);
 
     let stored = blocking(|| {
         keystore::init()?;

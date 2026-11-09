@@ -48,7 +48,7 @@ fn main() -> anyhow::Result<()> {
         };
         let _ = ui_tx.send(digcord_tui::UiEvent::Notice(text));
     }
-    let result = digcord_tui::run(ui_tx, ui_rx, shared, |action| {
+    let result = digcord_tui::run(ui_tx, ui_rx, shared, config.tui_options(), |action| {
         let _ = action_tx.send(action);
     });
 

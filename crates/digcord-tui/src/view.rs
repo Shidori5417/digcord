@@ -13,6 +13,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
 use crate::compose::{self, Mode, Target};
+use crate::media::{Images, SlotState};
+use crate::render::ImageFit;
 use crate::render::{self, Resolver};
 use crate::{App, EntryKind, Focus, Open, Screen, Status};
 
@@ -31,6 +33,7 @@ pub(crate) struct Res<'a> {
     tz: &'a TimeZone,
     me: Option<Snowflake>,
     today: jiff::civil::Date,
+    images: Option<&'a Images>,
 }
 
 impl<'a> Res<'a> {
@@ -41,7 +44,14 @@ impl<'a> Res<'a> {
             tz,
             me: st.me().map(|u| u.id),
             today: Timestamp::now().to_zoned(tz.clone()).date(),
+            images: None,
         }
+    }
+
+    /// Resim boyutları için (kaydırma hesapları da aynı çözücüyü kullanmalı).
+    pub(crate) fn with_images(mut self, images: &'a Images) -> Self {
+        self.images = Some(images);
+        self
     }
 
     fn zoned(&self, ms: i64) -> Option<jiff::Zoned> {
@@ -52,6 +62,10 @@ impl<'a> Res<'a> {
 }
 
 impl Resolver for Res<'_> {
+    fn image_fit(&self, w: u32, h: u32, max_cols: u16) -> Option<ImageFit> {
+        self.images?.fit(w, h, max_cols)
+    }
+
     fn user_name(&self, id: u64) -> Option<String> {
         self.st
             .user(Snowflake(id))
@@ -141,27 +155,30 @@ pub(crate) fn anchor_index(msgs: &VecDeque<Message>, anchor: Option<Snowflake>) 
     }
 }
 
-/// `idx` mesajının satırları; en eski yüklü mesajın üst boşluğu atılır.
+/// `idx` mesajının satırları ve resim yerleri; en eski yüklü mesajın üst boşluğu atılır.
 pub(crate) fn lines(
     msgs: &VecDeque<Message>,
     idx: usize,
     res: &Res<'_>,
     width: u16,
-) -> Vec<Line<'static>> {
+) -> render::Layout {
     let prev = idx.checked_sub(1).and_then(|i| msgs.get(i));
     let Some(msg) = msgs.get(idx) else {
-        return Vec::new();
+        return render::Layout::default();
     };
     let grouped = render::is_grouped(prev, msg);
-    let mut out = render::message_lines(msg, grouped, res, width.max(1));
-    if idx == 0 && !grouped && out.first().is_some_and(|l| l.width() == 0) {
-        out.remove(0);
+    let mut out = render::message_layout(msg, grouped, res, width.max(1));
+    if idx == 0 && !grouped && out.lines.first().is_some_and(|l| l.width() == 0) {
+        out.lines.remove(0);
+        for slot in &mut out.images {
+            slot.line = slot.line.saturating_sub(1);
+        }
     }
     out
 }
 
 pub(crate) fn height(msgs: &VecDeque<Message>, idx: usize, res: &Res<'_>, width: u16) -> usize {
-    lines(msgs, idx, res, width).len()
+    lines(msgs, idx, res, width).lines.len()
 }
 
 pub(crate) fn draw(app: &App, frame: &mut Frame) {
@@ -190,6 +207,8 @@ pub(crate) fn draw(app: &App, frame: &mut Frame) {
         draw_login(frame, input, error.as_deref());
     } else if app.mode == Mode::Switcher {
         draw_switcher(app, frame);
+    } else if let (Mode::Viewer, Some(v)) = (app.mode, &app.viewer) {
+        crate::viewer::draw(v, &app.images, frame);
     }
 }
 
@@ -413,8 +432,10 @@ fn draw_messages(app: &App, st: &State, frame: &mut Frame, area: Rect) {
         draw_input(app, st, open, frame, input);
         return;
     };
-    let res = Res::new(st, open.guild, &app.tz);
+    let res = Res::new(st, open.guild, &app.tz).with_images(&app.images);
     let h = usize::from(inner.height);
+    // Görünen resim yerleri: (yer, ilk satırın alttan sırası, kaynak mesaj).
+    let mut slots: Vec<(render::ImageSlot, usize, (Snowflake, Snowflake))> = Vec::new();
     let mut out: VecDeque<Line<'static>> = VecDeque::with_capacity(h + 1);
     let mut reached_oldest = msgs.is_empty();
     let selected =
@@ -429,7 +450,16 @@ fn draw_messages(app: &App, st: &State, frame: &mut Frame, area: Rect) {
         let bottom_id = msgs[idx].id;
         let mut skip_bottom = app.scroll.offset;
         loop {
-            let mut ls = lines(msgs, idx, &res, inner.width);
+            let layout = lines(msgs, idx, &res, inner.width);
+            let mut ls = layout.lines;
+            let n = ls.len().saturating_sub(skip_bottom);
+            for slot in layout.images {
+                // Alttan kesilen (görünümün altında kalan) resim çizilmez.
+                if slot.line + usize::from(slot.rows) <= n {
+                    let first = out.len() + n - 1 - slot.line;
+                    slots.push((slot, first, (msgs[idx].channel_id, msgs[idx].id)));
+                }
+            }
             if selected == Some(msgs[idx].id) {
                 for l in &mut ls {
                     l.style = l
@@ -472,8 +502,43 @@ fn draw_messages(app: &App, st: &State, frame: &mut Frame, area: Rect) {
         app.want_older.set(true);
     }
     frame.render_widget(Paragraph::new(Vec::from(out)), inner);
+    draw_slots(app, frame, inner, &slots);
     // Tamamlama penceresi mesaj listesinin üstüne çizildiği için en son.
     draw_input(app, st, open, frame, input);
+}
+
+/// Resimleri yerlerine çizer. Sadece tamamen görünen resim çizilir (kısmen görünen resim
+/// her kaydırmada yeniden kodlanmasın diye); diğerlerinin görünen ilk satırına not düşülür.
+fn draw_slots(
+    app: &App,
+    frame: &mut Frame,
+    inner: Rect,
+    slots: &[(render::ImageSlot, usize, (Snowflake, Snowflake))],
+) {
+    let h = usize::from(inner.height);
+    for (slot, first, origin) in slots {
+        let rows = usize::from(slot.rows);
+        // Alttan sıra → ekran satırı: alt satır h-1.
+        let last = first + 1 - rows;
+        if last >= h {
+            continue;
+        }
+        let col = inner.x + slot.col.min(inner.width);
+        let cols = slot.cols.min(inner.width.saturating_sub(slot.col));
+        let note = if *first < h {
+            let y = inner.y + u16::try_from(h - 1 - first).unwrap_or(0);
+            let area = Rect::new(col, y, cols, slot.rows);
+            match app.images.draw(frame, area, &slot.url, Some(*origin)) {
+                SlotState::Drawn => continue,
+                SlotState::Loading => (y, "yükleniyor…"),
+                SlotState::Failed => (y, "[resim yüklenemedi]"),
+            }
+        } else {
+            (inner.y, "[resim]")
+        };
+        let area = Rect::new(col, note.0, cols, 1);
+        frame.render_widget(Paragraph::new(Line::from(note.1).dim()), area);
+    }
 }
 
 fn input_height(app: &App, st: &State, open: Open, width: u16) -> u16 {

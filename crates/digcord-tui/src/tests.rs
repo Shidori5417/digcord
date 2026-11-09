@@ -664,3 +664,124 @@ fn friends_section_in_dm_panel_and_focus_events() {
         Some(Action::Focus(true))
     );
 }
+
+/// Resimli mesaj: 400×200 piksellik ek; yarım blok yedeğinde hücre 10×20 → 40×10 hücre,
+/// `image_max_rows = 4` ile 16×4.
+fn image_msg(seq: u64, minutes: u64) -> Message {
+    let mut m = msg(seq, minutes, FRIEND, "resim");
+    m.attachments = serde_json::from_value(serde_json::json!([{
+        "id": "9", "filename": "a.png", "size": 10, "width": 400, "height": 200,
+        "content_type": "image/png",
+        "url": "https://cdn.discordapp.com/attachments/11/9/a.png?ex=1&is=2&hm=3&",
+        "proxy_url": "https://media.discordapp.net/attachments/11/9/a.png?ex=1&is=2&hm=3&"
+    }]))
+    .expect("ek");
+    m
+}
+
+fn image_app(msgs: Vec<Message>) -> App {
+    let mut app = test_app(shared_with(msgs, true));
+    app.images = media::Images::new(
+        Some(ratatui_image::picker::Picker::halfblocks()),
+        Options {
+            images: ImageMode::Thumbnail,
+            image_max_rows: 4,
+        },
+    );
+    open_sohbet(&mut app);
+    app
+}
+
+fn png_bytes() -> Vec<u8> {
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(160, 80)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .expect("png");
+    png.into_inner()
+}
+
+fn row_text(backend: &TestBackend, y: u16) -> String {
+    let buf = backend.buffer();
+    (0..buf.area.width)
+        .map(|x| buf[(x, y)].symbol().to_owned())
+        .collect()
+}
+
+#[test]
+fn image_requested_once_and_drawn_in_place() {
+    let msgs = vec![image_msg(1, 0), msg(2, 1, FRIEND, "sonra")];
+    let mut app = image_app(msgs.clone());
+    let screen = draw(&app, 100, 24);
+    let jobs = app.images.take_wanted();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(
+        jobs[0].url(),
+        "https://media.discordapp.net/attachments/11/9/a.png?ex=1&is=2&hm=3&width=160&height=80"
+    );
+    assert_eq!(jobs[0].origin(), Some((Snowflake(SOHBET), msgs[0].id)));
+    let loading = (0..24).find(|y| row_text(&screen, *y).contains("yükleniyor…"));
+    let label = (0..24)
+        .find(|y| row_text(&screen, *y).contains("[ek: a.png 400×200]"))
+        .expect("etiket");
+    assert_eq!(loading, Some(label + 1), "resim etiketin hemen altında");
+
+    // Aynı çizim tekrarında yeni istek yok; resim gelince yerinde çizilir.
+    draw(&app, 100, 24);
+    assert!(app.images.take_wanted().is_empty());
+    let job = jobs.into_iter().next().expect("iş");
+    app.handle(job.encode(&png_bytes()));
+    let screen = draw(&app, 100, 24);
+    assert!(!row_text(&screen, label + 1).contains("yükleniyor"));
+    // Sonraki mesaj resmin 4 satırının altında.
+    assert!(row_text(&screen, label + 5).contains("sonra"));
+}
+
+#[test]
+fn partly_visible_image_is_not_drawn() {
+    // Resimli mesajın altında ekranı dolduracak kadar mesaj: resmin üstü ekran dışında kalsın.
+    let mut msgs = vec![image_msg(1, 0)];
+    for i in 0..5 {
+        msgs.push(msg(10 + i, 1, FRIEND, &format!("satır {i}")));
+    }
+    let app = image_app(msgs);
+    // Mesaj alanı 7 satır: alttaki 5 mesaj + resmin son 2 satırı.
+    let screen = draw(&app, 100, 12);
+    assert!(
+        app.images.take_wanted().is_empty(),
+        "kısmen görünen resim istenmez"
+    );
+    assert!(row_text(&screen, 1).contains("[resim]"));
+}
+
+#[test]
+fn viewer_opens_on_o_and_external_on_second_o() {
+    let msgs = vec![image_msg(1, 0)];
+    let mut app = image_app(msgs);
+    draw(&app, 100, 24);
+    press(&mut app, &[KeyCode::Char('v'), KeyCode::Char('o')]);
+    assert_eq!(app.mode, compose::Mode::Viewer);
+    let screen = draw(&app, 100, 24);
+    assert!(row_text(&screen, 0).contains("a.png (1/1)"));
+    let actions = press(&mut app, &[KeyCode::Char('o')]);
+    assert_eq!(
+        actions,
+        [Action::OpenExternal(
+            "https://cdn.discordapp.com/attachments/11/9/a.png?ex=1&is=2&hm=3&".into()
+        )]
+    );
+    press(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.mode, compose::Mode::Select);
+}
+
+#[test]
+fn o_opens_link_when_images_off() {
+    let msgs = vec![msg(1, 0, FRIEND, "bak https://example.com/x")];
+    let mut app = test_app(shared_with(msgs, true));
+    open_sohbet(&mut app);
+    draw(&app, 100, 20);
+    let actions = press(&mut app, &[KeyCode::Char('v'), KeyCode::Char('o')]);
+    assert_eq!(
+        actions,
+        [Action::OpenExternal("https://example.com/x".into())]
+    );
+}

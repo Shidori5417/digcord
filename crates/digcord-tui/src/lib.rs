@@ -7,8 +7,12 @@ mod compose;
 mod editor;
 mod fuzzy;
 mod markdown;
+mod media;
 mod render;
 mod view;
+mod viewer;
+
+pub use media::{ImageDone, ImageJob, ImageMode, Options};
 
 use std::cell::Cell;
 use std::collections::HashSet;
@@ -55,6 +59,8 @@ pub enum UiEvent {
     StoreChanged,
     /// Durum çubuğunda bir sonraki tuşa kadar gösterilecek kısa bilgi/hata.
     Notice(String),
+    /// Bir resim işi bitti.
+    Image(ImageDone),
 }
 
 /// Bağlantı durumu (durum çubuğunda gösterilir).
@@ -133,6 +139,10 @@ pub enum Action {
     Copy(String),
     /// Terminal penceresi odak kazandı/kaybetti (bildirim ve okundu kararları için).
     Focus(bool),
+    /// Resmi indir, çöz ve terminal için kodla; sonuç [`UiEvent::Image`].
+    LoadImage(ImageJob),
+    /// Adresi sistemin varsayılan uygulamasında aç (`xdg-open`).
+    OpenExternal(String),
     Quit,
 }
 
@@ -145,16 +155,30 @@ pub fn run(
     tx: Sender<UiEvent>,
     events: Receiver<UiEvent>,
     shared: Arc<Shared>,
+    options: Options,
     mut actions: impl FnMut(Action),
 ) -> io::Result<()> {
-    std::thread::Builder::new()
-        .name("digcord-input".into())
-        .spawn(move || input_loop(&tx))?;
     ratatui::run(|terminal| {
         use ratatui::crossterm::event::{DisableFocusChange, EnableFocusChange};
+        // Grafik yeteneği sorgusu terminale yazıp yanıtını okur: alternatif ekrana geçtikten
+        // sonra, girdi thread'i başlamadan önce yapılmalı (yoksa yanıtı girdi thread'i yer).
+        let picker = (options.images != ImageMode::Off).then(|| {
+            ratatui_image::picker::Picker::from_query_stdio().unwrap_or_else(|e| {
+                tracing::warn!("terminal grafik sorgusu başarısız: {e}");
+                ratatui_image::picker::Picker::halfblocks()
+            })
+        });
+        std::thread::Builder::new()
+            .name("digcord-input".into())
+            .spawn(move || input_loop(&tx))?;
         // Odak olayları desteklenmiyorsa sorun değil: bildirim kararı "odakta" varsayar.
         let _ = ratatui::crossterm::execute!(io::stdout(), EnableFocusChange);
-        let result = App::new(shared).run(terminal, &events, &mut actions);
+        let mut app = App::new(shared);
+        app.images = media::Images::new(picker, options);
+        if let Some(name) = app.images.protocol_name() {
+            tracing::info!(protocol = name, "resim gösterimi");
+        }
+        let result = app.run(terminal, &events, &mut actions);
         let _ = ratatui::crossterm::execute!(io::stdout(), DisableFocusChange);
         result
     })
@@ -275,6 +299,9 @@ pub struct App {
     notice: Option<String>,
     /// Son çizimde görünen en eski ve en yeni mesaj.
     visible: Cell<Option<(Snowflake, Snowflake)>>,
+    images: media::Images,
+    /// Tam ekran resim görüntüleyici (`Mode::Viewer`).
+    viewer: Option<viewer::Viewer>,
 }
 
 impl App {
@@ -304,6 +331,8 @@ impl App {
             last_typing: None,
             notice: None,
             visible: Cell::new(None),
+            images: media::Images::off(),
+            viewer: None,
         }
     }
 
@@ -317,6 +346,9 @@ impl App {
             terminal.draw(|frame| self.draw(frame))?;
             if let Some(a) = self.take_older_request() {
                 actions(a);
+            }
+            for job in self.images.take_wanted() {
+                actions(Action::LoadImage(job));
             }
             // "Yazıyor" göstergesi süresi dolunca kaybolsun diye: biri yazıyorsa saniyede bir çiz.
             let ev = if self.typing_visible() {
@@ -394,6 +426,10 @@ impl App {
                 self.notice = Some(text);
                 None
             }
+            UiEvent::Image(done) => {
+                self.images.done(done);
+                None
+            }
         }
     }
 
@@ -432,6 +468,7 @@ impl App {
             compose::Mode::Command | compose::Mode::React => return self.command_key(key),
             compose::Mode::Switcher => return self.switcher_key(key),
             compose::Mode::ConfirmDelete(id) => return self.confirm_key(key, id),
+            compose::Mode::Viewer => return self.viewer_key(key),
             compose::Mode::Normal => {}
         }
         if let Some(result) = self.normal_mode_key(key) {
@@ -714,7 +751,7 @@ impl App {
         let Some(msgs) = st.messages(open.channel).filter(|m| !m.is_empty()) else {
             return;
         };
-        let res = view::Res::new(&st, open.guild, &self.tz);
+        let res = view::Res::new(&st, open.guild, &self.tz).with_images(&self.images);
         let mut idx = view::anchor_index(msgs, self.scroll.anchor);
         let mut offset = self.scroll.offset + n;
         loop {
@@ -749,7 +786,7 @@ impl App {
             self.scroll = Scroll::default();
             return;
         };
-        let res = view::Res::new(&st, open.guild, &self.tz);
+        let res = view::Res::new(&st, open.guild, &self.tz).with_images(&self.images);
         let mut idx = view::anchor_index(msgs, self.scroll.anchor);
         let mut offset = self.scroll.offset;
         loop {

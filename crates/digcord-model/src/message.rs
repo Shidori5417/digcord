@@ -138,9 +138,51 @@ pub struct StickerItem {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Embed {
+    /// `rich`, `image`, `video`, `gifv`, `article`, `link`...
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
     pub title: Option<String>,
     pub description: Option<String>,
     pub url: Option<String>,
+    /// Sol kenar rengi (0xRRGGBB).
+    pub color: Option<u32>,
+    pub author: Option<EmbedText>,
+    pub provider: Option<EmbedText>,
+    pub footer: Option<EmbedFooter>,
+    #[serde(default)]
+    pub fields: Vec<EmbedField>,
+    pub thumbnail: Option<EmbedMedia>,
+    pub image: Option<EmbedMedia>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EmbedText {
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EmbedFooter {
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EmbedField {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub value: String,
+    #[serde(default)]
+    pub inline: bool,
+}
+
+/// Embed küçük resmi/resmi. `proxy_url` Discord'un vekilidir; `url` herhangi bir dış adres
+/// olabilir ve istemci ona doğrudan gitmez.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EmbedMedia {
+    pub url: Option<String>,
+    pub proxy_url: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -231,6 +273,25 @@ pub struct Attachment {
     pub size: u64,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    /// İmzalı, süreli CDN adresi (`cdn.discordapp.com`).
+    #[serde(default)]
+    pub url: String,
+    /// Aynı dosyanın vekil adresi (`media.discordapp.net`); boyut parametresi alır.
+    #[serde(default)]
+    pub proxy_url: String,
+    pub content_type: Option<String>,
+}
+
+impl Attachment {
+    /// Önizlemesi gösterilebilen resim mi (video vb. değil).
+    pub fn is_image(&self) -> bool {
+        self.width.is_some()
+            && self.height.is_some()
+            && self
+                .content_type
+                .as_deref()
+                .is_none_or(|t| t.starts_with("image/"))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
