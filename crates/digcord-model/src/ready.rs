@@ -57,6 +57,17 @@ pub struct Guild {
     pub channels: Vec<Channel>,
     #[serde(default)]
     pub roles: Vec<Role>,
+    /// Büyük guild: op 37 aboneliği genişletilmiş biçimde gönderilir (PROTOCOL_NOTES §4.1).
+    #[serde(default)]
+    pub large: bool,
+}
+
+/// `GUILD_MEMBERS_CHUNK` (op 8 yanıtı).
+#[derive(Debug, Deserialize)]
+pub struct GuildMembersChunk {
+    pub guild_id: Snowflake,
+    #[serde(default)]
+    pub members: Vec<Member>,
 }
 
 #[derive(Debug, Deserialize)]

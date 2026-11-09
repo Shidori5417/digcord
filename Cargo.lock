@@ -788,6 +788,10 @@ version = "0.1.0"
 [[package]]
 name = "digcord-store"
 version = "0.1.0"
+dependencies = [
+ "digcord-model",
+ "serde_json",
+]
 
 [[package]]
 name = "digcord-tui"
