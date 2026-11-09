@@ -1,0 +1,14 @@
+[package]
+name = "digcord-tui"
+description = "ratatui arayüzü, girdi ve kısayollar."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish.workspace = true
+
+[dependencies]
+ratatui = "0.30"
+
+[dev-dependencies]
+insta = "1.49.0"

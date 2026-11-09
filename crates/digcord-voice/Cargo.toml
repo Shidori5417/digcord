@@ -1,0 +1,10 @@
+[package]
+name = "digcord-voice"
+description = "Ses gateway'i, UDP, RTP, Opus ve DAVE (MLS) şifreleme."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish.workspace = true
+
+[dependencies]
