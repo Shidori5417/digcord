@@ -18,7 +18,7 @@ use digcord_tui::{Action, ImageJob, Shared, Status, UiEvent};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
-use crate::config::{Config as AppConfig, NotifyOn};
+use crate::config::{Config as AppConfig, NotifyOn, VoiceMode};
 use crate::keystore;
 
 /// Aynı kanala okundu isteği en fazla bu aralıkla (fazlası birleştirilir).
@@ -84,6 +84,9 @@ pub struct Settings {
     pub notify: Option<NotifyFilter>,
     pub build_number: u32,
     pub chrome_major: u32,
+    pub push_to_talk: bool,
+    /// Ses çalmadan önce biriktirilen kare sayısı (20 ms).
+    pub jitter_frames: usize,
 }
 
 impl Settings {
@@ -105,6 +108,8 @@ impl Settings {
                 0 => DEFAULT_CHROME_MAJOR,
                 n => n,
             },
+            push_to_talk: c.voice.mode == VoiceMode::Ptt,
+            jitter_frames: usize::try_from(c.voice.jitter_ms.div_ceil(20)).unwrap_or(3),
         }
     }
 }
@@ -632,8 +637,12 @@ impl Controller {
             info,
             call.channel.0,
             props.user_agent().to_owned(),
-            call.self_mute || call.self_deaf,
-            call.self_deaf,
+            crate::voice::Options {
+                muted: call.self_mute || call.self_deaf,
+                deafened: call.self_deaf,
+                push_to_talk: self.env.settings.push_to_talk,
+                jitter_frames: self.env.settings.jitter_frames,
+            },
             move |ev| {
                 let _ = jobs.send(Box::new(move |c: &mut Controller| c.on_voice_event(ev)));
             },
@@ -1093,6 +1102,17 @@ impl Controller {
             Action::LeaveVoice => self.leave_voice(),
             Action::ToggleMute => self.toggle_voice_flag(false),
             Action::ToggleDeaf => self.toggle_voice_flag(true),
+            Action::PushToTalk(pressed) => {
+                if let Some(v) = &self.voice {
+                    v.set_push_to_talk(pressed);
+                }
+            }
+            Action::PushToTalkUnavailable => {
+                self.env.settings.push_to_talk = false;
+                self.notice(
+                    "Bas-konuş için kitty klavye protokolü gerekli; ses algılama kullanılıyor",
+                );
+            }
             Action::SetVolume { user, volume } => {
                 if let Some(v) = &self.voice {
                     v.set_volume(user.0, volume);

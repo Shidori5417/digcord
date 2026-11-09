@@ -486,6 +486,7 @@ impl App {
                 })
             }
             "leave" => Some(Action::LeaveVoice),
+            "vol" => self.volume_command(rest.trim()),
             "mute" => Some(Action::ToggleMute),
             "deaf" => Some(Action::ToggleDeaf),
             // Açık DM'de aramaya katıl (aramayı başlatmak karşı tarafı çaldırmaz; doğrulanmadı).
@@ -502,6 +503,42 @@ impl App {
             "" => None,
             other => {
                 self.notice = Some(format!("Bilinmeyen komut: :{other}"));
+                None
+            }
+        }
+    }
+
+    /// `:vol <ad> <0-200>`: açık ses kanalındaki bir kişinin ses seviyesi (yüzde).
+    fn volume_command(&mut self, rest: &str) -> Option<Action> {
+        let usage = || Some("Kullanım: :vol <ad> <0-200>".to_owned());
+        let Some((name, pct)) = rest.rsplit_once(' ') else {
+            self.notice = usage();
+            return None;
+        };
+        let Ok(pct) = pct.trim_end_matches('%').parse::<u16>() else {
+            self.notice = usage();
+            return None;
+        };
+        let name = name.trim().trim_start_matches('@').to_lowercase();
+        let st = self.shared.read();
+        let Some(call) = st.voice_call() else {
+            drop(st);
+            self.notice = Some("Ses kanalında değilsin".into());
+            return None;
+        };
+        let user = st.voice_members(call.channel).into_iter().find_map(|vs| {
+            let u = st.user(vs.user_id)?;
+            let shown = st.author_name(call.guild, u).to_lowercase();
+            (shown == name || u.username.to_lowercase() == name).then_some(vs.user_id)
+        });
+        drop(st);
+        match user {
+            Some(user) => Some(Action::SetVolume {
+                user,
+                volume: f32::from(pct.min(200)) / 100.0,
+            }),
+            None => {
+                self.notice = Some(format!("Ses kanalında \"{name}\" yok"));
                 None
             }
         }

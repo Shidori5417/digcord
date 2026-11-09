@@ -151,6 +151,10 @@ pub enum Action {
     LeaveVoice,
     ToggleMute,
     ToggleDeaf,
+    /// Bas-konuş tuşu basıldı/bırakıldı.
+    PushToTalk(bool),
+    /// Bas-konuş istendi ama terminal tuş bırakmayı bildiremiyor: ses algılamaya dön.
+    PushToTalkUnavailable,
     /// Bir kullanıcının ses seviyesi (0.0–2.0).
     SetVolume {
         user: Snowflake,
@@ -201,6 +205,7 @@ pub fn run(
         let _ = ratatui::crossterm::execute!(io::stdout(), EnableFocusChange);
         let mut app = App::new(shared);
         app.images = media::Images::new(picker, options);
+        app.push_to_talk = options.push_to_talk && enhanced;
         if let Some(name) = app.images.protocol_name() {
             tracing::info!(protocol = name, "resim gösterimi");
         }
@@ -338,6 +343,8 @@ pub struct App {
     /// Son çizimde görünen en eski ve en yeni mesaj.
     visible: Cell<Option<(Snowflake, Snowflake)>>,
     images: media::Images,
+    /// Ctrl+Space basılıyken konuş (basma/bırakma olayları geliyorsa).
+    push_to_talk: bool,
     /// Tam ekran resim görüntüleyici (`Mode::Viewer`).
     viewer: Option<viewer::Viewer>,
 }
@@ -370,6 +377,7 @@ impl App {
             notice: None,
             visible: Cell::new(None),
             images: media::Images::off(),
+            push_to_talk: false,
             viewer: None,
         }
     }
@@ -472,6 +480,16 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Option<Action> {
+        if self.push_to_talk
+            && key.code == KeyCode::Char(' ')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            return match key.kind {
+                KeyEventKind::Press => Some(Action::PushToTalk(true)),
+                KeyEventKind::Release => Some(Action::PushToTalk(false)),
+                KeyEventKind::Repeat => None,
+            };
+        }
         if key.kind != KeyEventKind::Press {
             return None;
         }

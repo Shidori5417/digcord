@@ -689,6 +689,7 @@ fn image_app(msgs: Vec<Message>) -> App {
         Options {
             images: ImageMode::Thumbnail,
             image_max_rows: 4,
+            ..Options::default()
         },
     );
     open_sohbet(&mut app);
@@ -841,4 +842,33 @@ fn voice_members_status_and_commands() {
         KeyModifiers::CONTROL | KeyModifiers::SHIFT,
     )));
     assert_eq!(app.handle(shortcut), Some(Action::ToggleMute));
+
+    // :vol arkadaş 50 → seviye 0.5; bilinmeyen ad → uyarı.
+    let run = |app: &mut App, cmd: &str| {
+        press(app, &[KeyCode::Char(':')]);
+        let mut keys: Vec<KeyCode> = cmd.chars().map(KeyCode::Char).collect();
+        keys.push(KeyCode::Enter);
+        press(app, &keys)
+    };
+    assert_eq!(
+        run(&mut app, "vol arkadaş 50"),
+        [Action::SetVolume {
+            user: Snowflake(FRIEND),
+            volume: 0.5
+        }]
+    );
+    assert!(run(&mut app, "vol kimse 50").is_empty());
+    assert!(app.notice.as_deref().is_some_and(|n| n.contains("kimse")));
+
+    // Bas-konuş: basma ve bırakma olayları.
+    app.push_to_talk = true;
+    let ptt = |kind| {
+        let mut k = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL);
+        k.kind = kind;
+        UiEvent::Input(Event::Key(k))
+    };
+    use ratatui::crossterm::event::KeyEventKind as K;
+    assert_eq!(app.handle(ptt(K::Press)), Some(Action::PushToTalk(true)));
+    assert_eq!(app.handle(ptt(K::Repeat)), None);
+    assert_eq!(app.handle(ptt(K::Release)), Some(Action::PushToTalk(false)));
 }

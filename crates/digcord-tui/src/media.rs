@@ -41,6 +41,8 @@ pub struct Options {
     pub images: ImageMode,
     /// Bir resmin en fazla satır yüksekliği.
     pub image_max_rows: u16,
+    /// Ses: Ctrl+Space basılıyken konuş (kitty klavye protokolü gerekir).
+    pub push_to_talk: bool,
 }
 
 impl Default for Options {
@@ -48,6 +50,7 @@ impl Default for Options {
         Self {
             images: ImageMode::Thumbnail,
             image_max_rows: 10,
+            push_to_talk: false,
         }
     }
 }
@@ -302,6 +305,7 @@ mod tests {
             Options {
                 images: mode,
                 image_max_rows: rows,
+                push_to_talk: false,
             },
         )
     }

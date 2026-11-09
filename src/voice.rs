@@ -19,9 +19,21 @@ const VAD_HANGOVER_FRAMES: u32 = 15;
 /// Konuşma bitince gönderilen sessizlik kareleri (belgelenmiş).
 const SILENCE_FRAMES: usize = 5;
 
+/// Ses oturumu ayarları.
+#[derive(Debug, Clone, Copy)]
+pub struct Options {
+    pub muted: bool,
+    pub deafened: bool,
+    /// Bas-konuş: sadece tuş basılıyken gönder (yoksa ses algılama).
+    pub push_to_talk: bool,
+    pub jitter_frames: usize,
+}
+
 pub struct VoiceSession {
     stop: watch::Sender<bool>,
     muted: Arc<AtomicBool>,
+    /// Bas-konuş tuşu basılı mı (bas-konuş kapalıysa `None`).
+    ptt: Option<Arc<AtomicBool>>,
     mixer: Arc<Mutex<Mixer>>,
     _playback: Option<Playback>,
     _capture: Option<Playback>,
@@ -33,18 +45,18 @@ impl VoiceSession {
         info: SessionInfo,
         channel_id: u64,
         user_agent: String,
-        muted: bool,
-        deafened: bool,
+        opts: Options,
         on_event: impl Fn(Event) + Send + 'static,
     ) -> Self {
         let (stop, stop_rx) = watch::channel(false);
         let (cmd_tx, cmd_rx) = mpsc::channel::<Command>(64);
         let (ev_tx, mut ev_rx) = mpsc::channel::<Event>(256);
-        let mixer = Arc::new(Mutex::new(Mixer::default()));
+        let mixer = Arc::new(Mutex::new(Mixer::with_jitter(opts.jitter_frames)));
         if let Ok(mut m) = mixer.lock() {
-            m.set_deafened(deafened);
+            m.set_deafened(opts.deafened);
         }
-        let muted = Arc::new(AtomicBool::new(muted));
+        let muted = Arc::new(AtomicBool::new(opts.muted));
+        let ptt = opts.push_to_talk.then(|| Arc::new(AtomicBool::new(false)));
 
         tokio::spawn(connection::run(
             Config {
@@ -82,10 +94,11 @@ impl VoiceSession {
         let playback = audio::start_playback(mixer.clone())
             .map_err(|e| tracing::warn!("ses çıkışı açılamadı: {e}"))
             .ok();
-        let capture = start_capture(cmd_tx, muted.clone());
+        let capture = start_capture(cmd_tx, muted.clone(), ptt.clone());
         Self {
             stop,
             muted,
+            ptt,
             mixer,
             _playback: playback,
             _capture: capture,
@@ -94,6 +107,13 @@ impl VoiceSession {
 
     pub fn set_muted(&self, muted: bool) {
         self.muted.store(muted, Ordering::Relaxed);
+    }
+
+    /// Bas-konuş tuşu durumu (bas-konuş kapalıysa etkisiz).
+    pub fn set_push_to_talk(&self, pressed: bool) {
+        if let Some(p) = &self.ptt {
+            p.store(pressed, Ordering::Relaxed);
+        }
     }
 
     pub fn set_deafened(&self, deafened: bool) {
@@ -115,7 +135,11 @@ impl VoiceSession {
 }
 
 /// Mikrofon → Opus → ses algılama → bağlantı. Ses thread'inde çalışır; asla beklemez.
-fn start_capture(commands: mpsc::Sender<Command>, muted: Arc<AtomicBool>) -> Option<Playback> {
+fn start_capture(
+    commands: mpsc::Sender<Command>,
+    muted: Arc<AtomicBool>,
+    ptt: Option<Arc<AtomicBool>>,
+) -> Option<Playback> {
     let mut encoder = match FrameEncoder::new() {
         Ok(e) => e,
         Err(e) => {
@@ -133,6 +157,12 @@ fn start_capture(commands: mpsc::Sender<Command>, muted: Arc<AtomicBool>) -> Opt
             frame_pcm.clear();
         }
         let silent_mic = muted.load(Ordering::Relaxed);
+        // Bas-konuş: tuş basılıyken eşik aşılmış sayılır, değilken hiç.
+        let level = match &ptt {
+            Some(p) if p.load(Ordering::Relaxed) => 1.0,
+            Some(_) => 0.0,
+            None => level,
+        };
         let _ = encoder.push(samples, |opus| match vad.step(level, silent_mic) {
             VadOutput::Send => {
                 let _ = commands.try_send(Command::Opus(opus.to_vec()));

@@ -43,20 +43,27 @@ pub struct Mixer {
     volumes: HashMap<u64, f32>,
     deafened: bool,
     scratch: Vec<f32>,
+    jitter_frames: usize,
 }
 
 impl Default for Mixer {
     fn default() -> Self {
+        Self::with_jitter(JITTER_START_FRAMES)
+    }
+}
+
+impl Mixer {
+    /// Çalmadan önce `frames` kare (20 ms) biriktirir (1..=üst sınır).
+    pub fn with_jitter(frames: usize) -> Self {
         Self {
             users: HashMap::new(),
             volumes: HashMap::new(),
             deafened: false,
             scratch: vec![0.0; MAX_DECODED],
+            jitter_frames: frames.clamp(1, MAX_BUFFER_FRAMES),
         }
     }
-}
 
-impl Mixer {
     /// Bir Opus karesini çözüp kullanıcının tamponuna ekler.
     pub fn push(&mut self, user: u64, opus: &[u8]) -> Result<(), AudioError> {
         let volume = self.volumes.get(&user).copied().unwrap_or(1.0);
@@ -80,7 +87,7 @@ impl Mixer {
             let excess = stream.buffer.len() - max;
             stream.buffer.drain(..excess);
         }
-        if !stream.playing && stream.buffer.len() >= FRAME_LEN * JITTER_START_FRAMES {
+        if !stream.playing && stream.buffer.len() >= FRAME_LEN * self.jitter_frames {
             stream.playing = true;
         }
         Ok(())
@@ -350,6 +357,18 @@ mod tests {
         duo.set_deafened(true);
         duo.push(1, &frames[0]).expect("çöz");
         assert_eq!(level(&mut duo), 0.0);
+    }
+
+    #[test]
+    fn jitter_setting() {
+        let frames = sine_frames(3, 0.5);
+        let mut m = Mixer::with_jitter(1);
+        m.push(1, &frames[0]).expect("çöz");
+        m.push(1, &frames[1]).expect("çöz");
+        level(&mut m);
+        assert!(level(&mut m) > 0.1, "1 kare yeterli");
+        assert_eq!(Mixer::with_jitter(0).jitter_frames, 1);
+        assert_eq!(Mixer::with_jitter(99).jitter_frames, MAX_BUFFER_FRAMES);
     }
 
     #[test]

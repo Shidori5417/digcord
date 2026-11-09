@@ -9,7 +9,7 @@ use anyhow::Context;
 use serde::Deserialize;
 
 /// Bu sürümde uygulanan bölümler. Bunların dışındaki bölümler uyarı üretir.
-const KNOWN_SECTIONS: &[&str] = &["ui", "behavior", "notifications", "client"];
+const KNOWN_SECTIONS: &[&str] = &["ui", "behavior", "notifications", "voice", "client"];
 
 /// Bu sürümde uygulanan `bölüm.anahtar` yolları. Yeni ayar eklenince buraya da eklenmeli.
 const KNOWN_KEYS: &[&str] = &[
@@ -20,6 +20,8 @@ const KNOWN_KEYS: &[&str] = &[
     "behavior.send_read_receipts",
     "notifications.enabled",
     "notifications.on",
+    "voice.mode",
+    "voice.jitter_ms",
     "client.build_number",
     "client.chrome_major",
 ];
@@ -30,7 +32,33 @@ pub struct Config {
     pub ui: Ui,
     pub behavior: Behavior,
     pub notifications: Notifications,
+    pub voice: Voice,
     pub client: Client,
+}
+
+/// `voice.mode`: ses algılama ya da bas-konuş (Ctrl+Space; kitty klavye protokolü gerekir).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VoiceMode {
+    Vad,
+    Ptt,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Voice {
+    pub mode: VoiceMode,
+    /// Çalmaya başlamadan önce biriktirilen ses (ms; 20'nin katına yuvarlanır).
+    pub jitter_ms: u32,
+}
+
+impl Default for Voice {
+    fn default() -> Self {
+        Self {
+            mode: VoiceMode::Vad,
+            jitter_ms: 60,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -120,6 +148,7 @@ impl Config {
                 Images::Full => digcord_tui::ImageMode::Full,
             },
             image_max_rows: self.ui.image_max_rows.clamp(1, 100),
+            push_to_talk: self.voice.mode == VoiceMode::Ptt,
         }
     }
 
@@ -240,6 +269,10 @@ send_read_receipts = false
 enabled = false
 on = ["all"]
 
+[voice]
+mode = "ptt"
+jitter_ms = 100
+
 [client]
 build_number = 12345
 chrome_major = 130
@@ -261,6 +294,10 @@ chrome_major = 130
                 notifications: Notifications {
                     enabled: false,
                     on: vec![NotifyOn::All],
+                },
+                voice: Voice {
+                    mode: VoiceMode::Ptt,
+                    jitter_ms: 100,
                 },
                 client: Client {
                     build_number: 12345,
@@ -320,7 +357,7 @@ chrome_major = 130
             warnings,
             vec![
                 "bilinmeyen ayar: ui.theme".to_string(),
-                "bilinmeyen ayar: voice".to_string(),
+                "bilinmeyen ayar: voice.input_device".to_string(),
             ]
         );
     }
@@ -334,7 +371,8 @@ chrome_major = 130
             config.notifications.on,
             vec![NotifyOn::Mention, NotifyOn::Dm]
         );
-        assert_eq!(warnings.len(), 6, "uyarılar: {warnings:?}");
+        assert_eq!(warnings.len(), 8, "uyarılar: {warnings:?}");
+        assert_eq!(config.voice.mode, VoiceMode::Vad);
         assert_eq!(config.ui.images, Images::Thumbnail);
         assert_eq!(config.ui.image_max_rows, 10);
         for expected in [
@@ -342,7 +380,9 @@ chrome_major = 130
             "bilinmeyen ayar: ui.theme",
             "bilinmeyen ayar: ui.timestamp_format",
             "bilinmeyen ayar: behavior.message_window",
-            "bilinmeyen ayar: voice",
+            "bilinmeyen ayar: voice.input_device",
+            "bilinmeyen ayar: voice.output_device",
+            "bilinmeyen ayar: voice.ptt_key",
             "bilinmeyen ayar: keys",
         ] {
             assert!(
