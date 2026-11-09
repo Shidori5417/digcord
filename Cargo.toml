@@ -47,3 +47,8 @@ rustls = { version = "0.23.46", default-features = false, features = ["ring", "s
 notify-rust = "4.17.0"
 toml = "1.2.1"
 serde = { version = "1.0.229", features = ["derive"] }
+
+# tls_codec'in debug assertion'ları bozuk/düşman girdide hata dönmek yerine panikliyor;
+# ağdan gelen MLS mesajları için kapalı (sürüm derlemesinde zaten kapalı).
+[profile.dev.package.tls_codec]
+debug-assertions = false

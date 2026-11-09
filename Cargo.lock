@@ -1193,17 +1193,23 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "chacha20poly1305 0.11.0",
+ "fastrand",
+ "futures-util",
  "hmac 0.12.1",
  "openmls",
  "openmls_basic_credential",
  "openmls_rust_crypto",
  "openmls_traits",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "subtle",
  "thiserror 2.0.21",
  "tls_codec",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
 ]
 
 [[package]]

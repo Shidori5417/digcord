@@ -21,3 +21,10 @@ sha2 = "0.10"
 subtle = "2.6.1"
 thiserror = "2.0.21"
 tls_codec = "0.5.0"
+# Ağ: ana gateway ile aynı sürümler.
+fastrand = "2.5.0"
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+tokio = { version = "1.54.1", features = ["rt", "macros", "time", "sync", "net"] }
+tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
+tracing = "0.1.44"
