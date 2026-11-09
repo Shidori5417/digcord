@@ -81,7 +81,7 @@ pub enum Status {
 }
 
 /// TUI'den uygulamaya giden eylemler.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub enum Action {
     SubmitToken(String),
     /// Kanal açıldı. `previous`: kapatılan kanal (penceresi kırpılabilir).
@@ -143,6 +143,19 @@ pub enum Action {
     LoadImage(ImageJob),
     /// Adresi sistemin varsayılan uygulamasında aç (`xdg-open`).
     OpenExternal(String),
+    /// Ses kanalına (ya da DM aramasına, `guild: None`) katıl.
+    JoinVoice {
+        guild: Option<Snowflake>,
+        channel: Snowflake,
+    },
+    LeaveVoice,
+    ToggleMute,
+    ToggleDeaf,
+    /// Bir kullanıcının ses seviyesi (0.0–2.0).
+    SetVolume {
+        user: Snowflake,
+        volume: f32,
+    },
     Quit,
 }
 
@@ -168,6 +181,19 @@ pub fn run(
                 ratatui_image::picker::Picker::halfblocks()
             })
         });
+        // Kitty klavye protokolü (varsa): Ctrl+Shift+M gibi tuşlar Enter'dan ayrılabilsin.
+        // Sorgu da terminale yazıp okur: girdi thread'inden önce.
+        let enhanced =
+            ratatui::crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
+        if enhanced {
+            use ratatui::crossterm::event::{
+                KeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+            };
+            let _ = ratatui::crossterm::execute!(
+                io::stdout(),
+                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            );
+        }
         std::thread::Builder::new()
             .name("digcord-input".into())
             .spawn(move || input_loop(&tx))?;
@@ -179,6 +205,12 @@ pub fn run(
             tracing::info!(protocol = name, "resim gösterimi");
         }
         let result = app.run(terminal, &events, &mut actions);
+        if enhanced {
+            let _ = ratatui::crossterm::execute!(
+                io::stdout(),
+                ratatui::crossterm::event::PopKeyboardEnhancementFlags
+            );
+        }
         let _ = ratatui::crossterm::execute!(io::stdout(), DisableFocusChange);
         result
     })
@@ -264,6 +296,12 @@ enum EntryKind {
     },
     /// Mesajları okunabilen kanal (metin, duyuru, DM).
     Readable,
+    /// Katılınabilen ses kanalı.
+    Voice,
+    /// Ses kanalındaki bir kullanıcı (seçilebilir ama eylemi yok).
+    VoiceMember {
+        speaking: bool,
+    },
     /// Bu aşamada açılmayan kanal (ses, forum...).
     Other,
 }
@@ -462,6 +500,14 @@ impl App {
         }
 
         self.notice = None;
+        // Ses: her modda (kitty klavye protokolü gerekir; yoksa :mute / :deaf).
+        if ctrl && key.modifiers.contains(KeyModifiers::SHIFT) {
+            match key.code {
+                KeyCode::Char('m' | 'M') => return Some(Action::ToggleMute),
+                KeyCode::Char('d' | 'D') => return Some(Action::ToggleDeaf),
+                _ => {}
+            }
+        }
         match self.mode {
             compose::Mode::Insert => return self.insert_key(key),
             compose::Mode::Select => return self.select_key(key),
@@ -573,7 +619,18 @@ impl App {
                         let guild = self.selected_guild(&self.shared.read());
                         Some(self.open_channel(guild, entry.id))
                     }
-                    EntryKind::Other => None,
+                    EntryKind::Voice => {
+                        let st = self.shared.read();
+                        if st.voice_call().is_some_and(|c| c.channel == entry.id) {
+                            return None;
+                        }
+                        let guild = self.selected_guild(&st);
+                        Some(Action::JoinVoice {
+                            guild,
+                            channel: entry.id,
+                        })
+                    }
+                    EntryKind::VoiceMember { .. } | EntryKind::Other => None,
                 }
             }
             Focus::Messages => None,
@@ -724,7 +781,8 @@ impl App {
                         channel_kind::TEXT | channel_kind::ANNOUNCEMENT => {
                             ("#", EntryKind::Readable)
                         }
-                        channel_kind::VOICE | channel_kind::STAGE => ("🔊", EntryKind::Other),
+                        channel_kind::VOICE => ("🔊", EntryKind::Voice),
+                        channel_kind::STAGE => ("🔊", EntryKind::Other),
                         channel_kind::FORUM => ("≡", EntryKind::Other),
                         _ => ("·", EntryKind::Other),
                     };
@@ -737,6 +795,29 @@ impl App {
                         mentions: st.mention_count(item.id),
                         muted: st.is_muted(item.id, now),
                     });
+                    if kind == EntryKind::Voice {
+                        for vs in st.voice_members(item.id) {
+                            let name = st
+                                .user(vs.user_id)
+                                .map_or_else(|| "?".to_owned(), |u| st.author_name(Some(gid), u));
+                            let flags = match (vs.self_deaf || vs.deaf, vs.self_mute || vs.mute) {
+                                (true, _) => " 🎧✕",
+                                (false, true) => " 🎤✕",
+                                _ => "",
+                            };
+                            out.push(Entry {
+                                id: vs.user_id,
+                                label: format!("  {name}{flags}"),
+                                depth: item.depth + 1,
+                                kind: EntryKind::VoiceMember {
+                                    speaking: st.is_speaking(vs.user_id),
+                                },
+                                unread: false,
+                                mentions: 0,
+                                muted: false,
+                            });
+                        }
+                    }
                 }
             }
         }

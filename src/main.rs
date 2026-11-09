@@ -2,6 +2,7 @@ mod config;
 mod controller;
 mod keystore;
 mod logging;
+mod voice;
 
 use std::time::Duration;
 

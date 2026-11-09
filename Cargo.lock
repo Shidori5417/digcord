@@ -1170,6 +1170,7 @@ dependencies = [
  "digcord-model",
  "digcord-store",
  "digcord-tui",
+ "digcord-voice",
  "dirs",
  "jiff",
  "keyring-core",

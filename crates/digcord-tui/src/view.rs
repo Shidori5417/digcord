@@ -366,6 +366,9 @@ fn draw_channels(app: &App, st: &State, frame: &mut Frame, area: Rect) {
                 _ if e.muted => Style::new().dim(),
                 EntryKind::Readable if e.unread || e.mentions > 0 => Style::new().bold(),
                 EntryKind::Readable => Style::new().fg(ratatui::style::Color::Gray),
+                EntryKind::Voice => Style::new().fg(ratatui::style::Color::Gray),
+                EntryKind::VoiceMember { speaking: true } => Style::new().green().bold(),
+                EntryKind::VoiceMember { speaking: false } => Style::new().dim(),
                 EntryKind::Other => Style::new().dim(),
             };
             if open == Some(e.id) {
@@ -670,6 +673,9 @@ fn status_line(app: &App) -> Line<'static> {
         _ => Style::new(),
     };
     let mut spans = vec![mode.bold(), Span::styled(text, style)];
+    if let Some(voice) = voice_status(app) {
+        spans.push(voice);
+    }
     if let Mode::ConfirmDelete(_) = app.mode {
         spans.push(Span::styled(
             "  Mesaj silinsin mi? (e/h)",
@@ -692,6 +698,28 @@ fn status_line(app: &App) -> Line<'static> {
         }
     }
     Line::from(spans)
+}
+
+/// `  🔊 Ses · bağlı (uçtan uca) 🎤✕` — ses kanalındaysak.
+fn voice_status(app: &App) -> Option<Span<'static>> {
+    use digcord_store::VoicePhase;
+    let st = app.shared.read();
+    let call = st.voice_call()?;
+    let (phase, style) = match call.phase {
+        VoicePhase::Joining => ("katılınıyor…", Style::new().yellow()),
+        VoicePhase::Connecting => ("bağlanıyor…", Style::new().yellow()),
+        VoicePhase::Connected { e2ee: true } => ("bağlı (uçtan uca)", Style::new().green()),
+        VoicePhase::Connected { e2ee: false } => ("bağlı", Style::new().green()),
+    };
+    let flags = match (call.self_deaf, call.self_mute) {
+        (true, _) => " 🎧✕",
+        (false, true) => " 🎤✕",
+        _ => "",
+    };
+    Some(Span::styled(
+        format!("  🔊 {} · {phase}{flags}", st.channel_title(call.channel)),
+        style,
+    ))
 }
 
 fn draw_login(frame: &mut Frame, input: &str, error: Option<&str>) {

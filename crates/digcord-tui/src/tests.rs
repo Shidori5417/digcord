@@ -185,10 +185,10 @@ fn channel_entries_respect_permissions_and_collapse() {
     let mut app = test_app(shared_with(vec![], true));
     press(&mut app, &[KeyCode::Char('j'), KeyCode::Enter]);
     let labels: Vec<String> = app.entries().into_iter().map(|e| e.label).collect();
-    // "gizli" @everyone'a kapalı → listede yok; ses kanalı listede ama açılamaz.
+    // "gizli" @everyone'a kapalı → listede yok.
     assert_eq!(labels, ["▾ GENEL", "# sohbet", "# duyurular", "🔊 Ses"]);
-    // Ses kanalında Enter bir şey yapmaz.
-    assert!(
+    // Ses kanalında Enter katılır.
+    assert_eq!(
         press(
             &mut app,
             &[
@@ -197,8 +197,11 @@ fn channel_entries_respect_permissions_and_collapse() {
                 KeyCode::Char('j'),
                 KeyCode::Enter
             ]
-        )
-        .is_empty()
+        ),
+        [Action::JoinVoice {
+            guild: Some(Snowflake(GUILD)),
+            channel: Snowflake(13)
+        }]
     );
     // Kategoriyi katla.
     app.chan_sel = 0;
@@ -784,4 +787,58 @@ fn o_opens_link_when_images_off() {
         actions,
         [Action::OpenExternal("https://example.com/x".into())]
     );
+}
+
+#[test]
+fn voice_members_status_and_commands() {
+    let shared = shared_with(vec![], true);
+    {
+        let mut st = shared.state.write().expect("kilit");
+        let vs: digcord_model::VoiceState = serde_json::from_value(serde_json::json!({
+            "guild_id": GUILD.to_string(), "channel_id": "13", "user_id": FRIEND.to_string(),
+            "session_id": "x", "self_mute": true
+        }))
+        .expect("ses durumu");
+        st.voice_state_update(&vs);
+        st.set_speaking(Snowflake(FRIEND), true);
+        st.set_voice_call(Some(digcord_store::VoiceCall {
+            guild: Some(Snowflake(GUILD)),
+            channel: Snowflake(13),
+            phase: digcord_store::VoicePhase::Connected { e2ee: true },
+            self_mute: false,
+            self_deaf: true,
+        }));
+    }
+    let mut app = test_app(shared);
+    press(&mut app, &[KeyCode::Char('j'), KeyCode::Enter]);
+    let entries = app.entries();
+    let member = entries.last().expect("üye");
+    assert_eq!(member.label, "  Arkadaş 🎤✕");
+    assert_eq!(member.kind, EntryKind::VoiceMember { speaking: true });
+    // Zaten içindeyken Enter yeniden katılmaz.
+    app.chan_sel = 4 - 1;
+    assert!(press(&mut app, &[KeyCode::Enter]).is_empty());
+    let screen = draw(&app, 120, 20);
+    let status: String = (0..120)
+        .map(|x| screen.buffer()[(x, 19)].symbol().to_owned())
+        .collect();
+    // Geniş emoji iki hücre kaplar; boşluklar atılarak karşılaştırılır.
+    let compact: String = status.split_whitespace().collect();
+    assert!(compact.contains("🔊Ses·bağlı(uçtanuca)🎧✕"), "{status}");
+    // Komutlar ve kısayollar.
+    for (cmd, action) in [
+        ("leave", Action::LeaveVoice),
+        ("mute", Action::ToggleMute),
+        ("deaf", Action::ToggleDeaf),
+    ] {
+        press(&mut app, &[KeyCode::Char(':')]);
+        let mut keys: Vec<KeyCode> = cmd.chars().map(KeyCode::Char).collect();
+        keys.push(KeyCode::Enter);
+        assert_eq!(press(&mut app, &keys), [action]);
+    }
+    let shortcut = UiEvent::Input(Event::Key(KeyEvent::new(
+        KeyCode::Char('M'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+    assert_eq!(app.handle(shortcut), Some(Action::ToggleMute));
 }

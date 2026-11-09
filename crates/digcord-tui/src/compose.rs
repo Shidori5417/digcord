@@ -485,6 +485,20 @@ impl App {
                     max_bytes: MAX_UPLOAD,
                 })
             }
+            "leave" => Some(Action::LeaveVoice),
+            "mute" => Some(Action::ToggleMute),
+            "deaf" => Some(Action::ToggleDeaf),
+            // Açık DM'de aramaya katıl (aramayı başlatmak karşı tarafı çaldırmaz; doğrulanmadı).
+            "call" => match self.open {
+                Some(o) if o.guild.is_none() => Some(Action::JoinVoice {
+                    guild: None,
+                    channel: o.channel,
+                }),
+                _ => {
+                    self.notice = Some(":call sadece DM'de".into());
+                    None
+                }
+            },
             "" => None,
             other => {
                 self.notice = Some(format!("Bilinmeyen komut: :{other}"));

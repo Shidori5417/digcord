@@ -17,6 +17,7 @@ digcord-media = { path = "crates/digcord-media" }
 digcord-model = { path = "crates/digcord-model" }
 digcord-store = { path = "crates/digcord-store" }
 digcord-tui = { path = "crates/digcord-tui" }
+digcord-voice = { path = "crates/digcord-voice" }
 
 [package]
 name = "digcord"
@@ -35,6 +36,7 @@ digcord-media.workspace = true
 digcord-store.workspace = true
 digcord-model.workspace = true
 digcord-tui.workspace = true
+digcord-voice.workspace = true
 dirs = "7.0.0"
 jiff = "0.2.41"
 keyring-core = "1.0.1"

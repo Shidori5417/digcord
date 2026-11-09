@@ -84,6 +84,7 @@ pub struct State {
     /// Bildirim ayarları; anahtar `None` = DM'ler.
     notify_settings: HashMap<Option<Snowflake>, digcord_model::GuildSettings>,
     relationships: Vec<digcord_model::Relationship>,
+    voice: voice::VoiceData,
 }
 
 fn is_voice(kind: u8) -> bool {
@@ -165,6 +166,9 @@ impl State {
 
     /// Guild verisini yazar (kanallar `guild_id` ile eşlenir) ve ağacı yeniler.
     fn apply_guild(&mut self, guild: &Guild, my_roles: Vec<Snowflake>) {
+        if !guild.unavailable {
+            self.load_guild_voice(guild);
+        }
         let mut data = GuildData {
             available: !guild.unavailable,
             my_roles,
@@ -580,8 +584,10 @@ fn insert_sorted(deque: &mut VecDeque<Message>, msg: Message) {
 
 mod compose;
 mod unread;
+mod voice;
 
 pub use unread::NotifyFilter;
+pub use voice::{VoiceCall, VoicePhase};
 
 #[cfg(test)]
 mod tests;

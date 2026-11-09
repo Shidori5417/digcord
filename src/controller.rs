@@ -13,7 +13,7 @@ use digcord_model::{
     ClientProperties, DEFAULT_BUILD_NUMBER, DEFAULT_CHROME_MAJOR, Message, MessageDelete,
     ReactionEmoji, Ready, Snowflake, Token,
 };
-use digcord_store::{NotifyFilter, State};
+use digcord_store::{NotifyFilter, State, VoiceCall, VoicePhase};
 use digcord_tui::{Action, ImageJob, Shared, Status, UiEvent};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -168,6 +168,12 @@ struct Controller {
     media: Option<Arc<Fetcher>>,
     /// Resim adresinin süresi dolduğu için bir kez yeniden çekilmiş mesajlar.
     refetched: HashSet<Snowflake>,
+    /// Açık ses oturumu.
+    voice: Option<crate::voice::VoiceSession>,
+    /// Ses oturumu kimliği beklenirken gelen sunucu bilgisi.
+    voice_server: Option<digcord_model::VoiceServer>,
+    /// Bu katılımda "yeniden katıl" denendi mi (sonsuz döngü olmasın).
+    voice_rejoined: bool,
 }
 
 impl Controller {
@@ -443,6 +449,233 @@ impl Controller {
             );
         }
         self.send(job.failed(e.to_string()));
+    }
+
+    fn voice_call(&self) -> Option<VoiceCall> {
+        self.shared.read_state(|st| st.voice_call().cloned())
+    }
+
+    fn stop_voice(&mut self) {
+        if let Some(v) = self.voice.take() {
+            v.stop();
+        }
+        self.voice_server = None;
+    }
+
+    /// op 4 ile katılır; oturum ve sunucu bilgisi gelince bağlantı başlar.
+    fn join_voice(&mut self, guild: Option<Snowflake>, channel: Snowflake) {
+        if self.session.is_none() {
+            self.notice("Bağlı değil");
+            return;
+        }
+        let (self_mute, self_deaf) = self
+            .voice_call()
+            .map_or((false, false), |c| (c.self_mute, c.self_deaf));
+        self.stop_voice();
+        self.voice_rejoined = false;
+        self.write(|st| {
+            st.set_voice_call(Some(VoiceCall {
+                guild,
+                channel,
+                phase: VoicePhase::Joining,
+                self_mute,
+                self_deaf,
+            }))
+        });
+        self.command(Command::VoiceState {
+            guild,
+            channel: Some(channel),
+            self_mute,
+            self_deaf,
+        });
+    }
+
+    fn leave_voice(&mut self) {
+        let Some(call) = self.voice_call() else {
+            return;
+        };
+        self.stop_voice();
+        self.command(Command::VoiceState {
+            guild: call.guild,
+            channel: None,
+            self_mute: call.self_mute,
+            self_deaf: call.self_deaf,
+        });
+        self.write(|st| st.set_voice_call(None));
+    }
+
+    /// Mikrofon (`deaf: false`) ya da kulaklık susturma; sunucuya da bildirilir.
+    fn toggle_voice_flag(&mut self, deaf: bool) {
+        let Some(mut call) = self.voice_call() else {
+            self.notice("Ses kanalında değilsin");
+            return;
+        };
+        if deaf {
+            call.self_deaf = !call.self_deaf;
+        } else {
+            call.self_mute = !call.self_mute;
+        }
+        if let Some(v) = &self.voice {
+            // Kulaklık kapalıyken mikrofon da kapalı (resmi istemci davranışı).
+            v.set_muted(call.self_mute || call.self_deaf);
+            v.set_deafened(call.self_deaf);
+        }
+        self.command(Command::VoiceState {
+            guild: call.guild,
+            channel: Some(call.channel),
+            self_mute: call.self_mute,
+            self_deaf: call.self_deaf,
+        });
+        self.write(|st| st.set_voice_call(Some(call)));
+    }
+
+    fn on_voice_state(&mut self, vs: &digcord_model::VoiceState) {
+        self.write(|st| st.voice_state_update(vs));
+        let me = self.shared.read_state(|st| st.me().map(|u| u.id));
+        if Some(vs.user_id) != me {
+            return;
+        }
+        let Some(mut call) = self.voice_call() else {
+            return;
+        };
+        if vs.guild_id != call.guild {
+            return;
+        }
+        match vs.channel_id {
+            // Başka yerden çıkarıldık ya da ayrıldık.
+            None if call.phase != VoicePhase::Joining => {
+                self.stop_voice();
+                self.write(|st| st.set_voice_call(None));
+                self.notice("Ses kanalından ayrıldın");
+            }
+            None => {}
+            Some(ch) if ch != call.channel => {
+                // Taşındık: sunucu yeni bilgi gönderecek.
+                self.stop_voice();
+                call.channel = ch;
+                call.phase = VoicePhase::Joining;
+                self.write(|st| st.set_voice_call(Some(call)));
+            }
+            Some(_) => self.try_start_voice(),
+        }
+    }
+
+    fn on_voice_server(&mut self, server: digcord_model::VoiceServer) {
+        let Some(call) = self.voice_call() else {
+            return;
+        };
+        let ours = match call.guild {
+            Some(g) => server.guild_id == Some(g),
+            None => {
+                server.guild_id.is_none() && server.channel_id.is_none_or(|c| c == call.channel)
+            }
+        };
+        if !ours {
+            return;
+        }
+        // Yeni sunucu/token: eski bağlantı geçersiz.
+        if let Some(v) = self.voice.take() {
+            v.stop();
+        }
+        if server.endpoint.is_none() {
+            // Sunucu değişiyor; yenisi gelecek.
+            self.write(|st| {
+                if let Some(mut c) = st.voice_call().cloned() {
+                    c.phase = VoicePhase::Joining;
+                    st.set_voice_call(Some(c));
+                }
+            });
+            return;
+        }
+        self.voice_server = Some(server);
+        self.try_start_voice();
+    }
+
+    /// Oturum kimliği ve sunucu bilgisi ikisi de varsa ses bağlantısını başlatır.
+    fn try_start_voice(&mut self) {
+        if self.voice.is_some() {
+            return;
+        }
+        let Some(mut call) = self.voice_call() else {
+            return;
+        };
+        let (session_id, me) = self.shared.read_state(|st| {
+            (
+                st.my_voice_session(call.guild).map(str::to_owned),
+                st.me().map(|u| u.id),
+            )
+        });
+        let (Some(session_id), Some(me)) = (session_id, me) else {
+            return;
+        };
+        let Some(server) = self.voice_server.take() else {
+            return;
+        };
+        let Some(endpoint) = server.endpoint.clone() else {
+            return;
+        };
+        let info = digcord_voice::protocol::SessionInfo {
+            // DM aramasında kanal id'si (doğrulanmadı, PROTOCOL_NOTES §7).
+            server_id: call.guild.unwrap_or(call.channel).0,
+            user_id: me.0,
+            session_id,
+            token: server.token,
+            endpoint,
+        };
+        let props = ClientProperties::chrome_linux(
+            &self.env.locale,
+            self.env.settings.chrome_major,
+            self.env.settings.build_number,
+        );
+        let jobs = self.jobs_tx.clone();
+        self.voice = Some(crate::voice::VoiceSession::start(
+            info,
+            call.channel.0,
+            props.user_agent().to_owned(),
+            call.self_mute || call.self_deaf,
+            call.self_deaf,
+            move |ev| {
+                let _ = jobs.send(Box::new(move |c: &mut Controller| c.on_voice_event(ev)));
+            },
+        ));
+        call.phase = VoicePhase::Connecting;
+        self.write(|st| st.set_voice_call(Some(call)));
+    }
+
+    fn on_voice_event(&mut self, ev: digcord_voice::connection::Event) {
+        use digcord_voice::connection::Event as V;
+        match ev {
+            V::Connected { dave_version } => self.write(|st| {
+                if let Some(mut c) = st.voice_call().cloned() {
+                    c.phase = VoicePhase::Connected {
+                        e2ee: dave_version > 0,
+                    };
+                    st.set_voice_call(Some(c));
+                }
+            }),
+            V::Speaking { user_id, speaking } => {
+                self.write(|st| st.set_speaking(Snowflake(user_id), speaking));
+            }
+            V::UserLeft(user) => self.write(|st| st.set_speaking(Snowflake(user), false)),
+            V::Audio { .. } => {}
+            V::Closed { reason, rejoin } => {
+                tracing::info!(rejoin, "ses bağlantısı kapandı: {reason}");
+                self.voice = None;
+                match self.voice_call() {
+                    Some(call) if rejoin && !self.voice_rejoined => {
+                        self.voice_rejoined = true;
+                        let rejoined = self.voice_rejoined;
+                        self.join_voice(call.guild, call.channel);
+                        self.voice_rejoined = rejoined;
+                    }
+                    Some(_) => {
+                        self.leave_voice();
+                        self.notice(format!("Ses bağlantısı kapandı: {reason}"));
+                    }
+                    None => {}
+                }
+            }
+        }
     }
 
     /// Adresi `xdg-open` ile açar (sadece http/https; kabuk yok, tek argüman).
@@ -779,8 +1012,8 @@ impl Controller {
             E::ReactionRemove(r) => self.write(|st| st.reaction_remove(&r)),
             E::TypingStart(t) => self.write(|st| st.typing_start(&t)),
             E::MessageAck(a) => self.write(|st| st.apply_ack(&a)),
-            // Ses bağlantısı Aşama 6'nın sonraki adımlarında bağlanacak.
-            E::VoiceStateUpdate(_) | E::VoiceServerUpdate(_) => {}
+            E::VoiceStateUpdate(vs) => self.on_voice_state(&vs),
+            E::VoiceServerUpdate(server) => self.on_voice_server(server),
         }
     }
 
@@ -856,6 +1089,15 @@ impl Controller {
             } => self.upload(Page { guild, channel }, path, content, max_bytes),
             Action::Copy(text) => self.copy(text),
             Action::LoadImage(job) => self.load_image(job),
+            Action::JoinVoice { guild, channel } => self.join_voice(guild, channel),
+            Action::LeaveVoice => self.leave_voice(),
+            Action::ToggleMute => self.toggle_voice_flag(false),
+            Action::ToggleDeaf => self.toggle_voice_flag(true),
+            Action::SetVolume { user, volume } => {
+                if let Some(v) = &self.voice {
+                    v.set_volume(user.0, volume);
+                }
+            }
             Action::OpenExternal(url) => self.open_external(url),
             Action::Quit => return false,
         }
@@ -942,6 +1184,9 @@ pub async fn run(
         ack_due: std::collections::HashMap::new(),
         media: None,
         refetched: HashSet::new(),
+        voice: None,
+        voice_server: None,
+        voice_rejoined: false,
     };
     c.media = media_fetcher(&c.env);
 

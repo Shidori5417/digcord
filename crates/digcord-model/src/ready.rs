@@ -142,6 +142,9 @@ pub struct Guild {
     /// Büyük guild: op 37 aboneliği genişletilmiş biçimde gönderilir (PROTOCOL_NOTES §4.1).
     #[serde(default)]
     pub large: bool,
+    /// Ses kanallarındaki kullanıcılar (`guild_id` alanı burada yok).
+    #[serde(default)]
+    pub voice_states: Vec<crate::VoiceState>,
 }
 
 /// Sunucunun özel emojisi.
