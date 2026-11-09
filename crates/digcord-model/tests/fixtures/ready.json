@@ -1,0 +1,115 @@
+{
+ "v": 9,
+ "user": {
+  "id": "100000000054525952",
+  "username": "kullanici",
+  "global_name": "Kullanıcı",
+  "discriminator": "0",
+  "avatar": null,
+  "bot": false
+ },
+ "session_id": "0123456789abcdef0123456789abcdef",
+ "session_type": "normal",
+ "resume_gateway_url": "wss://gateway-us-east1-d.discord.gg",
+ "guilds": [
+  {
+   "id": "100000000000000000",
+   "lazy": true,
+   "member_count": 10,
+   "properties": {
+    "id": "100000000000000000",
+    "name": "sunucu-1",
+    "icon": null
+   },
+   "channels": [
+    {
+     "id": "100000000004194304",
+     "type": 4,
+     "flags": 0,
+     "position": 2,
+     "name": "kategori-1"
+    },
+    {
+     "id": "100000000008388608",
+     "type": 0,
+     "flags": 0,
+     "parent_id": "100000000004194304",
+     "position": 44,
+     "name": "kanal-2"
+    },
+    {
+     "id": "100000000012582912",
+     "type": 0,
+     "flags": 0,
+     "parent_id": "100000000004194304",
+     "position": 47,
+     "name": "kanal-3"
+    }
+   ],
+   "roles": []
+  },
+  {
+   "id": "100000000016777216",
+   "lazy": true,
+   "member_count": 20,
+   "properties": {
+    "id": "100000000016777216",
+    "name": "sunucu-2",
+    "icon": null
+   },
+   "channels": [
+    {
+     "id": "100000000020971520",
+     "type": 4,
+     "flags": 0,
+     "position": 4,
+     "name": "kategori-1"
+    },
+    {
+     "id": "100000000025165824",
+     "type": 0,
+     "flags": 0,
+     "parent_id": "100000000020971520",
+     "position": 22,
+     "name": "kanal-2"
+    },
+    {
+     "id": "100000000029360128",
+     "type": 0,
+     "flags": 0,
+     "parent_id": "100000000020971520",
+     "position": 23,
+     "name": "kanal-3"
+    }
+   ],
+   "roles": []
+  },
+  {
+   "id": "100000000033554432",
+   "unavailable": true
+  }
+ ],
+ "private_channels": [
+  {
+   "id": "100000000037748736",
+   "type": 1,
+   "recipient_ids": [
+    "100000000041943040"
+   ],
+   "last_message_id": null
+  },
+  {
+   "id": "100000000046137344",
+   "type": 1,
+   "recipient_ids": [
+    "100000000050331648"
+   ],
+   "last_message_id": null
+  }
+ ],
+ "read_state": {
+  "entries": [],
+  "partial": false,
+  "version": 1
+ }
+}

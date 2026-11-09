@@ -11,6 +11,8 @@ license-file = "LICENSE"
 publish = false
 
 [workspace.dependencies]
+digcord-gateway = { path = "crates/digcord-gateway" }
+digcord-model = { path = "crates/digcord-model" }
 digcord-tui = { path = "crates/digcord-tui" }
 
 [package]
