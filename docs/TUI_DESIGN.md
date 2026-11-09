@@ -46,12 +46,15 @@ Vim istemeyenler için config'de `keymap = "simple"` (her zaman yazma modu, ok t
 | `Tab` / `Shift+Tab` | Paneller arası odak |
 | `j` / `k` | Aşağı / yukarı |
 | `i` | Yazma moduna geç |
+| `v` (veya mesaj panelinde `Enter`) | SELECT: mesaj seç (`j`/`k`) |
+| `:` | COMMAND: `:upload <yol> [mesaj]`, `:q` |
+| `Tab` (INSERT) | Otomatik tamamlamayı kabul et (`@kişi`, `#kanal`, `:emoji`) |
 | `Esc` | NORMAL moda dön / pencereyi kapat |
 | `Enter` (INSERT) | Gönder; `Shift+Enter`/`Alt+Enter` yeni satır |
 | `r` | Seçili mesaja yanıt |
 | `e` | Kendi mesajını düzenle (INSERT'te boşken `↑` de son mesajı düzenler) |
 | `d d` | Sil (onay ister) |
-| `+` | Tepki ekle (emoji seçici) |
+| `+` | Tepki ekle/kaldır (emoji veya `:kısa_ad:` istemi) |
 | `o` | Eki/linki aç (xdg-open) veya resmi tam ekran göster |
 | `y` | Mesaj metnini kopyala |
 | `Ctrl+M` | Üye listesi aç/kapat |

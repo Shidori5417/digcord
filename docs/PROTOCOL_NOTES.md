@@ -165,6 +165,20 @@ CDP'nin bazı başlıkları göstermemesi mümkün — **doğrulanmadı**. 429 i
   content, timestamp, edited_timestamp, type, flags, mentions, mention_roles, mention_everyone,
   attachments, embeds, components, pinned, tts, nonce, channel_type`. `MESSAGE_DELETE.d`: `id, channel_id, guild_id`.
 
+### 4.2 Aşama 3 yazma istekleri — ⚠️ hepsi doğrulanmadı (resmi istemciden kayıt bekliyor)
+
+Biçimler Discord'un herkese açık API dokümanı ve topluluk bilgisinden; canlı kullanımdan önce
+resmi web istemcisinin trafiğiyle karşılaştırılacak (kullanıcı kararı: testler en sonda).
+- `POST /channels/{c}/messages`: `{"mobile_network_type":"unknown","content","nonce":"<snowflake>","tts":false,"flags":0}`;
+  yanıtta `message_reference{guild_id?,channel_id,message_id}` + `allowed_mentions`; ekli mesajda `attachments[]`, `type:0`, `sticker_ids:[]`.
+- `PATCH /channels/{c}/messages/{m}` `{"content"}` · `DELETE /channels/{c}/messages/{m}`.
+- `PUT /channels/{c}/messages/{m}/reactions/{emoji}/@me?location=Message&type=0`;
+  `DELETE …/reactions/{emoji}/0/@me?location=Message&burst=false`.
+- `POST /channels/{c}/typing` (boş gövde), ~8 sn'de bir.
+- Yükleme: `POST /channels/{c}/attachments {"files":[{file_size,filename,id,is_clip}]}` → `upload_url`'ye
+  token'sız PUT → mesajda `uploaded_filename`. Yükleme sınırı 10 MB varsayıldı.
+- Rate limit: `X-RateLimit-*` başlıkları varsa bucket yönetimi, yoksa sadece 429.
+
 ## 5. Davranış kuralları (ban riskini azaltmak için)
 
 - Resmi istemcinin **yapmadığı** şeyi yapma: toplu geçmiş indirme, otomatik yanıt, çok hızlı

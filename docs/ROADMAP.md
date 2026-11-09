@@ -37,13 +37,14 @@ ağ kesilip gelince otomatik resume oluyor.
   `cargo test -p digcord-tui --release -- --ignored --nocapture frame_time`.
 - [ ] Canlı test (yan hesap): kanal açma, geçmiş, canlı mesajlar — Aşama 1 canlı testiyle birlikte.
 
-## Aşama 3 — Yazma
-- Mesaj gönderme (nonce + iyimser güncelleme), yanıt, düzenleme, silme, tepki.
-- Çok satırlı giriş, yazıyor bildirimi, emoji/mention otomatik tamamlama.
-- Dosya ekleme (yol ile veya `:upload`).
-- Rate limit bucket yönetimi + testleri.
+## Aşama 3 — Yazma ⏳ (kod tamam, canlı kabul testi ve protokol kaydı bekliyor)
+- [x] Mesaj gönderme (nonce + iyimser güncelleme), yanıt, düzenleme, silme, tepki.
+- [x] Çok satırlı giriş, yazıyor bildirimi, emoji/mention otomatik tamamlama.
+- [x] Dosya ekleme (`:upload <yol> [mesaj]`).
+- [x] Rate limit bucket yönetimi + testleri.
 
 **Kabul:** Resmi istemciyle yan yana açıkken tüm eylemler iki tarafta tutarlı görünüyor.
+- [ ] Önce yazma isteklerinin resmi istemci trafiğiyle karşılaştırılması (PROTOCOL_NOTES §4.2), sonra canlı test.
 
 ## Aşama 4 — DM, okunmamış, bildirim
 - DM ve grup DM listesi, arkadaş listesi (salt okunur başlangıç).
