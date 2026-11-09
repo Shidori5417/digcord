@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use digcord_model::{ClientProperties, Ready, Token};
+use digcord_model::{ClientProperties, Ready, Snowflake, Token};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
@@ -14,7 +14,8 @@ use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::protocol::{
-    self, Backoff, Beat, CloseAction, Dispatch, Event, GATEWAY_QUERY, GATEWAY_URL, Heartbeat,
+    self, Backoff, Beat, CloseAction, Dispatch, Event, GATEWAY_QUERY, GATEWAY_URL, GatewayEvent,
+    Heartbeat,
 };
 use crate::zlib::{ZlibError, ZlibStream};
 
@@ -53,6 +54,21 @@ pub enum Update {
     InvalidToken,
     /// Yeniden denenmeyecek hata. Döngü durdu.
     Fatal(String),
+    Event(GatewayEvent),
+}
+
+/// Uygulamadan gateway'e komutlar. Sadece oturum hazırken (READY/RESUMED sonrası) gönderilir;
+/// o ana kadar kanalda bekler.
+#[derive(Debug)]
+pub enum Command {
+    SubscribeGuild {
+        guild: Snowflake,
+        large: bool,
+    },
+    RequestMembers {
+        guild: Snowflake,
+        user_ids: Vec<Snowflake>,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -99,6 +115,7 @@ type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 pub async fn run(
     config: Config,
     updates: mpsc::Sender<Update>,
+    mut commands: mpsc::Receiver<Command>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut state = State::default();
@@ -106,7 +123,7 @@ pub async fn run(
     loop {
         let _ = updates.send(Update::Connecting).await;
         let exit = tokio::select! {
-            exit = connect_once(&config, &mut state, &mut backoff, &updates) => exit,
+            exit = connect_once(&config, &mut state, &mut backoff, &updates, &mut commands) => exit,
             _ = shutdown.wait_for(|stop| *stop) => Exit::Shutdown,
         };
         let reason = match exit {
@@ -144,8 +161,9 @@ async fn connect_once(
     state: &mut State,
     backoff: &mut Backoff,
     updates: &mpsc::Sender<Update>,
+    commands: &mut mpsc::Receiver<Command>,
 ) -> Exit {
-    match session_loop(config, state, backoff, updates).await {
+    match session_loop(config, state, backoff, updates, commands).await {
         Ok(exit) => exit,
         Err(e) => {
             let code = match &e {
@@ -165,6 +183,7 @@ async fn session_loop(
     state: &mut State,
     backoff: &mut Backoff,
     updates: &mpsc::Sender<Update>,
+    commands: &mut mpsc::Receiver<Command>,
 ) -> Result<Exit, ConnError> {
     let url = match &state.session {
         Some(s) => format!("{}{GATEWAY_QUERY}", s.resume_url.trim_end_matches('/')),
@@ -194,6 +213,8 @@ async fn session_loop(
     ws.send(Message::text(first)).await?;
 
     let mut next_beat = Instant::now() + hb.first_delay();
+    // READY/RESUMED gelene kadar komutlar gönderilmez.
+    let mut live = false;
     loop {
         let event = tokio::select! {
             _ = sleep_until(next_beat) => {
@@ -204,6 +225,14 @@ async fn session_loop(
                         return Ok(Exit::Closed { action: CloseAction::Resume, reason: "heartbeat ACK gelmedi (zombi bağlantı)".into() });
                     }
                 }
+                continue;
+            }
+            Some(cmd) = commands.recv(), if live => {
+                let text = match cmd {
+                    Command::SubscribeGuild { guild, large } => protocol::subscribe_guild(guild, large),
+                    Command::RequestMembers { guild, user_ids } => protocol::request_members(guild, &user_ids),
+                };
+                ws.send(Message::text(text)).await?;
                 continue;
             }
             event = next_event(&mut ws, &mut zlib) => event,
@@ -226,12 +255,17 @@ async fn session_loop(
                         ws.send(Message::text(protocol::heartbeat(state.seq)))
                             .await?;
                         hb.on_extra_sent();
+                        live = true;
                         let _ = updates.send(Update::Ready(ready)).await;
                     }
                     Dispatch::Resumed => {
                         tracing::info!("gateway: RESUMED");
                         backoff.reset();
+                        live = true;
                         let _ = updates.send(Update::Resumed).await;
+                    }
+                    Dispatch::Event(e) => {
+                        let _ = updates.send(Update::Event(e)).await;
                     }
                     Dispatch::Other => {}
                 }
@@ -374,13 +408,18 @@ mod tests {
     }
 
     const HELLO: &str = r#"{"t":null,"s":null,"op":10,"d":{"heartbeat_interval":41250}}"#;
+    /// Gerçek zamanlı testte heartbeat araya girmesin diye 1 saatlik aralık.
+    const HELLO_SLOW: &str = r#"{"t":null,"s":null,"op":10,"d":{"heartbeat_interval":3600000}}"#;
 
+    /// `limit` içinde koşulu sağlayan güncellemeyi bekler (toplam süre; aradaki güncellemeler atlanır).
     async fn expect_update(
         rx: &mut mpsc::Receiver<Update>,
+        limit: Duration,
         pred: impl Fn(&Update) -> bool,
     ) -> Update {
+        let deadline = Instant::now() + limit;
         loop {
-            let u = timeout(Duration::from_secs(600), rx.recv())
+            let u = tokio::time::timeout_at(deadline, rx.recv())
                 .await
                 .expect("güncelleme zaman aşımı")
                 .expect("kanal");
@@ -390,7 +429,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn identify_ready_resume_then_invalid_token() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let url = format!("ws://{}", listener.local_addr().expect("adres"));
@@ -399,11 +438,20 @@ mod tests {
         config.gateway_url = format!("{url}/?encoding=json&v=9&compress=zlib-stream");
         let (tx, mut rx) = mpsc::channel(16);
         let (_stop_tx, stop_rx) = watch::channel(false);
-        let client = tokio::spawn(run(config, tx, stop_rx));
+        let (cmd_tx, cmd_rx) = mpsc::channel(4);
+        let client = tokio::spawn(run(config, tx, cmd_rx, stop_rx));
+        // READY'den önce verilen komut bekletilmeli.
+        cmd_tx
+            .send(Command::SubscribeGuild {
+                guild: Snowflake(9),
+                large: false,
+            })
+            .await
+            .expect("komut");
 
         // 1. bağlantı: Hello → IDENTIFY → READY → READY sonrası op 40 → 4000 ile kapat.
         let mut peer = Peer::accept(&listener).await;
-        peer.send(HELLO).await;
+        peer.send(HELLO_SLOW).await;
         let identify = peer.recv().await;
         assert_eq!(identify["op"], 2);
         assert_eq!(identify["d"]["token"], "sahte-token");
@@ -411,17 +459,25 @@ mod tests {
         let beat = peer.recv().await;
         assert_eq!(beat["op"], 40);
         assert_eq!(beat["d"]["seq"], 1);
+        let sub = peer.recv().await;
+        assert_eq!(sub["op"], 37, "komut READY sonrası gönderilmeli");
         assert!(
-            matches!(expect_update(&mut rx, |u| matches!(u, Update::Ready(_))).await, Update::Ready(r) if r.guilds.len() == 3)
+            matches!(expect_update(&mut rx, Duration::from_secs(10), |u| matches!(u, Update::Ready(_))).await, Update::Ready(r) if r.guilds.len() == 3)
         );
-        peer.send(r#"{"t":"MESSAGE_CREATE","s":2,"op":0,"d":{}}"#)
-            .await;
+        peer.send(r#"{"t":"MESSAGE_CREATE","s":2,"op":0,"d":{"id":"5","channel_id":"2","author":{"id":"1","username":"a","global_name":null},"content":"x"}}"#).await;
+        assert!(matches!(
+            expect_update(&mut rx, Duration::from_secs(10), |u| matches!(u, Update::Event(_))).await,
+            Update::Event(GatewayEvent::MessageCreate(m)) if m.content == "x"
+        ));
         peer.close(4000).await;
 
         // 2. bağlantı resume_gateway_url'ye: RESUME (op 6) son seq ile.
-        expect_update(&mut rx, |u| matches!(u, Update::Reconnecting { .. })).await;
+        expect_update(&mut rx, Duration::from_secs(10), |u| {
+            matches!(u, Update::Reconnecting { .. })
+        })
+        .await;
         let mut peer = Peer::accept(&listener).await;
-        peer.send(HELLO).await;
+        peer.send(HELLO_SLOW).await;
         let resume = peer.recv().await;
         assert_eq!(resume["op"], 6);
         assert_eq!(
@@ -430,12 +486,18 @@ mod tests {
         );
         assert_eq!(resume["d"]["seq"], 2);
         peer.send(r#"{"t":"RESUMED","s":3,"op":0,"d":{}}"#).await;
-        expect_update(&mut rx, |u| matches!(u, Update::Resumed)).await;
+        expect_update(&mut rx, Duration::from_secs(10), |u| {
+            matches!(u, Update::Resumed)
+        })
+        .await;
 
         // 4004 → InvalidToken ve döngü biter.
         peer.close(4004).await;
-        expect_update(&mut rx, |u| matches!(u, Update::InvalidToken)).await;
-        timeout(Duration::from_secs(600), client)
+        expect_update(&mut rx, Duration::from_secs(10), |u| {
+            matches!(u, Update::InvalidToken)
+        })
+        .await;
+        timeout(Duration::from_secs(10), client)
             .await
             .expect("döngü bitmeli")
             .expect("panik yok");
@@ -452,7 +514,8 @@ mod tests {
         config.gateway_url = url.clone();
         let (tx, mut rx) = mpsc::channel(16);
         let (stop_tx, stop_rx) = watch::channel(false);
-        let client = tokio::spawn(run(config, tx, stop_rx));
+        let (_cmd_tx, cmd_rx) = mpsc::channel(4);
+        let client = tokio::spawn(run(config, tx, cmd_rx, stop_rx));
 
         let mut peer = Peer::accept(&listener).await;
         peer.send(HELLO).await;
@@ -460,7 +523,10 @@ mod tests {
         peer.send(&ready_json(&url)).await;
         assert_eq!(peer.recv().await["op"], 40);
         // ACK hiç gönderilmez → ilk zamanlı vuruşta zombi.
-        let u = expect_update(&mut rx, |u| matches!(u, Update::Reconnecting { .. })).await;
+        let u = expect_update(&mut rx, Duration::from_secs(600), |u| {
+            matches!(u, Update::Reconnecting { .. })
+        })
+        .await;
         assert!(matches!(u, Update::Reconnecting { reason, .. } if reason.contains("zombi")));
         drop(peer);
 

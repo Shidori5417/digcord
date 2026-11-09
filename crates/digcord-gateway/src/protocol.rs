@@ -4,7 +4,10 @@
 
 use std::time::Duration;
 
-use digcord_model::{ClientProperties, Ready, Token};
+use digcord_model::{
+    Channel, ClientProperties, Guild, GuildMembersChunk, Message, MessageDelete, Ready, Snowflake,
+    Token,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
@@ -29,6 +32,8 @@ pub mod op {
     pub const HEARTBEAT_ACK: u8 = 11;
     /// Web istemcisinin op 1 yerine kullandığı QoS heartbeat (PROTOCOL_NOTES §3.1).
     pub const QOS_HEARTBEAT: u8 = 40;
+    pub const REQUEST_GUILD_MEMBERS: u8 = 8;
+    pub const GUILD_SUBSCRIPTIONS_BULK: u8 = 37;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -64,8 +69,22 @@ pub enum Event {
 pub enum Dispatch {
     Ready(Box<Ready>),
     Resumed,
-    /// Bu aşamada işlenmeyen olay; `d` hiç ayrıştırılmaz.
+    Event(GatewayEvent),
+    /// İşlenmeyen olay ya da `d`'si beklenen biçimde olmayan olay (bağlantı düşürülmez).
     Other,
+}
+
+/// Uygulamaya iletilen olaylar.
+#[derive(Debug)]
+pub enum GatewayEvent {
+    MessageCreate(Box<Message>),
+    MessageUpdate(Box<Message>),
+    MessageDelete(MessageDelete),
+    ChannelCreate(Box<Channel>),
+    ChannelUpdate(Box<Channel>),
+    ChannelDelete(Box<Channel>),
+    GuildCreate(Box<Guild>),
+    GuildMembersChunk(GuildMembersChunk),
 }
 
 #[derive(Deserialize)]
@@ -85,9 +104,14 @@ pub fn parse(text: &str) -> Result<Event, ProtocolError> {
     Ok(match env.op {
         op::DISPATCH => {
             let dispatch = match env.t {
+                // READY bozuksa oturum kullanılamaz: hata.
                 Some("READY") => Dispatch::Ready(serde_json::from_str(data()?.get())?),
                 Some("RESUMED") => Dispatch::Resumed,
-                _ => Dispatch::Other,
+                Some(t) => match env.d {
+                    Some(d) => parse_event(t, d.get()),
+                    None => Dispatch::Other,
+                },
+                None => Dispatch::Other,
             };
             Event::Dispatch {
                 seq: env.s,
@@ -112,6 +136,28 @@ pub fn parse(text: &str) -> Result<Event, ProtocolError> {
         },
         op => Event::Unknown { op },
     })
+}
+
+/// Bilinen olayın `d`'sini çevirir. Biçim beklenmedikse olay atlanır, bağlantı sürer.
+fn parse_event(t: &str, d: &str) -> Dispatch {
+    use GatewayEvent as E;
+    fn de<T: serde::de::DeserializeOwned>(t: &str, d: &str) -> Option<T> {
+        serde_json::from_str(d)
+            .map_err(|e| tracing::warn!(event = t, "gateway olayı ayrıştırılamadı: {e}"))
+            .ok()
+    }
+    let event = match t {
+        "MESSAGE_CREATE" => de(t, d).map(|m| E::MessageCreate(Box::new(m))),
+        "MESSAGE_UPDATE" => de(t, d).map(|m| E::MessageUpdate(Box::new(m))),
+        "MESSAGE_DELETE" => de(t, d).map(E::MessageDelete),
+        "CHANNEL_CREATE" => de(t, d).map(|c| E::ChannelCreate(Box::new(c))),
+        "CHANNEL_UPDATE" => de(t, d).map(|c| E::ChannelUpdate(Box::new(c))),
+        "CHANNEL_DELETE" => de(t, d).map(|c| E::ChannelDelete(Box::new(c))),
+        "GUILD_CREATE" => de(t, d).map(|g| E::GuildCreate(Box::new(g))),
+        "GUILD_MEMBERS_CHUNK" => de(t, d).map(E::GuildMembersChunk),
+        _ => None,
+    };
+    event.map_or(Dispatch::Other, Dispatch::Event)
 }
 
 #[derive(Serialize)]
@@ -185,6 +231,80 @@ pub fn resume(token: &Token, session_id: &str, seq: Option<u64>) -> String {
             token,
             session_id,
             seq,
+        },
+    )
+}
+
+/// op 37 guild aboneliği; biçim guild büyüklüğüne göre (PROTOCOL_NOTES §4.1).
+pub fn subscribe_guild(guild: Snowflake, large: bool) -> String {
+    #[derive(Serialize)]
+    struct Small {
+        typing: bool,
+        activities: bool,
+        threads: bool,
+    }
+    #[derive(Serialize)]
+    struct Large {
+        typing: bool,
+        threads: bool,
+        activities: bool,
+        members: [(); 0],
+        member_updates: bool,
+        channels: Empty,
+        thread_member_lists: [(); 0],
+    }
+    #[derive(Serialize)]
+    struct Empty {}
+    #[derive(Serialize)]
+    struct Subs<T> {
+        subscriptions: std::collections::BTreeMap<String, T>,
+    }
+    let key = guild.to_string();
+    if large {
+        let v = Large {
+            typing: true,
+            threads: true,
+            activities: true,
+            members: [],
+            member_updates: false,
+            channels: Empty {},
+            thread_member_lists: [],
+        };
+        to_json(
+            op::GUILD_SUBSCRIPTIONS_BULK,
+            Subs {
+                subscriptions: [(key, v)].into(),
+            },
+        )
+    } else {
+        let v = Small {
+            typing: true,
+            activities: true,
+            threads: true,
+        };
+        to_json(
+            op::GUILD_SUBSCRIPTIONS_BULK,
+            Subs {
+                subscriptions: [(key, v)].into(),
+            },
+        )
+    }
+}
+
+/// op 8: mesaj yazarlarının üye bilgisi (takma ad, roller) — `presences: false` (gözlenen).
+pub fn request_members(guild: Snowflake, user_ids: &[Snowflake]) -> String {
+    #[derive(Serialize)]
+    struct Req<'a> {
+        guild_id: [Snowflake; 1],
+        user_ids: &'a [Snowflake],
+        presences: bool,
+    }
+    to_json(
+        op::REQUEST_GUILD_MEMBERS,
+        Req {
+            guild_id: [guild],
+            user_ids,
+            presences: false,
         },
     )
 }
@@ -382,6 +502,54 @@ mod tests {
                 dispatch: Dispatch::Other
             }
         ));
+    }
+
+    #[test]
+    fn parses_message_events_and_survives_bad_shape() {
+        let create = r#"{"t":"MESSAGE_CREATE","s":3,"op":0,"d":{"id":"5","channel_id":"2","author":{"id":"1","username":"a","global_name":null},"content":"x"}}"#;
+        assert!(matches!(
+            parse(create).expect("create"),
+            Event::Dispatch { seq: Some(3), dispatch: Dispatch::Event(GatewayEvent::MessageCreate(m)) } if m.content == "x"
+        ));
+        let delete = r#"{"t":"MESSAGE_DELETE","s":4,"op":0,"d":{"id":"5","channel_id":"2"}}"#;
+        assert!(matches!(
+            parse(delete).expect("delete"),
+            Event::Dispatch {
+                dispatch: Dispatch::Event(GatewayEvent::MessageDelete(_)),
+                ..
+            }
+        ));
+        // Yazarsız (kısmi) güncelleme: atlanır ama hata değil, seq yine işlenir.
+        let partial =
+            r#"{"t":"MESSAGE_UPDATE","s":6,"op":0,"d":{"id":"5","channel_id":"2","embeds":[]}}"#;
+        assert!(matches!(
+            parse(partial).expect("kısmi"),
+            Event::Dispatch {
+                seq: Some(6),
+                dispatch: Dispatch::Other
+            }
+        ));
+        let chunk = r#"{"t":"GUILD_MEMBERS_CHUNK","s":7,"op":0,"d":{"guild_id":"9","members":[{"user":{"id":"1","username":"a","global_name":null},"nick":"N","roles":[]}],"chunk_index":0,"chunk_count":1,"not_found":[]}}"#;
+        assert!(matches!(
+            parse(chunk).expect("chunk"),
+            Event::Dispatch { dispatch: Dispatch::Event(GatewayEvent::GuildMembersChunk(c)), .. } if c.members[0].nick.as_deref() == Some("N")
+        ));
+    }
+
+    #[test]
+    fn subscription_payloads_match_observed() {
+        assert_eq!(
+            subscribe_guild(Snowflake(9), false),
+            r#"{"op":37,"d":{"subscriptions":{"9":{"typing":true,"activities":true,"threads":true}}}}"#
+        );
+        assert_eq!(
+            subscribe_guild(Snowflake(9), true),
+            r#"{"op":37,"d":{"subscriptions":{"9":{"typing":true,"threads":true,"activities":true,"members":[],"member_updates":false,"channels":{},"thread_member_lists":[]}}}}"#
+        );
+        assert_eq!(
+            request_members(Snowflake(9), &[Snowflake(1), Snowflake(2)]),
+            r#"{"op":8,"d":{"guild_id":["9"],"user_ids":["1","2"],"presences":false}}"#
+        );
     }
 
     #[test]

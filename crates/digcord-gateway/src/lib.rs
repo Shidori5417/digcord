@@ -4,4 +4,5 @@ mod connection;
 pub mod protocol;
 pub mod zlib;
 
-pub use connection::{Config, Update, run};
+pub use connection::{Command, Config, Update, run};
+pub use protocol::GatewayEvent;
