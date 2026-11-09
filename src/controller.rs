@@ -7,11 +7,11 @@ use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use digcord_gateway::{Command, Config, GatewayEvent, Update};
-use digcord_http::{Http, HttpError, NewMessage, Page};
+use digcord_http::{Http, HttpError, NewMessage, Page, SearchOutcome, SearchScope};
 use digcord_media::{Fetcher, MediaError};
 use digcord_model::{
     ClientProperties, DEFAULT_BUILD_NUMBER, DEFAULT_CHROME_MAJOR, Message, MessageDelete,
-    ReactionEmoji, Ready, Snowflake, Token, channel_kind,
+    ReactionEmoji, Ready, SearchQuery, Snowflake, Token, channel_kind,
 };
 use digcord_store::{NotifyFilter, State, VoiceCall, VoicePhase};
 use digcord_tui::{Action, ImageJob, SettingValue, Shared, Status, UiEvent};
@@ -27,6 +27,8 @@ const ACK_EVERY: Duration = Duration::from_secs(3);
 /// Kanal açılışında ve yukarı kaydırınca istenen mesaj sayıları (PROTOCOL_NOTES §4.1).
 const FIRST_PAGE: u8 = 10;
 const OLDER_PAGE: u8 = 20;
+/// Aramadan/sabitlenenden bir mesaja atlarken `around` ile istenen mesaj sayısı.
+const AROUND_PAGE: u8 = 50;
 /// op 8 isteği başına en fazla kullanıcı.
 const MEMBERS_PER_REQUEST: usize = 100;
 /// Medya disk önbelleğinin üst sınırı; açılışta en eskiler silinir.
@@ -162,6 +164,8 @@ impl Env {
 struct History {
     channel: Snowflake,
     before: Option<Snowflake>,
+    /// `Some`: `around=<id>` isteği (arama/sabitlenen atlaması); `before` o zaman `None`.
+    around: Option<Snowflake>,
     limit: u8,
     result: Result<Vec<Message>, HttpError>,
 }
@@ -790,12 +794,19 @@ impl Controller {
         }
     }
 
-    fn fetch(&mut self, open: Open, before: Option<Snowflake>, limit: u8) {
+    /// Geçmiş isteği başlatır; kanal için istek zaten sürüyorsa (ya da bağlı değilsek) `false`.
+    fn fetch(
+        &mut self,
+        open: Open,
+        before: Option<Snowflake>,
+        around: Option<Snowflake>,
+        limit: u8,
+    ) -> bool {
         let Some(http) = self.session.as_ref().map(|s| s.http.clone()) else {
-            return;
+            return false;
         };
         if !self.loading.insert(open.channel) {
-            return;
+            return false;
         }
         let tx = self.history_tx.clone();
         tokio::spawn(async move {
@@ -803,20 +814,30 @@ impl Controller {
                 guild: open.guild,
                 channel: open.channel,
             };
-            let result = http.get_messages(page, before, limit).await;
+            let result = match around {
+                Some(m) => http.get_messages_around(page, m, limit).await,
+                None => http.get_messages(page, before, limit).await,
+            };
             let _ = tx
                 .send(History {
                     channel: open.channel,
                     before,
+                    around,
                     limit,
                     result,
                 })
                 .await;
         });
+        true
     }
 
     /// Kanal açılınca: guild aboneliği (bir kez) ve ilk sayfa.
     fn open_channel(&mut self, open: Open) {
+        self.open_channel_at(open, None);
+    }
+
+    /// `around: Some(mesaj)`: ilk sayfa yerine o mesajın çevresi çekilir (arama/sabitlenen atlaması).
+    fn open_channel_at(&mut self, open: Open, around: Option<Snowflake>) {
         self.open = Some(open);
         if let Some(gid) = open.guild
             && self.subscribed.insert(gid)
@@ -826,10 +847,16 @@ impl Controller {
                 .read_state(|st| st.guilds().iter().any(|g| g.id == gid && g.large));
             self.command(Command::SubscribeGuild { guild: gid, large });
         }
-        if self.shared.read_state(|st| st.is_loaded(open.channel)) {
+        if let Some(message) = around {
+            if !self.fetch(open, None, Some(message), AROUND_PAGE) {
+                self.send(UiEvent::JumpFailed(
+                    "Mesaj getirilemedi (bağlı değil ya da kanal yükleniyor)".into(),
+                ));
+            }
+        } else if self.shared.read_state(|st| st.is_loaded(open.channel)) {
             self.request_members(open);
         } else {
-            self.fetch(open, None, FIRST_PAGE);
+            self.fetch(open, None, None, FIRST_PAGE);
         }
         self.mark_seen(open.channel);
     }
@@ -837,6 +864,10 @@ impl Controller {
     /// Açık ve görülen kanal: yerelde okundu, ayar açıksa sunucuya okundu (kısıtlamalı).
     fn mark_seen(&mut self, channel: Snowflake) {
         if !self.focused || self.open.is_none_or(|o| o.channel != channel) {
+            return;
+        }
+        // Eski bir mesaja atlanmışken kanal "okundu" sayılmaz: en yenileri görülmedi.
+        if self.shared.read_state(|st| st.is_detached(channel)) {
             return;
         }
         let latest = self.shared.read_state(|st| {
@@ -946,7 +977,7 @@ impl Controller {
             }
         });
         if let Some(before) = oldest {
-            self.fetch(open, Some(before), OLDER_PAGE);
+            self.fetch(open, Some(before), None, OLDER_PAGE);
         }
     }
 
@@ -998,6 +1029,82 @@ impl Controller {
         );
     }
 
+    /// `:search`: kullanıcının başlattığı tek arama isteği. 202 (dizin hazır değil) otomatik
+    /// yeniden denenmez; kullanıcıya söylenir. Sonuç doğrudan TUI'ye gider (store'a yazılmaz).
+    fn search(&mut self, seq: u64, page: Page, query: SearchQuery, offset: u32) {
+        let Some(http) = self.session.as_ref().map(|s| s.http.clone()) else {
+            self.send(UiEvent::SearchFailed {
+                seq,
+                error: "Bağlı değil".into(),
+            });
+            return;
+        };
+        let scope = match page.guild {
+            Some(g) => SearchScope::Guild(g),
+            None => SearchScope::Channel(page.channel),
+        };
+        self.spawn(
+            async move { http.search_messages(page, scope, &query, offset).await },
+            move |c, result| match result {
+                Ok(SearchOutcome::Results(p)) => c.send(UiEvent::SearchResults {
+                    seq,
+                    total: p.total,
+                    hits: p.hits,
+                }),
+                Ok(SearchOutcome::NotReady { retry_after }) => {
+                    tracing::info!(?retry_after, "arama dizini hazır değil (202)");
+                    c.send(UiEvent::SearchFailed {
+                        seq,
+                        error: "Arama dizini hazırlanıyor, birazdan tekrar dene".into(),
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("arama başarısız: {e}");
+                    c.send(UiEvent::SearchFailed {
+                        seq,
+                        error: format!("Arama başarısız: {e}"),
+                    });
+                }
+            },
+        );
+    }
+
+    /// `:pins`: sabitlenmiş mesajlar (belgeli uç nokta).
+    fn load_pins(&mut self, seq: u64, page: Page) {
+        let Some(http) = self.session.as_ref().map(|s| s.http.clone()) else {
+            self.send(UiEvent::SearchFailed {
+                seq,
+                error: "Bağlı değil".into(),
+            });
+            return;
+        };
+        self.spawn(
+            async move { http.pins(page).await },
+            move |c, result| match result {
+                Ok(hits) => c.send(UiEvent::SearchResults {
+                    seq,
+                    total: hits.len() as u64,
+                    hits,
+                }),
+                Err(e) => {
+                    tracing::warn!("sabitlenenler alınamadı: {e}");
+                    c.send(UiEvent::SearchFailed {
+                        seq,
+                        error: format!("Sabitlenenler alınamadı: {e}"),
+                    });
+                }
+            },
+        );
+    }
+
+    /// Yüklü olmayan bir mesaja atla: önceki kanal kırpılır, hedef kanal mesajın çevresiyle açılır.
+    fn jump_to(&mut self, open: Open, message: Snowflake, previous: Option<Snowflake>) {
+        if let Some(prev) = previous {
+            self.write(|st| st.trim_channel(prev));
+        }
+        self.open_channel_at(open, Some(message));
+    }
+
     /// Görünen yazarlardan üye bilgisi bilinmeyenler için op 8.
     fn request_members(&mut self, open: Open) {
         let Some(gid) = open.guild else { return };
@@ -1021,9 +1128,24 @@ impl Controller {
         self.loading.remove(&h.channel);
         match h.result {
             Ok(messages) => {
-                self.write(|st| {
-                    st.history_loaded(h.channel, h.before, usize::from(h.limit), messages)
-                });
+                match h.around {
+                    Some(target) => {
+                        self.write(|st| {
+                            st.around_loaded(h.channel, usize::from(h.limit), messages)
+                        });
+                        let found = self
+                            .shared
+                            .read_state(|st| st.find_message(h.channel, target).is_some());
+                        if !found {
+                            self.send(UiEvent::JumpFailed(
+                                "Mesaj bulunamadı (silinmiş olabilir)".into(),
+                            ));
+                        }
+                    }
+                    None => self.write(|st| {
+                        st.history_loaded(h.channel, h.before, usize::from(h.limit), messages)
+                    }),
+                }
                 if let Some(open) = self.open.filter(|o| o.channel == h.channel) {
                     self.request_members(open);
                     self.mark_seen(open.channel);
@@ -1032,6 +1154,9 @@ impl Controller {
             Err(e) => {
                 tracing::warn!("geçmiş alınamadı: {e}");
                 self.notice(format!("Geçmiş alınamadı: {e}"));
+                if h.around.is_some() {
+                    self.send(UiEvent::JumpFailed(format!("Mesaj getirilemedi: {e}")));
+                }
             }
         }
     }
@@ -1201,6 +1326,24 @@ impl Controller {
                 self.open_channel(Open { guild, channel });
             }
             Action::LoadOlder { channel } => self.load_older(channel),
+            Action::Search {
+                seq,
+                guild,
+                channel,
+                query,
+                offset,
+            } => self.search(seq, Page { guild, channel }, query, offset),
+            Action::LoadPins {
+                seq,
+                guild,
+                channel,
+            } => self.load_pins(seq, Page { guild, channel }),
+            Action::JumpTo {
+                guild,
+                channel,
+                message,
+                previous,
+            } => self.jump_to(Open { guild, channel }, message, previous),
             Action::LoadThreads {
                 guild,
                 channel,

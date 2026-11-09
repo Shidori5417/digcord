@@ -1,0 +1,14 @@
+---
+source: crates/digcord-tui/src/tests.rs
+expression: "draw(&app, 80, 10)"
+---
+"┌ Arama: kahve from:200 — 31 sonuç (1–5) ──────────────────────────────────────┐"
+"│  #sohbet  arkadas  01.01.2026 12:00  kahve içelim mi bugün?                  │"
+"│> #sohbet  ben  01.01.2026 12:01  kahve makinesi bozuldu                      │"
+"│  #sohbet  arkadas  01.01.2026 12:05  kahve çok uzun bir mesaj kahve çok uzun…│"
+"│  @arkadas  arkadas  01.01.2026 12:07  dm'de kahve                            │"
+"│  #sohbet  arkadas  01.01.2026 12:09  (ek veya embed)                         │"
+"│                                                                              │"
+"│                                                                              │"
+"│j/k gez · Enter mesaja git · n/p sonraki/önceki sayfa · Esc kapat             │"
+"└──────────────────────────────────────────────────────────────────────────────┘"

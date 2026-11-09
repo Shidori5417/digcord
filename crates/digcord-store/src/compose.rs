@@ -17,7 +17,7 @@ impl State {
         let Some(nonce) = msg.nonce.clone() else {
             return;
         };
-        if !self.msgs.contains_key(&msg.channel_id) {
+        if !self.msgs.get(&msg.channel_id).is_some_and(|c| !c.detached) {
             return;
         }
         self.version += 1;

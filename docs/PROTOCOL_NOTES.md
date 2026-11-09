@@ -229,6 +229,42 @@ Thread'in kendi izin overwrite'ı yoktur; izinler üst kanaldan hesaplanır, yaz
   Arşivli (kilitsiz) thread'e yazmak onu sunucuda açar, istemci ayrıca bir şey göndermez (doğrulanmadı).
 - Kapsam dışı: thread/forum gönderisi **oluşturma**, thread'e katılma/ayrılma, etiket filtreleme.
 
+### 4.5 Aşama 7 — arama, sabitlenenler ve mesaja atlama (⚠️ arama uç noktaları doğrulanmadı)
+
+Hepsi **kullanıcı eylemiyle** tetiklenir: `:search` / `:pins` / sayfa tuşu (`n`/`p`) başına tek istek;
+arka plan, otomatik yeniden deneme ya da toplu arama yok. Rate limit rotaları mevcut
+bucket mantığıyla yönetilir (`GET /guilds/:id/messages/search`).
+
+- ⚠️ doğrulanmadı: sunucu araması `GET /guilds/{guild_id}/messages/search?content=<q>&offset=<n>`;
+  DM araması `GET /channels/{channel_id}/messages/search?content=<q>&offset=<n>` (belgesiz
+  kullanıcı-istemcisi uç noktaları; adlar topluluk bilgisi). `content` UTF-8 yüzde-kodlu
+  (`çay şeker` → `%C3%A7ay%20%C5%9Feker`). Sayfa boyutu sunucuda sabit varsayıldı (25); `offset`
+  25'er artırılır, `limit` gönderilmez.
+- ⚠️ doğrulanmadı: isteğe bağlı süzgeç parametreleri — `author_id=<kullanıcı>` (`from:`),
+  `channel_id=<kanal>` (`in:`; yalnızca sunucu aramasında), `has=link|file|image|embed`
+  (`has:`; birden çoksa `has=` tekrarlanır). Sıralama parametresi gönderilmez.
+- ⚠️ doğrulanmadı: yanıt `{"total_results": N, "messages": [[Message, ...], ...]}`. Her iç dizi
+  bir isabettir: `"hit": true` alanlı eleman isabet, diğerleri bağlam mesajlarıdır; `hit` yoksa
+  ilk eleman alınır. Bağlam mesajları atılır, ayrıştırılamayan gruplar atlanır. `total_results`
+  yoksa isabet sayısı kullanılır.
+- ⚠️ doğrulanmadı: dizin hazır değilse sunucu **202** döner, gövdede `retry_after` (saniye)
+  olur. İstemci yeniden denemez; sonuç ekranında "Arama dizini hazırlanıyor, birazdan tekrar
+  dene" gösterir, kullanıcı komutu kendisi tekrarlar. 429 normal rate limit yoluyla işlenir
+  (en çok 3 bekleme + yeniden deneme, bkz. §4).
+- Belgeli: sabitlenenler `GET /channels/{id}/pins` → `[Message]` (sunucu en son sabitleneni
+  başa koyar). ⚠️ doğrulanmadı: daha yeni sayfalı uç nokta (`GET /channels/{id}/messages/pins`,
+  `{"items":[{"pinned_at","message"}],"has_more"}`) kullanılmıyor; ancak yanıt bu nesne biçiminde
+  gelirse ayrıştırıcı `items[].message` alanlarını da kabul eder. Sayfalama yok: gelen liste.
+- Belgeli: bir mesaja atlamak için `GET /channels/{id}/messages?around=<mesaj>&limit=50`
+  (en yeniden en eskiye, hedefin iki yanında yaklaşık yarı yarıya). Sonuç store'da mevcut
+  pencereyle **örtüşüyorsa** birleştirilir (kopyalar tek kalır), örtüşmüyorsa pencere
+  değiştirilir; kanalın bilinen en yeni mesajına ulaşmayan pencere "ayrık" sayılır (gateway'den
+  gelen yeni mesajlar eklenmez, kanaldan çıkınca/`G` ile atılır, yazma kapalı). Hedef yanıtta
+  yoksa (silinmiş) kullanıcıya söylenir.
+- Arama sonuç mesajlarındaki `member` / `guild_id` alanlarının eksik olabileceği varsayıldı;
+  yazar adı store'daki üye bilgisinden, yoksa mesajın `author`'ından gösterilir. Sonuçlar
+  store'a yazılmaz (yalnızca atlanan mesajın `around` penceresi yazılır).
+
 ## 5. Davranış kuralları (ban riskini azaltmak için)
 
 - Resmi istemcinin **yapmadığı** şeyi yapma: toplu geçmiş indirme, otomatik yanıt, çok hızlı

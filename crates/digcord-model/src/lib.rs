@@ -4,6 +4,7 @@ mod client;
 mod message;
 mod permissions;
 mod ready;
+mod search;
 mod snowflake;
 mod token;
 
@@ -18,6 +19,10 @@ pub use ready::{
     Channel, ChannelOverride, CustomEmoji, Entries, ForumTag, Guild, GuildMembersChunk,
     GuildProperties, GuildSettings, Member, MuteConfig, ReadStateEntry, Ready, Relationship,
     ThreadList, ThreadListSync, ThreadMember, ThreadMetadata, User, channel_kind,
+};
+pub use search::{
+    Has, RawSearch, SearchPage, SearchQuery, parse_channel_ref, parse_pins, parse_retry_after,
+    parse_search, parse_search_response, parse_user_ref,
 };
 pub use snowflake::Snowflake;
 pub use token::Token;

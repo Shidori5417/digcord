@@ -31,6 +31,8 @@ pub(crate) enum Mode {
     Viewer,
     /// `:settings` tam ekran ayarlar.
     Settings,
+    /// `:search` / `:pins` tam ekran sonuç listesi.
+    Search,
 }
 
 /// Yazılan metnin hedefi.
@@ -77,6 +79,13 @@ impl App {
     }
 
     fn enter_insert(&mut self, target: Target) {
+        if self
+            .open
+            .is_some_and(|o| self.shared.read().is_detached(o.channel))
+        {
+            self.notice = Some("Eski mesajlardasın; yazmak için önce G ile güncele dön".into());
+            return;
+        }
         if !self.can_send() {
             let locked = self
                 .open
@@ -498,6 +507,8 @@ impl App {
                 self.mode = Mode::Settings;
                 None
             }
+            "search" => self.search_command(rest),
+            "pins" => self.pins_command(),
             "theme" => {
                 let theme = rest.trim();
                 if theme.is_empty() {
@@ -818,6 +829,7 @@ pub(crate) fn mode_label(mode: Mode) -> &'static str {
         Mode::Switcher => " [GEÇİŞ] ",
         Mode::Viewer => " [RESİM] ",
         Mode::Settings => " [AYAR] ",
+        Mode::Search => " [ARAMA] ",
     }
 }
 

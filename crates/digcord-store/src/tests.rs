@@ -875,3 +875,133 @@ fn thread_message_flow_reuses_channel_paths() {
     assert_eq!(ids(&s, 30), vec![900, 901]);
     assert_eq!(s.channel(sf(30)).unwrap().last_message_id, Some(sf(901)));
 }
+
+fn around_state() -> State {
+    state_with(vec![gjson(1, 999, vec![chan(10, 0, None, 0, "g")])], vec![])
+}
+
+fn page(range: std::ops::RangeInclusive<u64>) -> Vec<Message> {
+    range.rev().map(|i| msg(i, 10, Some(1), 7)).collect()
+}
+
+#[test]
+fn around_into_unloaded_channel_is_detached_window() {
+    let mut s = around_state();
+    // Kanalın en yenisi 100; pencere 40..=60 ona ulaşmıyor.
+    s.message_create(msg(100, 10, Some(1), 7));
+    s.around_loaded(sf(10), 50, page(40..=60));
+    assert_eq!(ids(&s, 10), (40..=60).collect::<Vec<_>>());
+    assert!(s.is_detached(sf(10)));
+    assert!(
+        !s.is_loaded(sf(10)),
+        "ayrık pencere yeniden açılınca tazelenmeli"
+    );
+    assert!(!s.history_complete(sf(10)));
+}
+
+#[test]
+fn detached_window_ignores_live_messages_but_tracks_latest() {
+    let mut s = around_state();
+    s.message_create(msg(100, 10, Some(1), 7));
+    s.around_loaded(sf(10), 50, page(40..=60));
+    s.message_create(msg(101, 10, Some(1), 7));
+    // Arada boşluk oluşmaması için eklenmez; last_message_id güncellenir.
+    assert_eq!(ids(&s, 10).last(), Some(&60));
+    assert_eq!(s.channel(sf(10)).unwrap().last_message_id, Some(sf(101)));
+    // Düzenleme/silme yine uygulanır.
+    let mut upd = msg(50, 10, Some(1), 7);
+    upd.content = "düzenli".into();
+    s.message_update(upd);
+    assert_eq!(s.find_message(sf(10), sf(50)).unwrap().content, "düzenli");
+    // İyimser mesaj da eklenmez.
+    let mut p = msg(102, 10, Some(1), 7);
+    p.nonce = Some("n1".into());
+    s.add_pending(p);
+    assert_eq!(ids(&s, 10).last(), Some(&60));
+}
+
+#[test]
+fn around_at_latest_stays_attached() {
+    let mut s = around_state();
+    s.message_create(msg(60, 10, Some(1), 7));
+    s.around_loaded(sf(10), 50, page(40..=60));
+    assert!(!s.is_detached(sf(10)));
+    assert!(s.is_loaded(sf(10)));
+    s.message_create(msg(61, 10, Some(1), 7));
+    assert_eq!(ids(&s, 10).last(), Some(&61));
+}
+
+#[test]
+fn around_without_known_latest_uses_short_page() {
+    let mut s = around_state();
+    s.around_loaded(sf(10), 50, page(1..=20)); // 20 < 50: sona ulaşıldı
+    assert!(!s.is_detached(sf(10)));
+    let mut s = around_state();
+    s.around_loaded(sf(10), 20, page(1..=20)); // tam sayfa: belirsiz → ayrık
+    assert!(s.is_detached(sf(10)));
+}
+
+#[test]
+fn around_overlapping_existing_window_merges_without_duplicates() {
+    let mut s = around_state();
+    s.message_create(msg(100, 10, Some(1), 7));
+    s.history_loaded(sf(10), None, 10, page(91..=100));
+    assert!(s.is_loaded(sf(10)));
+    // 80..=95 mevcut 91..=100 ile örtüşür: birleşim, tekrar yok, hâlâ güncel pencere.
+    s.around_loaded(sf(10), 50, page(80..=95));
+    assert_eq!(ids(&s, 10), (80..=100).collect::<Vec<_>>());
+    assert!(!s.is_detached(sf(10)));
+    assert!(s.is_loaded(sf(10)));
+    // Aynı parça tekrar: değişmez.
+    s.around_loaded(sf(10), 50, page(80..=95));
+    assert_eq!(ids(&s, 10), (80..=100).collect::<Vec<_>>());
+    // Sıralı ve benzersiz.
+    let v = ids(&s, 10);
+    assert!(v.windows(2).all(|w| w[0] < w[1]));
+}
+
+#[test]
+fn around_disjoint_replaces_window_and_trim_drops_it() {
+    let mut s = around_state();
+    s.message_create(msg(100, 10, Some(1), 7));
+    s.history_loaded(sf(10), None, 10, page(91..=100));
+    s.around_loaded(sf(10), 50, page(10..=30));
+    assert_eq!(ids(&s, 10), (10..=30).collect::<Vec<_>>());
+    assert!(s.is_detached(sf(10)));
+    // Eski sayfa ayrık pencerenin başına eklenebilir.
+    s.history_loaded(sf(10), Some(sf(10)), 5, page(5..=9));
+    assert_eq!(ids(&s, 10).first(), Some(&5));
+    assert!(s.is_detached(sf(10)));
+    // Kanaldan çıkınca pencere tamamen atılır.
+    s.trim_channel(sf(10));
+    assert!(s.messages(sf(10)).is_none());
+    // İlk sayfa çekilince ayrık bayrağı kalkar.
+    s.history_loaded(sf(10), None, 10, page(91..=100));
+    assert!(!s.is_detached(sf(10)));
+}
+
+#[test]
+fn around_merge_reattaches_when_new_part_reaches_latest() {
+    let mut s = around_state();
+    s.message_create(msg(100, 10, Some(1), 7));
+    s.around_loaded(sf(10), 50, page(40..=60));
+    assert!(s.is_detached(sf(10)));
+    s.around_loaded(sf(10), 50, page(55..=100));
+    assert!(!s.is_detached(sf(10)));
+    assert_eq!(ids(&s, 10), (40..=100).collect::<Vec<_>>());
+    // Boş yanıt pencereyi bozmaz.
+    s.around_loaded(sf(10), 50, vec![]);
+    assert_eq!(ids(&s, 10).len(), 61);
+}
+
+#[test]
+fn finds_user_by_name() {
+    let mut s = around_state();
+    let mut m = msg(1, 10, Some(1), 7);
+    m.author = user(7, "Ali_Veli", Some("Ali"));
+    s.history_loaded(sf(10), None, 5, vec![m]);
+    assert_eq!(s.find_user_by_name("@ali").map(|u| u.id), Some(sf(7)));
+    assert_eq!(s.find_user_by_name("ali_veli").map(|u| u.id), Some(sf(7)));
+    assert!(s.find_user_by_name("yok").is_none());
+    assert!(s.find_user_by_name("@").is_none());
+}

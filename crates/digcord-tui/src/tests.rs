@@ -1526,3 +1526,412 @@ fn thread_channel_panel_snapshot() {
     to_channels(&mut app);
     insta::assert_snapshot!(draw(&app, 60, 12));
 }
+
+// ------------------------------------------------------------ arama ve sabitlenenler
+
+fn hit_in(channel: u64, seq: u64, minutes: u64, author: u64, content: &str) -> Message {
+    let mut m = msg(seq, minutes, author, content);
+    m.channel_id = Snowflake(channel);
+    if channel == DM {
+        m.guild_id = None;
+    }
+    m
+}
+
+/// #sohbet açık, mesaj penceresinde 3 mesaj; komut verilmiş, sonuçlar gelmiş.
+fn search_app(hits: Vec<Message>, total: u64) -> (App, u64) {
+    let msgs = vec![
+        msg(1, 0, FRIEND, "pencere bir"),
+        msg(2, 1, FRIEND, "pencere iki"),
+        msg(3, 2, ME, "pencere üç"),
+    ];
+    let mut app = test_app(shared_with(msgs, true));
+    open_sohbet(&mut app);
+    draw(&app, 100, 16);
+    let actions = run_command(&mut app, "search kahve from:200");
+    let Some(Action::Search { seq, .. }) = actions.first() else {
+        panic!("Action::Search bekleniyordu: {actions:?}");
+    };
+    let seq = *seq;
+    app.handle(UiEvent::SearchResults { seq, total, hits });
+    (app, seq)
+}
+
+#[test]
+fn search_command_resolves_filters_into_one_action() {
+    let mut app = test_app(shared_with(vec![msg(1, 0, FRIEND, "x")], true));
+    open_sohbet(&mut app);
+    let actions = run_command(
+        &mut app,
+        "search çay şeker from:<@200> in:#SOHBET has:link has:image",
+    );
+    let [
+        Action::Search {
+            guild,
+            channel,
+            query,
+            offset,
+            ..
+        },
+    ] = actions.as_slice()
+    else {
+        panic!("tek Action::Search bekleniyordu: {actions:?}");
+    };
+    assert_eq!(*guild, Some(Snowflake(GUILD)));
+    assert_eq!(*channel, Snowflake(SOHBET));
+    assert_eq!(*offset, 0);
+    assert_eq!(query.content, "çay şeker");
+    assert_eq!(query.author, Some(Snowflake(FRIEND)));
+    assert_eq!(query.channel, Some(Snowflake(SOHBET)));
+    assert_eq!(
+        query.has,
+        vec![digcord_model::Has::Link, digcord_model::Has::Image]
+    );
+    assert_eq!(app.mode, compose::Mode::Search);
+
+    // @ad ile kullanıcı çözümü: store'daki bilinen kullanıcılar arasında.
+    let mut app = test_app(shared_with(vec![msg(1, 0, FRIEND, "x")], true));
+    open_sohbet(&mut app);
+    let actions = run_command(&mut app, "search from:@arkadas");
+    assert!(matches!(
+        actions.as_slice(),
+        [Action::Search { query, .. }] if query.author == Some(Snowflake(FRIEND))
+    ));
+}
+
+#[test]
+fn search_command_validation_emits_nothing() {
+    let mut app = test_app(shared_with(vec![msg(1, 0, FRIEND, "x")], true));
+    // Kanal açık değilken.
+    assert!(run_command(&mut app, "search a").is_empty());
+    assert_eq!(app.notice.as_deref(), Some("Önce bir kanal aç"));
+    open_sohbet(&mut app);
+    for (cmd, needle) in [
+        ("search", "Kullanım"),
+        ("search has:video a", "Bilinmeyen has"),
+        ("search in:#yok a", "kanal bulunamadı"),
+        ("search from:@kimse a", "kullanıcı bulunamadı"),
+    ] {
+        assert!(run_command(&mut app, cmd).is_empty(), "{cmd}");
+        assert!(
+            app.notice.as_deref().is_some_and(|n| n.contains(needle)),
+            "{cmd}: {:?}",
+            app.notice
+        );
+        assert_eq!(app.mode, compose::Mode::Normal);
+    }
+}
+
+#[test]
+fn search_in_dm_uses_channel_scope_and_rejects_in_filter() {
+    let mut app = test_app(Arc::new(Shared::default()));
+    app.shared
+        .state
+        .write()
+        .expect("kilit")
+        .load_ready(&ready());
+    // DM'i aç: DM panelinde ilk satır.
+    press(&mut app, &[KeyCode::Enter, KeyCode::Enter]);
+    assert_eq!(app.open.map(|o| o.channel), Some(Snowflake(DM)));
+    let actions = run_command(&mut app, "search merhaba");
+    assert!(matches!(
+        actions.as_slice(),
+        [Action::Search { guild: None, channel, .. }] if *channel == Snowflake(DM)
+    ));
+    press(&mut app, &[KeyCode::Esc]);
+    assert!(run_command(&mut app, "search in:#sohbet a").is_empty());
+    assert!(app.notice.as_deref().is_some_and(|n| n.contains("in:")));
+}
+
+#[test]
+fn results_navigation_paging_and_stale_responses() {
+    let hits: Vec<Message> = (0..3)
+        .map(|i| hit_in(SOHBET, 10 + i, 30 + i, FRIEND, &format!("sonuç {i}")))
+        .collect();
+    let (mut app, seq) = search_app(hits, 60);
+    assert_eq!(app.search.as_ref().map(|v| v.hits.len()), Some(3));
+
+    press(
+        &mut app,
+        &[KeyCode::Char('j'), KeyCode::Char('j'), KeyCode::Char('j')],
+    );
+    assert_eq!(
+        app.search.as_ref().map(|v| v.sel),
+        Some(2),
+        "son satırda durur"
+    );
+    press(&mut app, &[KeyCode::Char('k')]);
+    assert_eq!(app.search.as_ref().map(|v| v.sel), Some(1));
+    press(&mut app, &[KeyCode::Char('g')]);
+    assert_eq!(app.search.as_ref().map(|v| v.sel), Some(0));
+
+    // p ilk sayfada istek yapmaz.
+    assert!(press(&mut app, &[KeyCode::Char('p')]).is_empty());
+    // n: offset 25, yeni seq; yükleme sürerken n/p yok sayılır.
+    let actions = press(&mut app, &[KeyCode::Char('n')]);
+    let [
+        Action::Search {
+            seq: seq2,
+            offset,
+            query,
+            guild,
+            ..
+        },
+    ] = actions.as_slice()
+    else {
+        panic!("{actions:?}");
+    };
+    assert_eq!(*offset, 25);
+    assert_eq!(*guild, Some(Snowflake(GUILD)));
+    assert_eq!(query.content, "kahve");
+    assert!(*seq2 > seq);
+    assert!(press(&mut app, &[KeyCode::Char('n')]).is_empty());
+    // Eski isteğin geç yanıtı yok sayılır.
+    app.handle(UiEvent::SearchResults {
+        seq,
+        total: 1,
+        hits: vec![],
+    });
+    assert!(app.search.as_ref().is_some_and(|v| v.loading));
+    app.handle(UiEvent::SearchResults {
+        seq: *seq2,
+        total: 60,
+        hits: vec![hit_in(SOHBET, 20, 40, ME, "ikinci sayfa")],
+    });
+    assert!(
+        app.search
+            .as_ref()
+            .is_some_and(|v| !v.loading && v.offset == 25)
+    );
+    // 25 + 25 < 60: bir sayfa daha var; 50'de son.
+    let actions = press(&mut app, &[KeyCode::Char('n')]);
+    assert!(matches!(
+        actions.as_slice(),
+        [Action::Search { offset: 50, .. }]
+    ));
+    let seq3 = app.search.as_ref().map(|v| v.seq()).expect("açık");
+    app.handle(UiEvent::SearchResults {
+        seq: seq3,
+        total: 60,
+        hits: vec![],
+    });
+    assert!(press(&mut app, &[KeyCode::Char('n')]).is_empty());
+    assert_eq!(app.notice.as_deref(), Some("Son sayfa"));
+    // Geri.
+    let actions = press(&mut app, &[KeyCode::Char('p')]);
+    assert!(matches!(
+        actions.as_slice(),
+        [Action::Search { offset: 25, .. }]
+    ));
+}
+
+#[test]
+fn failed_search_shows_error_and_esc_closes() {
+    let (mut app, seq) = search_app(vec![], 0);
+    app.handle(UiEvent::SearchFailed {
+        seq,
+        error: "Arama dizini hazırlanıyor, birazdan tekrar dene".into(),
+    });
+    let screen = format!("{}", draw(&app, 90, 8));
+    assert!(screen.contains("dizini hazırlanıyor"), "{screen}");
+    // Enter boş listede bir şey yapmaz.
+    assert!(press(&mut app, &[KeyCode::Enter]).is_empty());
+    assert_eq!(app.mode, compose::Mode::Search);
+    assert!(press(&mut app, &[KeyCode::Esc]).is_empty());
+    assert_eq!(app.mode, compose::Mode::Normal);
+    assert!(app.search.is_none());
+}
+
+#[test]
+fn enter_on_loaded_message_selects_it_without_network() {
+    let hits = vec![hit_in(SOHBET, 2, 1, FRIEND, "pencere iki")];
+    let (mut app, _) = search_app(hits, 1);
+    let want = app
+        .shared
+        .read()
+        .messages(Snowflake(SOHBET))
+        .and_then(|m| m.get(1).map(|m| m.id))
+        .expect("ikinci mesaj");
+    assert!(press(&mut app, &[KeyCode::Enter]).is_empty());
+    assert_eq!(app.mode, compose::Mode::Select);
+    assert_eq!(app.selected, Some(want));
+    assert!(app.pending_jump.is_none());
+    assert!(app.search.is_none());
+}
+
+#[test]
+fn enter_on_unloaded_message_requests_around_then_scrolls_on_store_change() {
+    // Pencerede olmayan, çok daha eski bir mesaj.
+    let mut old = hit_in(SOHBET, 7, 0, FRIEND, "çok eski");
+    old.id = Snowflake(old.id.0 - (3_000_u64 << 22));
+    let target = old.id;
+    let (mut app, _) = search_app(vec![old], 1);
+    let actions = press(&mut app, &[KeyCode::Enter]);
+    assert_eq!(
+        actions,
+        [Action::JumpTo {
+            guild: Some(Snowflake(GUILD)),
+            channel: Snowflake(SOHBET),
+            message: target,
+            previous: None,
+        }]
+    );
+    assert_eq!(app.pending_jump, Some((Snowflake(SOHBET), target)));
+    assert_eq!(app.mode, compose::Mode::Normal);
+
+    // Denetleyici around sonucunu store'a yazar; TUI StoreChanged ile hizalanır.
+    {
+        let mut st = app.shared.state.write().expect("kilit");
+        // Hedefin çevresi: iki öncesi, kendisi, iki sonrası (en yeniden en eskiye).
+        let around: Vec<Message> = (0..5)
+            .rev()
+            .map(|i| {
+                let mut m = msg(50 + i, 0, FRIEND, &format!("çevre {i}"));
+                m.id = Snowflake(target.0 + (i << 22) - (2 << 22));
+                m
+            })
+            .collect();
+        assert!(around.iter().any(|m| m.id == target));
+        let with_target = around;
+        st.around_loaded(Snowflake(SOHBET), 50, with_target);
+    }
+    app.handle(UiEvent::StoreChanged);
+    assert_eq!(app.selected, Some(target));
+    assert_eq!(app.mode, compose::Mode::Select);
+    assert!(app.pending_jump.is_none());
+}
+
+#[test]
+fn jump_failed_clears_pending_jump() {
+    let mut old = hit_in(SOHBET, 7, 0, FRIEND, "silinmiş");
+    old.id = Snowflake(old.id.0 - (3_000_u64 << 22));
+    let (mut app, _) = search_app(vec![old], 1);
+    press(&mut app, &[KeyCode::Enter]);
+    assert!(app.pending_jump.is_some());
+    app.handle(UiEvent::JumpFailed(
+        "Mesaj bulunamadı (silinmiş olabilir)".into(),
+    ));
+    assert!(app.pending_jump.is_none());
+    assert_eq!(
+        app.notice.as_deref(),
+        Some("Mesaj bulunamadı (silinmiş olabilir)")
+    );
+}
+
+#[test]
+fn jump_to_other_channel_opens_it_and_trims_previous() {
+    let hit = hit_in(DM, 5, 3, FRIEND, "dm içinde");
+    let (mut app, _) = search_app(vec![hit.clone()], 1);
+    let actions = press(&mut app, &[KeyCode::Enter]);
+    assert_eq!(
+        actions,
+        [Action::JumpTo {
+            guild: None,
+            channel: Snowflake(DM),
+            message: hit.id,
+            previous: Some(Snowflake(SOHBET)),
+        }]
+    );
+    assert_eq!(app.open.map(|o| o.channel), Some(Snowflake(DM)));
+    assert_eq!(app.open.and_then(|o| o.guild), None);
+}
+
+#[test]
+fn pins_command_and_overlay() {
+    let mut app = test_app(shared_with(vec![msg(1, 0, FRIEND, "x")], true));
+    assert!(run_command(&mut app, "pins").is_empty());
+    open_sohbet(&mut app);
+    let actions = run_command(&mut app, "pins");
+    let [
+        Action::LoadPins {
+            seq,
+            guild,
+            channel,
+        },
+    ] = actions.as_slice()
+    else {
+        panic!("{actions:?}");
+    };
+    assert_eq!(
+        (*guild, *channel),
+        (Some(Snowflake(GUILD)), Snowflake(SOHBET))
+    );
+    // n/p sabitlenenlerde sayfa istemez.
+    app.handle(UiEvent::SearchResults {
+        seq: *seq,
+        total: 2,
+        hits: vec![
+            hit_in(SOHBET, 1, 0, FRIEND, "sabit bir"),
+            hit_in(SOHBET, 2, 1, ME, "sabit iki"),
+        ],
+    });
+    assert!(press(&mut app, &[KeyCode::Char('n'), KeyCode::Char('p')]).is_empty());
+    let screen = format!("{}", draw(&app, 90, 8));
+    assert!(screen.contains("Sabitlenenler (sohbet) — 2"), "{screen}");
+    assert!(screen.contains("sabit iki"), "{screen}");
+    // Enter: yüklü mesaja atlar.
+    assert!(press(&mut app, &[KeyCode::Enter]).is_empty());
+    assert_eq!(app.mode, compose::Mode::Select);
+}
+
+#[test]
+fn results_overlay_snapshot() {
+    let multi = hit_in(
+        SOHBET,
+        3,
+        5,
+        FRIEND,
+        "kahve\nçok   uzun bir mesaj ".repeat(8).trim(),
+    );
+    let hits = vec![
+        hit_in(SOHBET, 1, 0, FRIEND, "kahve içelim mi bugün?"),
+        hit_in(SOHBET, 2, 1, ME, "kahve makinesi bozuldu"),
+        multi,
+        hit_in(DM, 4, 7, FRIEND, "dm'de kahve"),
+        hit_in(SOHBET, 5, 9, FRIEND, ""),
+    ];
+    let (mut app, _) = search_app(hits, 31);
+    press(&mut app, &[KeyCode::Char('j')]);
+    insta::assert_snapshot!("search_results_overlay", draw(&app, 80, 10));
+}
+
+#[test]
+fn g_returns_from_detached_window_and_insert_is_blocked() {
+    let mut app = test_app(shared_with(vec![msg(1, 0, FRIEND, "yeni")], true));
+    open_sohbet(&mut app);
+    draw(&app, 100, 16);
+    // Kanalın en yenisi 'yeni'den ilerde; around ile eski bir pencere.
+    {
+        let mut st = app.shared.state.write().expect("kilit");
+        st.message_create(msg(9, 600, FRIEND, "çok yeni"));
+        let mut old = msg(5, 0, FRIEND, "eski");
+        old.id = Snowflake(old.id.0 - (5_000_u64 << 22));
+        st.around_loaded(Snowflake(SOHBET), 50, vec![old]);
+        assert!(st.is_detached(Snowflake(SOHBET)));
+    }
+    // Yazmak engellenir.
+    press(&mut app, &[KeyCode::Char('i')]);
+    assert_eq!(app.mode, compose::Mode::Normal);
+    assert!(app.notice.as_deref().is_some_and(|n| n.contains("G")));
+    // G: ilk sayfayı yeniden iste.
+    let actions = press(&mut app, &[KeyCode::Char('G')]);
+    assert_eq!(
+        actions,
+        [Action::OpenChannel {
+            guild: Some(Snowflake(GUILD)),
+            channel: Snowflake(SOHBET),
+            previous: None,
+        }]
+    );
+    // Güncel pencerede G sadece kaydırır.
+    {
+        let mut st = app.shared.state.write().expect("kilit");
+        st.history_loaded(
+            Snowflake(SOHBET),
+            None,
+            10,
+            vec![msg(9, 600, FRIEND, "çok yeni")],
+        );
+    }
+    assert!(press(&mut app, &[KeyCode::Char('G')]).is_empty());
+}

@@ -66,6 +66,8 @@ Vim istemeyenler için config'de `keymap = "simple"` (her zaman yazma modu, ok t
 | `:call` | Açık DM'de aramaya katıl (çaldırmaz) |
 | `:threads` | Seçili/açık kanalın thread listesini aç-kapat (forumda gönderileri de getirir) |
 | `:archived` | Seçili/açık kanalın arşivli thread'lerini yükle ve soluk göster |
+| `:search <sorgu>` | Sunucuda (DM'de o DM'de) mesaj ara; tam ekran sonuç listesi. Süzgeçler: `from:<kimlik\|<@id>\|@ad>`, `in:#kanal`, `has:link\|file\|image\|embed`; `"tırnaklı"` sözcük süzgeç sayılmaz |
+| `:pins` | Açık kanalın sabitlenmiş mesajları (aynı sonuç ekranı) |
 | `:vol <ad> <0-200>` | Ses kanalındaki kişinin ses seviyesi (yüzde) |
 | `Alt+↑/↓` | Okunmamış önceki/sonraki kanal (sessizdekiler atlanır) |
 | `q` / `:q` | Çıkış |
@@ -198,7 +200,7 @@ eylem adına göre alfabetik sıradır. Kapsamlar: *genel* (her modda), *NORMAL*
 | NORMAL | `select_mode` | `v` | Mesaj seçme modu |
 | NORMAL | `command_mode` | `:` | Komut modu |
 | NORMAL | `page_down` / `page_up` | `pagedown`, `ctrl+d` / `pageup`, `ctrl+u` | Yarım sayfa kaydır |
-| NORMAL | `scroll_bottom` | `G`, `end` | En alta in |
+| NORMAL | `scroll_bottom` | `G`, `end` | En alta in (aramadan eski mesaja atlanmışsa güncel mesajları yeniden yükler) |
 | NORMAL | `next_unread` / `prev_unread` | `alt+down` / `alt+up` | Okunmamış kanala atla |
 | NORMAL+SELECT | `move_down` / `move_up` | `j`, `down` / `k`, `up` | Gezin / mesaj seçimini kaydır |
 | SELECT | `back` | `esc` | NORMAL'e dön |
@@ -290,3 +292,24 @@ gibi biçimler temadan bağımsızdır. Embed'in kendi rengi (sol kenar) Discord
   rozeti ve `Alt+↑/↓` thread'leri de kapsar (sessizdekiler ve arşivliler hariç).
 - **Kapsam dışı:** thread/forum gönderisi oluşturma, thread'e katılma/ayrılma, etiket süzme,
   arşivli listede sayfalama.
+
+## Arama ve sabitlenenler (Aşama 7)
+
+- `:search <sorgu>` ve `:pins` mod `[ARAMA]` ile tam ekran sonuç listesi açar (ayarlar/hızlı
+  geçiş gibi). Satır: `#kanal  yazar  gg.aa.yyyy ss:dd  tek satır içerik` (DM'de `@kişi`;
+  boş içerik "(ek veya embed)"). Sabit tuşlar: `j/k` (`↓/↑`) gez, `g/G` ilk/son, `Enter` mesaja
+  git, `n/p` (`PgDn/PgUp`) sonraki/önceki 25'lik sayfa (yalnızca aramada), `Esc`/`q` kapat.
+- Her komut ve her `n`/`p` tek istek (`Action::Search` / `Action::LoadPins`); yanıt
+  `UiEvent::SearchResults`/`SearchFailed` ile gelir. İstekler `seq` taşır, eskimiş yanıt yok
+  sayılır; yükleme sürerken `n`/`p` yok sayılır. 202 (dizin hazır değil) otomatik denenmez,
+  ekranda "Arama dizini hazırlanıyor, birazdan tekrar dene" görünür. Sonuç verisi TUI'dedir,
+  store'a yazılmaz (tek yazar kuralı: yazan yalnızca atlama için `around` penceresidir).
+- `from:` kimlik, `<@id>` ya da store'da bilinen kullanıcı adı/görünen ad; `in:` kanal adı
+  (mevcut sunucuda, büyük/küçük harf duyarsız) ya da `<#id>`/kimlik. Çözülemeyen süzgeç
+  durum çubuğunda hata verir, istek atılmaz. DM'de `in:` kullanılamaz.
+- **Atlama (`Enter`)**: mesaj o kanalda yüklüyse kanal açılır (gerekirse) ve mesaj SEÇ modunda,
+  ekranın ortasına yakın seçilir; yüklü değilse `Action::JumpTo` ile `around=` penceresi
+  getirilir (`PROTOCOL_NOTES.md` §4.5) ve store değişince aynı hizalama yapılır. Eski bir
+  pencerede (ayrık) yeni mesajlar eklenmez, durum çubuğunda "güncele dönmek için G" notu çıkar,
+  `i` ile yazma kapalıdır; `G` ilk sayfayı yeniden yükler. Kanaldan çıkınca ayrık pencere atılır.
+- Hedef mesaj getirilemezse/silinmişse `UiEvent::JumpFailed` bekleyen atlamayı iptal eder.

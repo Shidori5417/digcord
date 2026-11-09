@@ -230,6 +230,8 @@ pub(crate) fn draw(app: &App, frame: &mut Frame) {
         draw_login(frame, &app.theme, input, error.as_deref());
     } else if app.mode == Mode::Settings {
         crate::settings::draw(app, frame);
+    } else if app.mode == Mode::Search {
+        crate::search::draw(app, frame);
     } else if app.mode == Mode::Switcher {
         draw_switcher(app, frame);
     } else if let (Mode::Viewer, Some(v)) = (app.mode, &app.viewer) {

@@ -10,6 +10,7 @@ mod keymap;
 mod markdown;
 mod media;
 mod render;
+mod search;
 mod settings;
 mod theme;
 mod view;
@@ -29,7 +30,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, RwLock, RwLockReadGuard};
 
-use digcord_model::{ReactionEmoji, Snowflake, channel_kind};
+use digcord_model::{Message, ReactionEmoji, SearchQuery, Snowflake, channel_kind};
 use digcord_store::{State, TreeKind};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{DefaultTerminal, Frame};
@@ -76,6 +77,20 @@ pub enum UiEvent {
         name: String,
         theme: Box<Theme>,
     },
+    /// `Action::Search` / `Action::LoadPins` yanıtı: isabetler (en alakalıdan başlayarak) ve
+    /// sunucunun bildirdiği toplam. `seq` isteğin sırası; eskimiş yanıtlar yok sayılır.
+    SearchResults {
+        seq: u64,
+        total: u64,
+        hits: Vec<Message>,
+    },
+    /// Arama/sabitlenenler başarısız oldu ya da dizin hazır değil (sonuç ekranında gösterilir).
+    SearchFailed {
+        seq: u64,
+        error: String,
+    },
+    /// `Action::JumpTo` mesajı getiremedi; bekleyen atlama iptal edilir.
+    JumpFailed(String),
 }
 
 /// Bağlantı durumu (durum çubuğunda gösterilir).
@@ -156,6 +171,29 @@ pub enum Action {
         guild: Option<Snowflake>,
         channel: Snowflake,
         archived: bool,
+    },
+    /// `:search`: tek arama isteği. `guild: Some` sunucu, `None` DM kanalı (`channel`) araması.
+    /// `channel` komutun verildiği kanaldır; `offset` sonuç sayfasının başlangıcı.
+    Search {
+        seq: u64,
+        guild: Option<Snowflake>,
+        channel: Snowflake,
+        query: SearchQuery,
+        offset: u32,
+    },
+    /// `:pins`: kanalın sabitlenmiş mesajlarını iste.
+    LoadPins {
+        seq: u64,
+        guild: Option<Snowflake>,
+        channel: Snowflake,
+    },
+    /// Yüklü olmayan bir mesaja atla: kanalı aç ve mesajın çevresini (`around`) getir.
+    /// Gelince TUI mesaja kaydırır. `previous`: bırakılan kanal (penceresi kırpılabilir).
+    JumpTo {
+        guild: Option<Snowflake>,
+        channel: Snowflake,
+        message: Snowflake,
+        previous: Option<Snowflake>,
     },
     /// Panoya kopyala.
     Copy(String),
@@ -398,6 +436,11 @@ pub struct App {
     keys: Keymap,
     /// `:settings` ekranı (`Mode::Settings`).
     settings: settings::State,
+    /// `:search` / `:pins` sonuç ekranı (`Mode::Search`).
+    search: Option<search::SearchView>,
+    search_seq: u64,
+    /// Store'a gelmesi beklenen atlama hedefi: (kanal, mesaj).
+    pending_jump: Option<(Snowflake, Snowflake)>,
 }
 
 impl App {
@@ -434,6 +477,9 @@ impl App {
             theme: Theme::default(),
             keys: Keymap::default(),
             settings: settings::State::default(),
+            search: None,
+            search_seq: 0,
+            pending_jump: None,
         }
     }
 
@@ -521,6 +567,24 @@ impl App {
             }
             UiEvent::StoreChanged => {
                 self.shared.dirty.store(false, Ordering::Release);
+                self.apply_jump();
+                None
+            }
+            UiEvent::SearchResults { seq, total, hits } => {
+                if let Some(v) = self.search.as_mut().filter(|v| v.seq() == seq) {
+                    v.set_results(total, hits);
+                }
+                None
+            }
+            UiEvent::SearchFailed { seq, error } => {
+                if let Some(v) = self.search.as_mut().filter(|v| v.seq() == seq) {
+                    v.set_error(error);
+                }
+                None
+            }
+            UiEvent::JumpFailed(text) => {
+                self.pending_jump = None;
+                self.notice = Some(text);
                 None
             }
             UiEvent::Notice(text) => {
@@ -592,6 +656,7 @@ impl App {
             compose::Mode::ConfirmDelete(id) => return self.confirm_key(key, id),
             compose::Mode::Viewer => return self.viewer_key(key),
             compose::Mode::Settings => return self.settings_key(key),
+            compose::Mode::Search => return self.search_key(key),
             compose::Mode::Normal => {}
         }
         let act = self.keys.lookup(Scope::Normal, &key)?;
@@ -614,7 +679,19 @@ impl App {
             Act::MoveUp => self.move_up(1),
             Act::PageDown => self.scroll_down(half_page),
             Act::PageUp => self.scroll_up(half_page),
-            Act::ScrollBottom => self.scroll = Scroll::default(),
+            Act::ScrollBottom => {
+                self.scroll = Scroll::default();
+                // Eski bir mesaja atlanmışsa güncel mesajlar yeniden yüklenir.
+                if let Some(o) = self.open
+                    && self.shared.read().is_detached(o.channel)
+                {
+                    return Some(Action::OpenChannel {
+                        guild: o.guild,
+                        channel: o.channel,
+                        previous: None,
+                    });
+                }
+            }
             Act::Activate => {
                 // Mesaj panelinde Enter, SELECT'e girer (`l` girmez).
                 if key.code == KeyCode::Enter

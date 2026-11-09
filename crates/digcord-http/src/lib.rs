@@ -9,7 +9,9 @@ pub mod ratelimit;
 use std::fmt::Write as _;
 use std::time::Duration;
 
-use digcord_model::{ClientProperties, Message, ReactionEmoji, Snowflake, ThreadList, Token};
+use digcord_model::{
+    ClientProperties, Message, ReactionEmoji, SearchPage, SearchQuery, Snowflake, ThreadList, Token,
+};
 use reqwest::header::{self, HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Method, StatusCode};
 use serde::Deserialize;
@@ -37,6 +39,56 @@ pub fn forum_threads_path(forum: Snowflake, limit: u8) -> String {
 /// Arşivli herkese açık thread'ler için yol.
 pub fn archived_threads_path(channel: Snowflake, limit: u8) -> String {
     format!("/channels/{channel}/threads/archived/public?limit={limit}")
+}
+
+/// Aramanın kapsamı: bir sunucu ya da tek bir (DM) kanal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchScope {
+    Guild(Snowflake),
+    Channel(Snowflake),
+}
+
+/// Arama yolu (sorgu dahil): `GET /guilds/{g}/messages/search?...` ya da
+/// `GET /channels/{c}/messages/search?...` (belgesiz, doğrulanmadı: PROTOCOL_NOTES §4.5).
+pub fn search_path(scope: SearchScope, query: &SearchQuery, offset: u32) -> String {
+    let mut path = match scope {
+        SearchScope::Guild(g) => format!("/guilds/{g}/messages/search?"),
+        SearchScope::Channel(c) => format!("/channels/{c}/messages/search?"),
+    };
+    let mut first = true;
+    let mut param = |path: &mut String, k: &str, v: &str| {
+        if !first {
+            path.push('&');
+        }
+        first = false;
+        path.push_str(k);
+        path.push('=');
+        path.push_str(v);
+    };
+    if !query.content.is_empty() {
+        param(&mut path, "content", &percent_encode(&query.content));
+    }
+    if let Some(a) = query.author {
+        param(&mut path, "author_id", &a.to_string());
+    }
+    if let Some(c) = query.channel {
+        param(&mut path, "channel_id", &c.to_string());
+    }
+    for h in &query.has {
+        param(&mut path, "has", h.as_param());
+    }
+    param(&mut path, "offset", &offset.to_string());
+    path
+}
+
+/// Arama isteğinin sonucu.
+#[derive(Debug)]
+pub enum SearchOutcome {
+    Results(SearchPage),
+    /// 202: arama dizini hazır değil. Otomatik yeniden denenmez; kullanıcı tekrar dener.
+    NotReady {
+        retry_after: Option<Duration>,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -183,6 +235,52 @@ impl Http {
         };
         let resp = self.send(Method::GET, &path, page, None).await?;
         Ok(resp.json().await?)
+    }
+
+    /// `GET /channels/{id}/messages?around=<id>&limit=<n>` (belgeli): `around` çevresindeki
+    /// mesajlar, en yeniden en eskiye.
+    pub async fn get_messages_around(
+        &self,
+        page: Page,
+        around: Snowflake,
+        limit: u8,
+    ) -> Result<Vec<Message>, HttpError> {
+        let path = format!(
+            "/channels/{}/messages?around={around}&limit={limit}",
+            page.channel
+        );
+        let resp = self.send(Method::GET, &path, page, None).await?;
+        Ok(resp.json().await?)
+    }
+
+    /// Kullanıcı tarafından başlatılan tek arama isteği. 202 yanıtı [`SearchOutcome::NotReady`].
+    pub async fn search_messages(
+        &self,
+        page: Page,
+        scope: SearchScope,
+        query: &SearchQuery,
+        offset: u32,
+    ) -> Result<SearchOutcome, HttpError> {
+        let path = search_path(scope, query, offset);
+        let resp = self.send(Method::GET, &path, page, None).await?;
+        let status = resp.status();
+        let body: Value = resp.json().await.map_err(|_| HttpError::BadResponse)?;
+        if status == StatusCode::ACCEPTED {
+            let retry_after = digcord_model::parse_retry_after(&body).and_then(secs_to_duration);
+            return Ok(SearchOutcome::NotReady { retry_after });
+        }
+        digcord_model::parse_search_response(&body)
+            .map(SearchOutcome::Results)
+            .ok_or(HttpError::BadResponse)
+    }
+
+    /// `GET /channels/{id}/pins` (belgeli): sabitlenmiş mesajlar. Yeni sayfalı biçim de
+    /// ayrıştırılır (doğrulanmadı, PROTOCOL_NOTES §4.5).
+    pub async fn pins(&self, page: Page) -> Result<Vec<Message>, HttpError> {
+        let path = format!("/channels/{}/pins", page.channel);
+        let resp = self.send(Method::GET, &path, page, None).await?;
+        let body: Value = resp.json().await.map_err(|_| HttpError::BadResponse)?;
+        digcord_model::parse_pins(&body).ok_or(HttpError::BadResponse)
     }
 
     /// Forum/medya kanalının aktif gönderileri: `GET /channels/{f}/threads/search?...`
@@ -1006,5 +1104,108 @@ mod tests {
         assert_eq!(percent_encode("pepe:555"), "pepe:555");
         assert_eq!(percent_encode("a b/c"), "a%20b%2Fc");
         assert_eq!(percent_encode("A-z_0.~"), "A-z_0.~");
+    }
+    #[test]
+    fn search_paths_encode_and_filter() {
+        use digcord_model::Has;
+        let q = SearchQuery {
+            content: "çay & şeker #1".into(),
+            author: Some(Snowflake(5)),
+            channel: Some(Snowflake(9)),
+            has: vec![Has::Link, Has::Image],
+        };
+        assert_eq!(
+            search_path(SearchScope::Guild(Snowflake(7)), &q, 25),
+            "/guilds/7/messages/search?content=%C3%A7ay%20%26%20%C5%9Feker%20%231&author_id=5&channel_id=9&has=link&has=image&offset=25"
+        );
+        let only_has = SearchQuery {
+            has: vec![Has::File],
+            ..SearchQuery::default()
+        };
+        assert_eq!(
+            search_path(SearchScope::Channel(Snowflake(3)), &only_has, 0),
+            "/channels/3/messages/search?has=file&offset=0"
+        );
+        assert_eq!(
+            ratelimit::route_key("GET", &search_path(SearchScope::Guild(Snowflake(7)), &q, 0)),
+            "GET /guilds/7/messages/search"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_returns_hits_and_total() {
+        let body = format!(r#"{{"total_results":31,"messages":[[{ONE}],[{ONE}]]}}"#);
+        let (base, srv) = server(vec![reply("200 OK", "", &body)]).await;
+        let q = SearchQuery {
+            content: "selam".into(),
+            ..SearchQuery::default()
+        };
+        let out = http(&base)
+            .search_messages(PAGE, SearchScope::Guild(Snowflake(7)), &q, 25)
+            .await
+            .expect("arama");
+        let SearchOutcome::Results(page) = out else {
+            panic!("sonuç bekleniyordu");
+        };
+        assert_eq!(page.total, 31);
+        assert_eq!(page.hits.len(), 2);
+        let req = srv.await.expect("sunucu").remove(0);
+        assert!(
+            req.starts_with("GET /guilds/7/messages/search?content=selam&offset=25 "),
+            "{req}"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_202_is_not_ready_without_retry_loop() {
+        // Tek yanıt hazırlanır: otomatik yeniden deneme olsaydı sunucu bağlantı beklerdi.
+        let (base, srv) = server(vec![reply(
+            "202 Accepted",
+            "",
+            r#"{"message":"Index not yet available. Try again later","code":110000,"retry_after":2}"#,
+        )])
+        .await;
+        let q = SearchQuery {
+            content: "x".into(),
+            ..SearchQuery::default()
+        };
+        let out = http(&base)
+            .search_messages(PAGE, SearchScope::Channel(Snowflake(42)), &q, 0)
+            .await
+            .expect("202 hata değil");
+        match out {
+            SearchOutcome::NotReady { retry_after } => {
+                assert_eq!(retry_after, Some(Duration::from_secs(2)));
+            }
+            SearchOutcome::Results(_) => panic!("hazır değil bekleniyordu"),
+        }
+        assert_eq!(srv.await.expect("sunucu").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn search_bad_body_is_error() {
+        let (base, _srv) = server(vec![reply("200 OK", "", r#"{"foo":1}"#)]).await;
+        let q = SearchQuery::default();
+        let err = http(&base)
+            .search_messages(PAGE, SearchScope::Channel(Snowflake(42)), &q, 0)
+            .await
+            .expect_err("bozuk gövde");
+        assert!(matches!(err, HttpError::BadResponse));
+    }
+
+    #[tokio::test]
+    async fn fetches_around_and_pins() {
+        let (base, srv) = server(vec![reply("200 OK", "", MSG), reply("200 OK", "", MSG)]).await;
+        let h = http(&base);
+        let msgs = h
+            .get_messages_around(PAGE, Snowflake(10), 50)
+            .await
+            .expect("around");
+        assert_eq!(msgs.len(), 1);
+        let pins = h.pins(PAGE).await.expect("pins");
+        assert_eq!(pins.len(), 1);
+        let reqs = srv.await.expect("sunucu");
+        assert!(reqs[0].starts_with("GET /channels/42/messages?around=10&limit=50 "));
+        assert!(reqs[1].starts_with("GET /channels/42/pins "));
     }
 }

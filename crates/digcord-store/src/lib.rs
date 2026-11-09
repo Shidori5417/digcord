@@ -59,6 +59,10 @@ struct MemberInfo {
 struct ChannelMessages {
     messages: VecDeque<Message>,
     start_reached: bool,
+    /// Pencere kanalın en yeni mesajlarını içermiyor (aramadan/sabitlenenden eski bir mesaja
+    /// atlandı). Bu durumda gateway'den gelen yeni mesajlar pencereye eklenmez (arada boşluk
+    /// kalmasın); kanal yeniden açılınca ilk sayfa çekilip pencere değiştirilir.
+    detached: bool,
 }
 
 #[derive(Default)]
@@ -297,7 +301,7 @@ impl State {
             }
             dm = is_dm(ch.kind);
         }
-        if let Some(cm) = self.msgs.get_mut(&msg.channel_id) {
+        if let Some(cm) = self.msgs.get_mut(&msg.channel_id).filter(|c| !c.detached) {
             insert_sorted(&mut cm.messages, msg);
             if cm.messages.len() > HARD_CAP {
                 cm.messages.pop_front();
@@ -358,6 +362,7 @@ impl State {
                     ChannelMessages {
                         messages: asc.into(),
                         start_reached: reached,
+                        detached: false,
                     },
                 );
             }
@@ -375,8 +380,77 @@ impl State {
         }
     }
 
-    /// Kanaldan çıkınca: yalnızca en yeni `DEFAULT_WINDOW` mesaj kalır.
+    /// `GET /channels/{id}/messages?around=` sonucu (`messages` en yeniden eskiye). Pencereyi
+    /// bozmadan birleştirir:
+    /// - yeni parça mevcut pencereyle örtüşüyorsa ikisinin birleşimi tutulur, kopyalar tek kalır
+    ///   (yeni veri eskinin yerine geçer);
+    /// - örtüşmüyorsa pencere yenisiyle değiştirilir (arada boşluk olmaz).
+    ///
+    /// Sonuç kanalın en yeni mesajını içermiyorsa pencere "ayrık" işaretlenir ([`State::is_detached`]).
+    /// En yeni mesaj, kanalın bilinen `last_message_id`'sine bakılarak; bilinmiyorsa istenenden
+    /// az mesaj dönmesine bakılarak anlaşılır. Başlangıca ulaşıldığı bilinemediği için
+    /// `start_reached` yeni pencerede `false` bırakılır (eski sayfa isteği boş dönünce düzelir).
+    pub fn around_loaded(
+        &mut self,
+        channel: Snowflake,
+        requested_limit: usize,
+        messages: Vec<Message>,
+    ) {
+        self.version += 1;
+        for m in &messages {
+            self.record_author(m);
+        }
+        let mut asc = messages;
+        asc.sort_by_key(|m| m.id);
+        asc.dedup_by_key(|m| m.id);
+        let (Some(first), Some(last)) = (asc.first().map(|m| m.id), asc.last().map(|m| m.id))
+        else {
+            return;
+        };
+        let at_latest = match self.channels.get(&channel).and_then(|c| c.last_message_id) {
+            Some(latest) => last >= latest,
+            None => asc.len() < requested_limit,
+        };
+        if let Some(cm) = self.msgs.get_mut(&channel)
+            && let (Some(old_first), Some(old_last)) = (
+                cm.messages.front().map(|m| m.id),
+                cm.messages.back().map(|m| m.id),
+            )
+            && last >= old_first
+            && first <= old_last
+        {
+            for m in asc {
+                match cm.messages.binary_search_by_key(&m.id, |x| x.id) {
+                    Ok(i) => cm.messages[i] = m,
+                    Err(i) => cm.messages.insert(i, m),
+                }
+            }
+            cm.detached = cm.detached && !at_latest;
+            return;
+        }
+        self.msgs.insert(
+            channel,
+            ChannelMessages {
+                messages: asc.into(),
+                start_reached: false,
+                detached: !at_latest,
+            },
+        );
+    }
+
+    /// Pencere kanalın en yeni mesajlarını içermiyor (bkz. [`State::around_loaded`]).
+    pub fn is_detached(&self, channel: Snowflake) -> bool {
+        self.msgs.get(&channel).is_some_and(|c| c.detached)
+    }
+
+    /// Kanaldan çıkınca: yalnızca en yeni `DEFAULT_WINDOW` mesaj kalır. Ayrık pencere (eski
+    /// bir mesaja atlanmıştı) en yeni mesajları içermediğinden tamamen atılır.
     pub fn trim_channel(&mut self, channel: Snowflake) {
+        if self.is_detached(channel) {
+            self.msgs.remove(&channel);
+            self.version += 1;
+            return;
+        }
         let Some(cm) = self.msgs.get_mut(&channel) else {
             return;
         };
@@ -439,8 +513,27 @@ impl State {
         self.msgs.get(&channel).is_some_and(|c| c.start_reached)
     }
 
+    /// Kanalın en yeni mesajlarını içeren bir pencere yüklü (ayrık pencere sayılmaz).
     pub fn is_loaded(&self, channel: Snowflake) -> bool {
-        self.msgs.contains_key(&channel)
+        self.msgs.get(&channel).is_some_and(|c| !c.detached)
+    }
+
+    /// Bilinen kullanıcılar arasında kullanıcı adı ya da görünen ada göre ilk eşleşme
+    /// (büyük/küçük harf duyarsız; `@` öneki yok sayılır).
+    pub fn find_user_by_name(&self, name: &str) -> Option<&User> {
+        let name = name.trim_start_matches('@').to_lowercase();
+        if name.is_empty() {
+            return None;
+        }
+        let mut found: Vec<&User> = self
+            .users
+            .values()
+            .filter(|u| {
+                u.username.to_lowercase() == name || u.display_name().to_lowercase() == name
+            })
+            .collect();
+        found.sort_by_key(|u| u.id);
+        found.into_iter().next()
     }
 
     pub fn user(&self, id: Snowflake) -> Option<&User> {
