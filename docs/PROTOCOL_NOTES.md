@@ -262,6 +262,37 @@ Ses en zor ve en kırılgan kısım; ayrı aşamada (bkz. ROADMAP) ele alınır.
 - Jitter buffer, kullanıcı başına ses seviyesi, push-to-talk / ses algılama (VAD).
 - Gürültü bastırma (opsiyonel, sonra): `nnnoiseless` (RNNoise'un Rust portu).
 
+### 7.1 Aşama 6 uygulaması (hepsi belgelere + açık kaynak referanslara göre; ⚠️ resmi istemci trafiğiyle karşılaştırılmadı)
+
+Kaynaklar: Discord geliştirici belgeleri (voice connections, opcodes), DAVE beyaz kağıdı
+v1.1.4 (CC BY-NC-SA — kopyalanmadı, okundu), libdave (MIT), davey (MIT, sadece okundu;
+bağımlılık değil), discord.js voice (Apache-2.0). Ayrıntılı byte düzenleri kodda ve testlerde.
+
+- **op 4** (ana gateway): `{guild_id, channel_id, self_mute, self_deaf, self_video:false}`.
+  Resmi istemcinin ek alanları (`flags` vb.) ⚠️ doğrulanmadı.
+- **DM araması:** op 4'te `guild_id: null`; ses gateway'inde `server_id` = kanal id'si ⚠️
+  doğrulanmadı. Aramayı başlatınca karşı tarafı çaldırma (ring) uç noktası **kullanılmıyor**;
+  `:call` sadece katılır.
+- **Ses gateway'i:** `wss://{endpoint}/?v=8`, Identify'da `max_dave_protocol_version: 1`,
+  heartbeat `{t, seq_ack}`, resume `{server_id, session_id, token, seq_ack}`. Bağlantı
+  başlıkları: `Origin: https://discord.com`, User-Agent `ClientProperties`'ten ⚠️ doğrulanmadı.
+- **UDP:** 74 baytlık IP keşfi; 5 sn'de bir 8 baytlık canlı tutma (discord.js davranışı,
+  belgelerde yok ⚠️); RTP PT 0x78; taşıma nonce'u 4 bayt sayaç (0'dan başlıyor; discord.js 1'den
+  — alıcı sayıyı yorumlamadığı için fark etmez).
+- **Şifreleme kipi:** `aead_aes256_gcm_rtpsize` tercih, yoksa `aead_xchacha20_poly1305_rtpsize`.
+- **DAVE:** ciphersuite 2 (P-256/AES-128-GCM/SHA-256), kimlik = kullanıcı id'si 8 bayt BE,
+  grup id = kanal id'si 8 bayt BE, exporter etiketi `Discord Secure Frames v0` + kullanıcı id'si
+  8 bayt **LE**, 16 bayt. op 26 çıplak KeyPackage, op 28 commit + çıplak Welcome (beyaz kağıt
+  "MLSMessage" diyor; libdave ve davey çıplak gönderiyor — uygulamalar izlendi ⚠️).
+  Kare: AES-128-GCM, 8 baytlık etiket, nonce LE bayt 8..12, ULEB128 nonce, `0xFAFA`.
+  Opus sessizlik karesi (`F8 FF FE`) DAVE'siz gider.
+- **Geçişler:** op 21/22/23/24 ve 31 kurtarma (geçersiz commit/welcome → op 31 + yeni anahtar
+  paketi). Eski epoch anahtarları 10 sn geçerli; tekrar penceresi 1000.
+- **Kapanış:** 4006/4009 → ana gateway'den yeniden katılma (bir kez); 4014/4017/4021/4022 ve
+  diğer resume edilemezler → bağlantı biter; diğerleri → resume (en fazla 5).
+- **Test durumu:** çevrimdışı birim/entegrasyon testleri (iki istemcinin tam DAVE akışı, sahte
+  sunucuyla WS+UDP). **Canlı bağlantı hiç denenmedi**; kabul testi bekliyor.
+
 ## Kaynaklar (doğrulanacak)
 
 - Discord resmi geliştirici dokümanları (bot API'si; kullanıcı API'sine çoğu benzer).

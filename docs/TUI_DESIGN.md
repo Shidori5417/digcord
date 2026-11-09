@@ -58,7 +58,12 @@ Vim istemeyenler için config'de `keymap = "simple"` (her zaman yazma modu, ok t
 | `o` | Resimli mesajda tam ekran görüntüleyici; orada `o` harici açar (xdg-open), `←/→` (`h/l`) resimler arası, `Esc` kapatır. Resimsiz mesajda ilk bağlantıyı/eki harici açar |
 | `y` | Mesaj metnini kopyala |
 | `Ctrl+M` | Üye listesi aç/kapat |
-| `Ctrl+Shift+M` / `Ctrl+Shift+D` | Mikrofon / kulaklık sessize al |
+| `Ctrl+Shift+M` / `Ctrl+Shift+D` | Mikrofon / kulaklık sessize al (kitty klavye protokolü gerekir; yoksa `:mute` / `:deaf`) |
+| `Enter` (ses kanalında) | Ses kanalına katıl |
+| `Ctrl+Space` (basılı tut) | Bas-konuş (`voice.mode = "ptt"`; kitty klavye protokolü gerekir) |
+| `:leave` / `:mute` / `:deaf` | Ses kanalından ayrıl / mikrofon / kulaklık |
+| `:call` | Açık DM'de aramaya katıl (çaldırmaz) |
+| `:vol <ad> <0-200>` | Ses kanalındaki kişinin ses seviyesi (yüzde) |
 | `Alt+↑/↓` | Okunmamış önceki/sonraki kanal (sessizdekiler atlanır) |
 | `q` / `:q` | Çıkış |
 
@@ -98,16 +103,20 @@ Tüm kısayollar `config.toml` içinden değiştirilebilir.
 
 ## Ses arayüzü
 
-- Kanal ağacında ses kanalındaki kullanıcılar; konuşan kişi vurgulanır (speaking olayları).
-- Alt çubuk: bağlı kanal, mikrofon/kulaklık durumu, gecikme, şifreleme durumu (DAVE ✓).
-- Kullanıcıya tıklama/seçme → ses seviyesi kaydırıcısı, yerel susturma.
-- Ses ayarları penceresi: giriş/çıkış cihazı, PTT tuşu, VAD eşiği.
+- Kanal ağacında ses kanalındaki kullanıcılar; konuşan kişi yeşil, susturma simgeleri
+  (`🎤✕`, `🎧✕`). ✅
+- Durum çubuğu: bağlı kanal, aşama (katılınıyor/bağlanıyor/bağlı), "uçtan uca" (DAVE),
+  mikrofon/kulaklık durumu. ✅ Gecikme gösterimi yok.
+- Kullanıcı ses seviyesi `:vol` ile. ✅ Kaydırıcı ve yerel susturma yok (sonra).
+- Ses ayarları penceresi (cihaz seçimi, PTT tuşu, VAD eşiği) yok: varsayılan aygıtlar, sabit
+  Ctrl+Space ve sabit eşik. (sonra)
 
 ## Config
 
 `~/.config/digcord/config.toml`
 
-**Şu an desteklenenler:** `ui.show_member_list`, `ui.images`, `ui.image_max_rows`, `behavior.send_typing`,
+**Şu an desteklenenler:** `ui.show_member_list`, `ui.images`, `ui.image_max_rows`, `voice.mode`
+(`"vad"`, `"ptt"`), `voice.jitter_ms`, `behavior.send_typing`,
 `behavior.send_read_receipts`, `notifications.enabled`, `notifications.on` (`"mention"`, `"dm"`,
 `"all"`), `client.build_number`, `client.chrome_major`. Diğer anahtarlar okunur ama yok sayılır
 (açılışta uyarı); bozuk dosyada uygulama açılmaz ve hatayı gösterir.
@@ -134,6 +143,7 @@ on = ["mention", "dm"]
 input_device = "default"
 output_device = "default"
 mode = "vad"             # "vad" | "ptt"
+jitter_ms = 60           # çalmadan önce biriktirilen ses
 ptt_key = "ctrl+space"
 
 [client]

@@ -69,16 +69,19 @@ resimli kanalda kaydırma takılmıyor.
 - [ ] Canlı test: Kitty, WezTerm, Konsole, Alacritty; CDN isteklerinin resmi istemciyle
   karşılaştırılması (PROTOCOL_NOTES §6.1).
 
-## Aşama 6 — Ses (DAVE ile)
+## Aşama 6 — Ses (DAVE ile) ⏳ (kod tamam, canlı kabul testi bekliyor)
 Alt adımlar sırayla:
-1. Ses gateway'i + UDP + IP keşfi + transport şifreleme (birim testleri).
-2. **DAVE**: MLS el sıkışması ve kare şifreleme — libdave/beyaz kağıt test vektörleriyle birim testleri.
-3. Opus + cpal: sadece dinleme.
-4. Konuşma: VAD/PTT, mikrofon/kulaklık susturma.
-5. Kullanıcı başına ses seviyesi, konuşan göstergesi, jitter buffer ayarı.
+1. [x] Ses gateway'i + UDP + IP keşfi + transport şifreleme (birim testleri).
+2. [x] **DAVE**: MLS el sıkışması ve kare şifreleme — test vektörleri (davey ratchet vektörü +
+   bağımsız hesaplanmış çerçeve vektörleri; libdave'de hex vektör yok) ve iki istemcili tam akış testi.
+3. [x] Opus + cpal: dinleme (jitter buffer, karıştırıcı).
+4. [x] Konuşma: VAD/PTT (PTT kitty klavye protokolüyle), mikrofon/kulaklık susturma.
+5. [x] Kullanıcı başına ses seviyesi (`:vol`), konuşan göstergesi, jitter buffer ayarı.
 
 **Kabul:** Sunucu ses kanalında ve DM aramasında karşılıklı konuşulabiliyor, bağlantı 4017 ile
 reddedilmiyor, 30 dk kesintisiz çalışıyor, ses thread'i CPU'nun < %3'ünü kullanıyor.
+- [x] Çevrimdışı: ses yolu kare başına ~175 µs (1 gönderen + 3 dinlenen, tek çekirdeğin %0,9'u).
+- [ ] Canlı test: sunucu ses kanalı, DM araması, 4017 yok, 30 dk; protokol karşılaştırması (PROTOCOL_NOTES §7.1).
 
 ## Aşama 7 — Cila
 - Temalar, tam kısayol özelleştirme, ayarlar ekranı.
