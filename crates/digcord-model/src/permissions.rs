@@ -18,6 +18,9 @@ impl Permissions {
     pub const VIEW_CHANNEL: Self = Self(1 << 10);
     pub const SEND_MESSAGES: Self = Self(1 << 11);
     pub const READ_MESSAGE_HISTORY: Self = Self(1 << 16);
+    pub const ADD_REACTIONS: Self = Self(1 << 6);
+    pub const MANAGE_MESSAGES: Self = Self(1 << 13);
+    pub const ATTACH_FILES: Self = Self(1 << 15);
     pub const CONNECT: Self = Self(1 << 20);
     pub const ALL: Self = Self(u64::MAX);
 

@@ -48,6 +48,7 @@ struct GuildData {
     my_roles: Vec<Snowflake>,
     channel_ids: Vec<Snowflake>,
     tree: Vec<TreeItem>,
+    emojis: Vec<digcord_model::CustomEmoji>,
 }
 
 struct MemberInfo {
@@ -72,6 +73,12 @@ pub struct State {
     dms: Vec<Snowflake>,
     members: HashMap<(Snowflake, Snowflake), MemberInfo>,
     msgs: HashMap<Snowflake, ChannelMessages>,
+    /// Gönderilmekte olan iyimser mesajlar: nonce → (kanal, geçici id).
+    pending: HashMap<String, (Snowflake, Snowflake)>,
+    /// Gönderilemeyen iyimser mesajların geçici id'leri.
+    failed: HashSet<Snowflake>,
+    /// Kanal başına yazanlar: (kullanıcı, bitiş zamanı Unix saniyesi).
+    typing: HashMap<Snowflake, Vec<(Snowflake, u64)>>,
 }
 
 fn is_voice(kind: u8) -> bool {
@@ -165,12 +172,14 @@ impl State {
                 data.large = old.large;
                 data.roles = old.roles;
                 data.channel_ids = old.channel_ids;
+                data.emojis = old.emojis;
             }
         }
         if !guild.unavailable {
             data.large = guild.large;
             data.roles = guild.roles.clone();
             data.channel_ids = guild.channels.iter().map(|c| c.id).collect();
+            data.emojis = guild.emojis.clone();
             for c in &guild.channels {
                 let mut c = c.clone();
                 c.guild_id = Some(guild.id);
@@ -243,6 +252,8 @@ impl State {
 
     pub fn message_create(&mut self, msg: Message) {
         self.version += 1;
+        self.resolve_pending(&msg);
+        self.stop_typing(msg.channel_id, msg.author.id);
         self.record_author(&msg);
         let mut dm = false;
         if let Some(ch) = self.channels.get_mut(&msg.channel_id) {
@@ -559,6 +570,8 @@ fn insert_sorted(deque: &mut VecDeque<Message>, msg: Message) {
         _ => deque.push_back(msg),
     }
 }
+
+mod compose;
 
 #[cfg(test)]
 mod tests;

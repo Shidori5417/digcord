@@ -301,6 +301,9 @@ impl Controller {
             E::ChannelDelete(c) => self.write(|st| st.remove_channel(c.id)),
             E::GuildCreate(g) => self.write(|st| st.upsert_guild(&g)),
             E::GuildMembersChunk(c) => self.write(|st| st.add_members(&c)),
+            E::ReactionAdd(r) => self.write(|st| st.reaction_add(&r)),
+            E::ReactionRemove(r) => self.write(|st| st.reaction_remove(&r)),
+            E::TypingStart(t) => self.write(|st| st.typing_start(&t)),
         }
     }
 

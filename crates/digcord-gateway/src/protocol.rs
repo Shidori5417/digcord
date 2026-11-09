@@ -5,8 +5,8 @@
 use std::time::Duration;
 
 use digcord_model::{
-    Channel, ClientProperties, Guild, GuildMembersChunk, Message, MessageDelete, Ready, Snowflake,
-    Token,
+    Channel, ClientProperties, Guild, GuildMembersChunk, Message, MessageDelete, ReactionEvent,
+    Ready, Snowflake, Token, TypingStart,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -85,6 +85,9 @@ pub enum GatewayEvent {
     ChannelDelete(Box<Channel>),
     GuildCreate(Box<Guild>),
     GuildMembersChunk(GuildMembersChunk),
+    ReactionAdd(ReactionEvent),
+    ReactionRemove(ReactionEvent),
+    TypingStart(TypingStart),
 }
 
 #[derive(Deserialize)]
@@ -155,6 +158,9 @@ fn parse_event(t: &str, d: &str) -> Dispatch {
         "CHANNEL_DELETE" => de(t, d).map(|c| E::ChannelDelete(Box::new(c))),
         "GUILD_CREATE" => de(t, d).map(|g| E::GuildCreate(Box::new(g))),
         "GUILD_MEMBERS_CHUNK" => de(t, d).map(E::GuildMembersChunk),
+        "MESSAGE_REACTION_ADD" => de(t, d).map(E::ReactionAdd),
+        "MESSAGE_REACTION_REMOVE" => de(t, d).map(E::ReactionRemove),
+        "TYPING_START" => de(t, d).map(E::TypingStart),
         _ => None,
     };
     event.map_or(Dispatch::Other, Dispatch::Event)
@@ -533,6 +539,23 @@ mod tests {
         assert!(matches!(
             parse(chunk).expect("chunk"),
             Event::Dispatch { dispatch: Dispatch::Event(GatewayEvent::GuildMembersChunk(c)), .. } if c.members[0].nick.as_deref() == Some("N")
+        ));
+    }
+
+    #[test]
+    fn parses_reactions_and_typing() {
+        let add = r#"{"t":"MESSAGE_REACTION_ADD","s":8,"op":0,"d":{"user_id":"1","channel_id":"2","message_id":"3","emoji":{"id":null,"name":"👍"}}}"#;
+        assert!(matches!(
+            parse(add).expect("ekle"),
+            Event::Dispatch { dispatch: Dispatch::Event(GatewayEvent::ReactionAdd(r)), .. } if r.message_id == Snowflake(3)
+        ));
+        let typing = r#"{"t":"TYPING_START","s":9,"op":0,"d":{"channel_id":"2","user_id":"1","timestamp":1767268800}}"#;
+        assert!(matches!(
+            parse(typing).expect("yazıyor"),
+            Event::Dispatch {
+                dispatch: Dispatch::Event(GatewayEvent::TypingStart(_)),
+                ..
+            }
         ));
     }
 
