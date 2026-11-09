@@ -7,9 +7,10 @@ use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use digcord_gateway::{Command, Config, GatewayEvent, Update};
-use digcord_http::{Http, HttpError, Page};
+use digcord_http::{Http, HttpError, NewMessage, Page};
 use digcord_model::{
-    ClientProperties, DEFAULT_BUILD_NUMBER, DEFAULT_CHROME_MAJOR, Message, Ready, Snowflake, Token,
+    ClientProperties, DEFAULT_BUILD_NUMBER, DEFAULT_CHROME_MAJOR, Message, MessageDelete,
+    ReactionEmoji, Ready, Snowflake, Token,
 };
 use digcord_store::State;
 use digcord_tui::{Action, Shared, Status, UiEvent};
@@ -84,6 +85,9 @@ struct History {
     result: Result<Vec<Message>, HttpError>,
 }
 
+/// Ağ işinin sonucunu denetleyiciye (store'un tek yazarına) geri getiren iş.
+type Job = Box<dyn FnOnce(&mut Controller) + Send>;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Open {
     guild: Option<Snowflake>,
@@ -96,6 +100,9 @@ struct Controller {
     env: Env,
     updates_tx: mpsc::Sender<Update>,
     history_tx: mpsc::Sender<History>,
+    jobs_tx: mpsc::UnboundedSender<Job>,
+    /// Aynı milisaniyede üretilen nonce'lar çakışmasın diye.
+    nonce_seq: u64,
     session: Option<Session>,
     /// Girişten gelen token; READY gelince (geçerli olduğu kanıtlanınca) kaydedilir.
     unsaved: Option<Token>,
@@ -112,6 +119,226 @@ struct Controller {
 impl Controller {
     fn send(&self, ev: UiEvent) {
         let _ = self.ui.send(ev);
+    }
+
+    fn notice(&self, text: impl Into<String>) {
+        self.send(UiEvent::Notice(text.into()));
+    }
+
+    /// Ağ işini ayrı task'ta çalıştırır; sonucu `done` ile denetleyicide işlenir.
+    fn spawn<T: Send + 'static>(
+        &self,
+        work: impl std::future::Future<Output = T> + Send + 'static,
+        done: impl FnOnce(&mut Controller, T) + Send + 'static,
+    ) {
+        let tx = self.jobs_tx.clone();
+        tokio::spawn(async move {
+            let out = work.await;
+            let _ = tx.send(Box::new(move |c: &mut Controller| done(c, out)));
+        });
+    }
+
+    fn http(&self) -> Option<Arc<Http>> {
+        let http = self.session.as_ref().map(|s| s.http.clone());
+        if http.is_none() {
+            self.notice("Bağlı değil");
+        }
+        http
+    }
+
+    /// Şimdiki zamandan nonce snowflake'i (alt bitlerde sayaç).
+    fn next_nonce(&mut self) -> Snowflake {
+        let ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+        self.nonce_seq = (self.nonce_seq + 1) & 0x3F_FFFF;
+        Snowflake(Snowflake::from_timestamp_ms(ms).0 | self.nonce_seq)
+    }
+
+    fn send_message(&mut self, page: Page, content: String, reply_to: Option<Snowflake>) {
+        let Some(http) = self.http() else { return };
+        let nonce = self.next_nonce();
+        let pending = self.shared.read_state(|st| {
+            let me = st.me()?.clone();
+            let reply = reply_to.and_then(|id| st.find_message(page.channel, id).cloned());
+            Some(Message::pending(
+                nonce,
+                page.channel,
+                page.guild,
+                me,
+                content.clone(),
+                reply,
+            ))
+        });
+        if let Some(p) = pending {
+            self.write(|st| st.add_pending(p));
+        }
+        let key = nonce.to_string();
+        self.spawn(
+            async move {
+                let msg = NewMessage {
+                    content: &content,
+                    nonce,
+                    reply_to,
+                    attachments: Vec::new(),
+                };
+                http.create_message(page, &msg).await
+            },
+            move |c, result| match result {
+                Ok(m) => c.write(|st| st.message_create(m)),
+                Err(e) => {
+                    tracing::warn!("mesaj gönderilemedi: {e}");
+                    c.write(|st| st.mark_failed(&key));
+                    c.notice(format!("Gönderilemedi: {e}"));
+                }
+            },
+        );
+    }
+
+    fn retry(&mut self, page: Page, message: Snowflake) {
+        let found = self.shared.read_state(|st| {
+            let m = st.find_message(page.channel, message)?;
+            st.is_failed(message).then(|| {
+                (
+                    m.nonce.clone(),
+                    m.content.clone(),
+                    m.referenced_message.as_ref().map(|r| r.id),
+                )
+            })
+        });
+        let Some((nonce, content, reply_to)) = found else {
+            return;
+        };
+        if let Some(n) = nonce {
+            self.write(|st| st.discard_pending(&n));
+        }
+        self.send_message(page, content, reply_to);
+    }
+
+    fn edit_message(&mut self, page: Page, message: Snowflake, content: String) {
+        let Some(http) = self.http() else { return };
+        self.spawn(
+            async move { http.edit_message(page, message, &content).await },
+            |c, result| match result {
+                Ok(m) => c.write(|st| st.message_update(m)),
+                Err(e) => c.notice(format!("Düzenlenemedi: {e}")),
+            },
+        );
+    }
+
+    fn delete_message(&mut self, page: Page, message: Snowflake) {
+        // Hiç gönderilememiş iyimser mesaj: sadece yerelden kaldır.
+        let local = self.shared.read_state(|st| {
+            st.is_failed(message)
+                .then(|| {
+                    st.find_message(page.channel, message)
+                        .and_then(|m| m.nonce.clone())
+                })
+                .flatten()
+        });
+        if let Some(n) = local {
+            self.write(|st| st.discard_pending(&n));
+            return;
+        }
+        let Some(http) = self.http() else { return };
+        self.spawn(
+            async move { http.delete_message(page, message).await },
+            move |c, result| match result {
+                Ok(()) => c.write(|st| {
+                    st.message_delete(&MessageDelete {
+                        id: message,
+                        channel_id: page.channel,
+                        guild_id: page.guild,
+                    })
+                }),
+                Err(e) => c.notice(format!("Silinemedi: {e}")),
+            },
+        );
+    }
+
+    fn react(&mut self, page: Page, message: Snowflake, emoji: ReactionEmoji, add: bool) {
+        let Some(http) = self.http() else { return };
+        self.spawn(
+            async move {
+                if add {
+                    http.add_reaction(page, message, &emoji).await
+                } else {
+                    http.remove_reaction(page, message, &emoji).await
+                }
+            },
+            // Sayaç gateway'in MESSAGE_REACTION_* yankısıyla güncellenir.
+            |c, result| {
+                if let Err(e) = result {
+                    c.notice(format!("Tepki eklenemedi: {e}"));
+                }
+            },
+        );
+    }
+
+    fn typing(&self, page: Page) {
+        let Some(http) = self.session.as_ref().map(|s| s.http.clone()) else {
+            return;
+        };
+        tokio::spawn(async move {
+            if let Err(e) = http.typing(page).await {
+                tracing::debug!("yazıyor bildirimi gönderilemedi: {e}");
+            }
+        });
+    }
+
+    fn upload(&mut self, page: Page, path: std::path::PathBuf, content: String, max: u64) {
+        let Some(http) = self.http() else { return };
+        let nonce = self.next_nonce();
+        self.notice(format!("Yükleniyor: {}", path.display()));
+        self.spawn(
+            async move {
+                let filename = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .ok_or_else(|| "geçersiz dosya yolu".to_owned())?;
+                let read_path = path.clone();
+                let bytes = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
+                    let meta = std::fs::metadata(&read_path).map_err(|e| e.to_string())?;
+                    if meta.len() > max {
+                        return Err(format!("dosya çok büyük ({} MB sınırı)", max / 1024 / 1024));
+                    }
+                    std::fs::read(&read_path).map_err(|e| e.to_string())
+                })
+                .await
+                .map_err(|e| e.to_string())??;
+                let uploaded = http
+                    .upload_attachment(page, &filename, bytes)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let msg = NewMessage {
+                    content: &content,
+                    nonce,
+                    reply_to: None,
+                    attachments: vec![uploaded],
+                };
+                http.create_message(page, &msg)
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            |c, result: Result<Message, String>| match result {
+                Ok(m) => {
+                    c.write(|st| st.message_create(m));
+                    c.notice("Dosya gönderildi");
+                }
+                Err(e) => c.notice(format!("Yüklenemedi: {e}")),
+            },
+        );
+    }
+
+    fn copy(&self, text: String) {
+        self.spawn(
+            async move { tokio::task::spawn_blocking(move || copy_to_clipboard(&text)).await },
+            |c, result| match result {
+                Ok(Ok(())) => c.notice("Kopyalandı"),
+                Ok(Err(e)) => c.notice(format!("Kopyalanamadı: {e}")),
+                Err(e) => c.notice(format!("Kopyalanamadı: {e}")),
+            },
+        );
     }
 
     /// Store'a yazar; TUI'ye bekleyen bildirim yoksa "değişti" gönderir.
@@ -330,6 +557,44 @@ impl Controller {
                 self.open_channel(Open { guild, channel });
             }
             Action::LoadOlder { channel } => self.load_older(channel),
+            Action::SendMessage {
+                guild,
+                channel,
+                content,
+                reply_to,
+            } => self.send_message(Page { guild, channel }, content, reply_to),
+            Action::EditMessage {
+                guild,
+                channel,
+                message,
+                content,
+            } => self.edit_message(Page { guild, channel }, message, content),
+            Action::DeleteMessage {
+                guild,
+                channel,
+                message,
+            } => self.delete_message(Page { guild, channel }, message),
+            Action::Retry {
+                guild,
+                channel,
+                message,
+            } => self.retry(Page { guild, channel }, message),
+            Action::React {
+                guild,
+                channel,
+                message,
+                emoji,
+                add,
+            } => self.react(Page { guild, channel }, message, emoji, add),
+            Action::Typing { guild, channel } => self.typing(Page { guild, channel }),
+            Action::Upload {
+                guild,
+                channel,
+                path,
+                content,
+                max_bytes,
+            } => self.upload(Page { guild, channel }, path, content, max_bytes),
+            Action::Copy(text) => self.copy(text),
             Action::Quit => return false,
         }
         true
@@ -369,12 +634,15 @@ pub async fn run(
 ) {
     let (updates_tx, mut updates) = mpsc::channel(256);
     let (history_tx, mut history) = mpsc::channel(16);
+    let (jobs_tx, mut jobs) = mpsc::unbounded_channel::<Job>();
     let mut c = Controller {
         ui,
         shared,
         env,
         updates_tx,
         history_tx,
+        jobs_tx,
+        nonce_seq: 0,
         session: None,
         unsaved: None,
         last_online: None,
@@ -411,12 +679,44 @@ pub async fn run(
             },
             Some(update) = updates.recv() => c.on_update(update).await,
             Some(h) = history.recv() => c.on_history(h),
+            Some(job) = jobs.recv() => job(&mut c),
         }
     }
 
     if let Some(s) = c.session.take() {
         s.stop().await;
     }
+}
+
+/// Panoya kopyalar: Wayland'de `wl-copy`, yoksa `xclip`. Ek bağımlılık yerine sistem araçları.
+fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let candidates: [(&str, &[&str]); 2] =
+        [("wl-copy", &[]), ("xclip", &["-selection", "clipboard"])];
+    for (bin, args) in candidates {
+        let Ok(mut child) = Command::new(bin)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(text.as_bytes())
+                .map_err(|e| e.to_string())?;
+        }
+        let status = child.wait().map_err(|e| e.to_string())?;
+        return if status.success() {
+            Ok(())
+        } else {
+            Err(format!("{bin} başarısız"))
+        };
+    }
+    Err("wl-copy veya xclip bulunamadı".to_owned())
 }
 
 /// `LC_ALL` / `LC_MESSAGES` / `LANG` değerini BCP-47'ye çevirir (`tr_TR.UTF-8` → `tr-TR`).
