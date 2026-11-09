@@ -1,0 +1,61 @@
+# Digcord — VCS paketi (depo HEAD'ini derler).
+#
+# NOT: Depo özel (private) olduğu için kaynağı çekmek GitHub kimlik doğrulaması ister
+# (ör. `gh auth setup-git`). Erişim yoksa makepkg kaynağı indiremez.
+
+pkgname=digcord-git
+pkgver=r0.0000000
+pkgrel=1
+pkgdesc='Terminal (TUI) Discord client written in Rust'
+arch=('x86_64')
+url='https://github.com/Shidori5417/digcord'
+license=('LicenseRef-Proprietary')
+depends=('alsa-lib' 'gcc-libs' 'glibc')
+# cmake: libopus (opusic-sys) cmake ile derlenir.
+# cargo: Arch'ta `rust` paketi tarafından sağlanır.
+makedepends=('git' 'cargo' 'cmake')
+optdepends=(
+  "gnome-keyring: token saklama için Secret Service sağlayıcısı (başka bir Secret Service sağlayıcısı da olur)"
+  "wl-clipboard: Wayland altında pano desteği (wl-copy)"
+  "xclip: X11 altında pano desteği"
+  "xdg-utils: bağlantıları varsayılan tarayıcıda açmak için (xdg-open)"
+  "dunst: masaüstü bildirimleri için bir bildirim daemon'u (mako, Plasma vb. de olur)"
+)
+provides=('digcord')
+conflicts=('digcord')
+source=("digcord::git+https://github.com/Shidori5417/digcord.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$srcdir/digcord"
+  printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+  cd digcord
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd digcord
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+check() {
+  cd digcord
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  cargo test --frozen --release --workspace
+}
+
+package() {
+  cd digcord
+  install -Dm755 target/release/digcord "$pkgdir/usr/bin/digcord"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/digcord/README.md"
+  if [[ -d themes ]]; then
+    install -dm755 "$pkgdir/usr/share/digcord/themes"
+    install -m644 themes/* "$pkgdir/usr/share/digcord/themes/"
+  fi
+}

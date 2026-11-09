@@ -1,0 +1,24 @@
+pkgbase = digcord-git
+	pkgdesc = Terminal (TUI) Discord client written in Rust
+	pkgver = r0.0000000
+	pkgrel = 1
+	url = https://github.com/Shidori5417/digcord
+	arch = x86_64
+	license = LicenseRef-Proprietary
+	makedepends = git
+	makedepends = cargo
+	makedepends = cmake
+	depends = alsa-lib
+	depends = gcc-libs
+	depends = glibc
+	optdepends = gnome-keyring: token saklama için Secret Service sağlayıcısı (başka bir Secret Service sağlayıcısı da olur)
+	optdepends = wl-clipboard: Wayland altında pano desteği (wl-copy)
+	optdepends = xclip: X11 altında pano desteği
+	optdepends = xdg-utils: bağlantıları varsayılan tarayıcıda açmak için (xdg-open)
+	optdepends = dunst: masaüstü bildirimleri için bir bildirim daemon'u (mako, Plasma vb. de olur)
+	provides = digcord
+	conflicts = digcord
+	source = digcord::git+https://github.com/Shidori5417/digcord.git
+	sha256sums = SKIP
+
+pkgname = digcord-git
