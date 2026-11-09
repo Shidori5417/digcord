@@ -27,7 +27,8 @@ hesabı işaretletebilir; **hepsi tek bir `ClientProperties` yapısından** üre
 ## 3. Gateway
 
 - URL: `GET /gateway` → `wss://gateway.discord.gg/?v=9&encoding=json&compress=zlib-stream`
-  (kullanıcı istemcileri pratikte v9 kullanıyor; doğrula).
+  — ✅ doğrulandı 2026-11-09, bkz. §3.1. Resmi web istemcisi `GET /gateway` çağırmadan sabit
+  URL'ye bağlanıyor gibi görünüyor (REST trafiği ayrıca kontrol edilmedi — doğrulanmadı).
 - **Opcodes (temel):** 0 Dispatch, 1 Heartbeat, 2 Identify, 3 Presence Update, 4 Voice State Update,
   6 Resume, 7 Reconnect, 9 Invalid Session, 10 Hello, 11 Heartbeat ACK.
 - Kullanıcı istemcisine özgü: guild'e abone olma / üye listesi istekleri için ek opcode'lar var
@@ -40,6 +41,63 @@ hesabı işaretletebilir; **hepsi tek bir `ClientProperties` yapısından** üre
 - **Close kodları:** 4004 (kimlik hatası → resume yok), 4007/4009 (yeniden identify),
   diğerlerinin çoğu resume edilebilir. Tablo `digcord-gateway` içinde tek yerde tutulsun.
 - Yeniden bağlanma: üstel geri çekilme + jitter, en fazla ~1 dk.
+
+### 3.1 Gözlenen trafik — 2026-11-09 (Linux, Chrome 155, web istemcisi, yan hesap)
+
+Kaynak: CDP ile `discord.com/app` yüklenirken WebSocket kaydı. Ham kayıt `/captures/` altında
+(git'e girmez). Token ve kişisel veriler bu notta yok.
+
+**Bağlantı — ✅ doğrulandı**
+- URL: `wss://gateway.discord.gg/?encoding=json&v=9&compress=zlib-stream` (parametre sırası bu).
+- El sıkışma başlıkları: `Origin: https://discord.com`, `User-Agent` (IDENTIFY'daki
+  `browser_user_agent` ile aynı), `Accept-Language`, `Cache-Control/Pragma: no-cache`,
+  `Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits`. Cookie gönderilmiyor.
+  - Not: `tokio-tungstenite` permessage-deflate desteklemiyor; bu başlığı sunmamak küçük bir parmak
+    izi farkı. Sunup müzakere etmemek mümkün mü — **doğrulanmadı**.
+- Sunucu → istemci çerçeveleri binary, tek kalıcı zlib akışı (`78 da` başlığı ile başlıyor), her mesaj
+  `00 00 ff ff` ile bitiyor. İstemci → sunucu çerçeveleri sıkıştırılmamış JSON metin.
+- Hello: `{"op":10,"d":{"heartbeat_interval":41250,"_trace":[...]}}`.
+
+**IDENTIFY (op 2) — ✅ gözlendi, alan kaynakları kısmen doğrulanmadı**
+```json
+{"op":2,"d":{
+  "token":"…","capabilities":1767421,
+  "properties":{
+    "os":"Linux","browser":"Chrome","device":"","device_model_name":"","system_locale":"tr-TR",
+    "has_client_mods":false,"browser_user_agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+    "browser_version":"155.0.0.0","os_version":"","referrer":"","referring_domain":"",
+    "referrer_current":"","referring_domain_current":"","release_channel":"stable",
+    "client_build_number":667580,"client_event_source":null,
+    "client_launch_id":"<uuid v4>","launch_signature":"<uuid biçimli>",
+    "client_app_state":"unfocused","is_fast_connect":false,
+    "gateway_connect_reasons":"AppSkeleton","installation_id":"<snowflake>.<imza>"},
+  "presence":{"status":"unknown","since":0,"activities":[],"afk":false},
+  "compress":false,"client_state":{"guild_versions":{}},
+  "qos_token":"<base64>"}}
+```
+- `intents` yok (beklendiği gibi).
+- **Doğrulanmadı:** `launch_signature`, `installation_id` ve `qos_token` nereden geliyor?
+  `qos_token` READY'de de dönüyor (muhtemelen önceki oturumdan saklanıyor); `installation_id`
+  muhtemelen bir REST yanıtından/yerel depodan. İlk canlı bağlantıdan önce bu alanların gönderilip
+  gönderilmeyeceği kararlaştırılmalı.
+
+**IDENTIFY sonrası istemcinin gönderdikleri — ✅ gözlendi, anlamı doğrulanmadı**
+- op 4 Voice State Update (tüm alanlar null/false, `self_mute: true`, `flags: 0`).
+- op 3 Presence Update (kullanıcının kayıtlı durumu ve özel durum etkinliği, `type: 4`).
+- op 41: `{"initialization_timestamp":<ms>,"session_id":"<uuid>","client_launch_id":"<uuid>"}`.
+- op 40: `{"seq":<son s>,"qos":{"active":false,"ver":31,"reasons":[]}}` — sunucu op 11 ile yanıtlıyor.
+  ~25 sn'lik kayıtta **op 1 hiç gönderilmedi**; op 40 klasik heartbeat'in yerini alıyor olabilir
+  (**doğrulanmadı** — 41 sn'den uzun bir kayıtla teyit edilmeli).
+
+**READY — ✅ gözlendi** (`v: 9`, ~357 KB açılmış, ~53 KB sıkıştırılmış)
+- Üst anahtarlar: `user`, `users`, `guilds`, `private_channels`, `relationships`, `read_state`
+  (`{entries, partial, version}`), `user_guild_settings`, `merged_members`, `session_id`,
+  `session_type`, `resume_gateway_url` (sorgu parametresiz, ör. `wss://gateway-us-east1-d.discord.gg`),
+  `auth_session_id_hash`, `analytics_token`, `qos_token`, `experiments`, …
+- Guild nesnesi kullanıcı istemcisi biçiminde: ad, ikon vb. `properties` alt nesnesinde; `channels`,
+  `roles`, `emojis`, `threads`, `member_count`, `lazy`, `data_mode`, `version` üst düzeyde.
+- `private_channels[]`: `recipient_ids` (kullanıcı nesneleri ayrı `users` dizisinde), `type`, `last_message_id`.
+- Ardından `READY_SUPPLEMENTAL` (`guilds`, `merged_presences`, `merged_members`, `lazy_private_channels`…).
 
 ## 4. REST
 
