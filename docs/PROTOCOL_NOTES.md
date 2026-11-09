@@ -85,9 +85,13 @@ Kaynak: CDP ile `discord.com/app` yüklenirken WebSocket kaydı. Ham kayıt `/ca
 - op 4 Voice State Update (tüm alanlar null/false, `self_mute: true`, `flags: 0`).
 - op 3 Presence Update (kullanıcının kayıtlı durumu ve özel durum etkinliği, `type: 4`).
 - op 41: `{"initialization_timestamp":<ms>,"session_id":"<uuid>","client_launch_id":"<uuid>"}`.
-- op 40: `{"seq":<son s>,"qos":{"active":false,"ver":31,"reasons":[]}}` — sunucu op 11 ile yanıtlıyor.
-  ~25 sn'lik kayıtta **op 1 hiç gönderilmedi**; op 40 klasik heartbeat'in yerini alıyor olabilir
-  (**doğrulanmadı** — 41 sn'den uzun bir kayıtla teyit edilmeli).
+- op 40 **QoS heartbeat** — ✅ doğrulandı (100 sn'lik ikinci kayıt):
+  `{"seq":<son s>,"qos":{"active":false,"ver":31,"reasons":[]}}`, sunucu op 11 ile yanıtlıyor.
+  Web istemcisi **op 1 hiç göndermiyor**; heartbeat tamamen op 40 ile yapılıyor:
+  READY'den hemen sonra bir tane, sonra ilk vuruş `interval × jitter` (~16 sn), ardından her
+  `heartbeat_interval` (~41 sn). Sunucu op 1 isterse yine de hemen yanıt verilmeli (protokol gereği).
+- İstemci zaman zaman (ör. ~90. sn) op 3 presence tekrar gönderiyor — muhtemelen odak/boşta
+  durumu değişimi; **doğrulanmadı**.
 
 **READY — ✅ gözlendi** (`v: 9`, ~357 KB açılmış, ~53 KB sıkıştırılmış)
 - Üst anahtarlar: `user`, `users`, `guilds`, `private_channels`, `relationships`, `read_state`
