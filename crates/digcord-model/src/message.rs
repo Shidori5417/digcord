@@ -160,6 +160,41 @@ pub mod message_kind {
 }
 
 impl Message {
+    /// Gönderilmeden önce gösterilen iyimser mesaj; `id` ve `nonce` aynı geçici snowflake.
+    pub fn pending(
+        id: Snowflake,
+        channel_id: Snowflake,
+        guild_id: Option<Snowflake>,
+        author: User,
+        content: String,
+        reply_to: Option<Message>,
+    ) -> Self {
+        Self {
+            id,
+            channel_id,
+            guild_id,
+            author,
+            member: None,
+            content,
+            edited_timestamp: None,
+            kind: if reply_to.is_some() {
+                message_kind::REPLY
+            } else {
+                message_kind::DEFAULT
+            },
+            mentions: Vec::new(),
+            mention_roles: Vec::new(),
+            mention_everyone: false,
+            attachments: Vec::new(),
+            referenced_message: reply_to.map(Box::new),
+            nonce: Some(id.to_string()),
+            reactions: Vec::new(),
+            sticker_items: Vec::new(),
+            embeds: Vec::new(),
+            call: None,
+        }
+    }
+
     /// Oluşturulma zamanı; ISO zaman damgası yerine id'den hesaplanır.
     pub fn timestamp_ms(&self) -> u64 {
         self.id.timestamp_ms()
