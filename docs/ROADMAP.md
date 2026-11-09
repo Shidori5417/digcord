@@ -14,14 +14,16 @@ Testler yan hesapta, kendi açtığın test sunucusunda yapılır.
 **Kabul:** `cargo run` boş arayüzü açıyor, çıkış ve panic sonrası terminal bozulmuyor;
 GitHub'da depo private görünüyor, CI yeşil, `v0.1.0` etiketi atılmış.
 
-## Aşama 1 — Gateway + giriş
-- Token giriş ekranı + keyring'e kaydetme/okuma.
-- Gateway: zlib-stream, Hello, Identify, heartbeat, READY ayrıştırma.
-- Resume + yeniden bağlanma + close kodu tablosu.
-- Gerçek gateway verisinden kaydedilmiş (anonimleştirilmiş) örneklerle ayrıştırma testleri.
+## Aşama 1 — Gateway + giriş ⏳ (kod tamam, canlı kabul testi bekliyor)
+- [x] Token giriş ekranı + keyring'e kaydetme/okuma.
+- [x] Gateway: zlib-stream, Hello, Identify, heartbeat (op 40), READY ayrıştırma.
+- [x] Resume + yeniden bağlanma + close kodu tablosu (sahte yerel gateway ile uçtan uca test).
+- [x] Gerçek gateway verisinden kaydedilmiş (anonimleştirilmiş) örneklerle ayrıştırma testleri.
 
 **Kabul:** Giriş yapılıyor, READY'den sunucu ve kanal sayısı durum çubuğunda görünüyor;
 ağ kesilip gelince otomatik resume oluyor.
+- [ ] Canlı test (yan hesap) — kullanıcı isteğiyle ertelendi (2026-11-09). Öncesinde
+  PROTOCOL_NOTES §3.1'deki "bilinen farklar" için karar verilecek.
 
 ## Aşama 2 — Okuma
 - Store (actor), sunucu şeridi, kanal ağacı (kategoriler, izinlere göre görünür kanallar).
