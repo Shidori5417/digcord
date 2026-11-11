@@ -96,13 +96,71 @@ Kaynak: CDP ile `discord.com/app` yüklenirken WebSocket kaydı. Ham kayıt `/ca
 **Digcord'un resmi web istemcisinden bilinen farkları (Aşama 1)** — her biri bilinçli, karar bekliyor:
 - IDENTIFY'da `launch_signature`, `installation_id`, `qos_token` **gönderilmiyor** (kaynakları bilinmiyor).
 - El sıkışmada `permessage-deflate` sunulmuyor (tungstenite desteklemiyor).
-- READY sonrası op 4 / op 3 / op 41 **gönderilmiyor**; sadece op 40 gönderiliyor.
+- ~~READY sonrası op 4 / op 3 / op 41 gönderilmiyor~~ → op 4 + op 41 artık IDENTIFY'dan sonra gönderiliyor, op 3 hâlâ yok (bkz. §3.2).
 - RESUME (op 6) biçimi resmi istemciden **gözlenmedi**; standart `{token, session_id, seq}`.
-- `client_build_number` sabit (667580); zamanla eskir, config desteği sonraki aşamada.
-- (Aşama 2) REST'te `X-Installation-ID` **gönderilmiyor**; `X-Super-Properties`'te `launch_signature` yok.
+- `client_build_number` varsayılanı 670026 (2026-11-11 gözlemi, §3.2); zamanla eskir, config ile geçersiz kılınır.
+- (Aşama 2) ~~REST'te `X-Installation-ID` gönderilmiyor~~ → artık biliniyorsa gönderiliyor (§3.2); `X-Super-Properties`'te `launch_signature` yok.
 - (Aşama 2) Kanal açılınca op 37 ve op 8 gönderiliyor, **op 43 gönderilmiyor**.
 - (Aşama 2) Resmi istemcinin kanal açılışında yaptığı diğer REST istekleri (`GET /channels/{id}`,
   `/science`, `/users/@me/...` vb.) yapılmıyor; sadece mesaj geçmişi.
+
+### 3.2 Gözlem 2026-11-11 (Linux, Chrome 155, build 670026, yan hesap)
+
+Kaynak: resmi web istemcisinin yeni kaydı (`/captures/compare-*.json`, git'e girmez; token/çerez
+maskeli). Aşağıdakiler **doğrudan gözlendi**, aksi belirtilmedikçe.
+
+**IDENTIFY `properties` anahtarları ve sırası:** `os, browser, device, device_model_name,
+system_locale, has_client_mods, browser_user_agent, browser_version, os_version, referrer,
+referring_domain, referrer_current, referring_domain_current, release_channel, client_build_number,
+client_event_source, client_launch_id, launch_signature, client_heartbeat_session_id,
+client_app_state, is_fast_connect, gateway_connect_reasons, installation_id`.
+- `client_heartbeat_session_id` IDENTIFY'da da **var** (§3.1'deki "yok" notu yanlıştı) ve op 41
+  `session_id` ile aynı → artık gönderiliyor.
+- Üst düzeyde `qos_token` da var (IDENTIFY'ın son anahtarı).
+- `client_build_number`: 670026 (varsayılan buna çekildi).
+
+**IDENTIFY sonrası sıra:** op 2 → op 4 → op 3 → op 41 → op 40 (`seq: 1`) → sonraki op 40'lar.
+- op 4: `{"guild_id":null,"channel_id":null,"self_mute":true,"self_deaf":false,"self_video":false,"flags":2}`
+  (§3.1'de `flags: 0` yazıyordu; bu kayıtta **2**). Digcord: IDENTIFY'dan hemen sonra gönderir,
+  RESUME'dan sonra göndermez (resmi istemcinin RESUME sonrası davranışı gözlenmedi — doğrulanmadı).
+- op 3: `{"status":"dnd","since":0,"activities":[],"afk":false}` — durum kullanıcı ayarlarından
+  geliyor; Digcord kullanıcı ayarlarını modellemediği için **op 3 gönderilmez**.
+- op 41: `{"initialization_timestamp":<istemci başlangıcı, unix ms>,"session_id":<client_heartbeat_session_id>,"client_launch_id":<client_launch_id>}`.
+  Digcord değerleri `ClientProperties`'ten alır.
+- Voice state op 4 (`voice_state_update`): alan sırası `guild_id, channel_id, self_mute, self_deaf,
+  self_video, flags`; `flags: 2` boştaki op 4'ten alındı. **Ses kanalına katılırken de 2 olduğu
+  doğrulanmadı** (varsayım).
+
+**op 40 odak davranışı:** pencere odaktayken `"qos":{"active":true,"ver":31,"reasons":["foregrounded"]}`,
+değilken `"active":false,"reasons":[]`. Odak değişince resmi istemci hemen bir op 40 gönderiyor
+(anında gönderim varsayımı: kayıtta sıklık ayrıntısı sınırlı). Digcord: terminal odağı
+(`Action::Focus`) gateway'e `Command::Focus` ile iletilir; oturum hazırsa ve değer değiştiyse
+hemen op 40 gider, zamanlı/READY sonrası vuruşlar güncel durumu taşır.
+
+**`installation_id` kaynağı (doğrulanmadı — gözlem: `/experiments` yanıtında `installation`
+alanı, IDENTIFY'daki `installation_id` ile aynı biçim):** `GET /api/v9/experiments` yanıtı
+`fingerprint`, `assignments`, `installation` anahtarlarını taşıyor; `installation` =
+`<snowflake>.<imza>`. Resmi istemci bunu kalıcı saklayıp IDENTIFY `installation_id` ve REST
+`X-Installation-ID` olarak yolluyor. Digcord: ilk açılışta (kayıt yoksa) `/experiments`'ı
+`Authorization` olmadan bir kez çağırır (resmi çağrı çerezsiz/kimliksiz çalıştı; kimlik
+gerektirip gerektirmediği doğrulanmadı), `dirs::state_dir()/digcord/installation_id` dosyasına
+(0600) yazar, sonraki açılışlarda okur. Alınamazsa uyarı loglanır ve kimliksiz devam edilir.
+
+**REST başlık kümesi (GET, `/api/v9`):** `accept: */*`, `accept-encoding`, `accept-language`,
+`authorization`, `cookie` (Digcord çerez göndermez), `priority: u=1, i`, `referer` (o anki sayfa:
+`https://discord.com/channels/<guild>/<kanal>`, DM'de `.../channels/@me/<kanal>`; sayfasız
+isteklerde `https://discord.com/channels/@me`), `sec-ch-ua*`, `sec-fetch-dest: empty`,
+`sec-fetch-mode: cors`, `sec-fetch-site: same-origin`, `user-agent`, `x-debug-options`,
+`x-discord-locale`, `x-discord-timezone`, `x-installation-id`, `x-super-properties`.
+GET'te `origin` **gözlenmedi** → gönderilmez. Bu başlıklar yalnızca Discord API isteklerine
+eklenir; harici yükleme adresine (PUT) gitmez.
+
+**Kalan bilinen farklar:**
+- `launch_signature` (IDENTIFY ve `X-Super-Properties`'te var) ve IDENTIFY `qos_token`: resmi
+  istemci gönderiyor, Digcord **göndermiyor** — türetilişi bilinmiyor, uydurulmaz.
+- op 3 presence gönderilmiyor (durum kullanıcı ayarlarından geliyor, modellenmiyor).
+- RESUME sonrası op 4/41/40 davranışı gözlenmedi.
+- IDENTIFY `presence.status` hâlâ `"unknown"`; resmi istemci op 3 ile gerçek durumu sonradan yolluyor.
 
 **READY — ✅ gözlendi** (`v: 9`, ~357 KB açılmış, ~53 KB sıkıştırılmış)
 - Üst anahtarlar: `user`, `users`, `guilds`, `private_channels`, `relationships`, `read_state`

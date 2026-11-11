@@ -42,15 +42,25 @@ struct Session {
 }
 
 impl Session {
-    fn start(token: Token, env: &Env, updates: mpsc::Sender<Update>) -> Result<Self, HttpError> {
-        let properties = ClientProperties::chrome_linux(
+    async fn start(
+        token: Token,
+        env: &Env,
+        updates: mpsc::Sender<Update>,
+        focused: bool,
+    ) -> Result<Self, HttpError> {
+        let mut properties = ClientProperties::chrome_linux(
             &env.locale,
             env.settings.chrome_major,
             env.settings.build_number,
         );
+        // İlk açılışta tek bir /experiments isteği bekler; sonrası dosyadan okunur.
+        let installation = crate::installation::resolve(&token, &properties, &env.timezone).await;
+        properties.set_installation_id(installation);
         let http = Arc::new(Http::new(&token, &properties, &env.timezone)?);
         let (stop, stop_rx) = watch::channel(false);
         let (commands, commands_rx) = mpsc::channel(64);
+        // Başlangıç odağı (op 40 `qos`); READY sonrası, gerekirse hemen bir op 40 daha gider.
+        let _ = commands.try_send(Command::Focus(focused));
         let task = tokio::spawn(digcord_gateway::run(
             Config::new(token, properties),
             updates,
@@ -780,7 +790,7 @@ impl Controller {
         if let Some(old) = self.session.take() {
             old.stop().await;
         }
-        match Session::start(token, &self.env, self.updates_tx.clone()) {
+        match Session::start(token, &self.env, self.updates_tx.clone(), self.focused).await {
             Ok(s) => self.session = Some(s),
             Err(e) => self.send(UiEvent::Status(Status::Failed(e.to_string()))),
         }
@@ -1385,6 +1395,7 @@ impl Controller {
             }
             Action::Focus(focused) => {
                 self.focused = focused;
+                self.command(Command::Focus(focused));
                 if let Some(open) = self.open {
                     self.mark_seen(open.channel);
                 }

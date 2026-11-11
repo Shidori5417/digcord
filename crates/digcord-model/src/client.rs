@@ -4,8 +4,8 @@
 
 use serde::Serialize;
 
-/// Gözlenen web istemcisi (2026-11-09). Config ile geçersiz kılınabilir.
-pub const DEFAULT_BUILD_NUMBER: u32 = 667_580;
+/// Gözlenen web istemcisi (2026-11-11). Config ile geçersiz kılınabilir.
+pub const DEFAULT_BUILD_NUMBER: u32 = 670_026;
 pub const DEFAULT_CHROME_MAJOR: u32 = 155;
 
 /// "Linux + Chrome web istemcisi" profili.
@@ -31,15 +31,18 @@ pub struct ClientProperties {
     // Kaynağı doğrulanmadı (PROTOCOL_NOTES §3.1); bilinene kadar gönderilmez.
     #[serde(skip_serializing_if = "Option::is_none")]
     launch_signature: Option<String>,
+    /// IDENTIFY'da `launch_signature` ile `client_app_state` arasında (PROTOCOL_NOTES §3.2).
+    client_heartbeat_session_id: String,
     client_app_state: &'static str,
     is_fast_connect: bool,
     gateway_connect_reasons: &'static str,
-    // Kaynağı doğrulanmadı (PROTOCOL_NOTES §3.1); bilinene kadar gönderilmez.
+    /// `GET /experiments` yanıtından gelir, kalıcıdır (PROTOCOL_NOTES §3.2; doğrulanmadı).
+    /// Bilinmiyorsa gönderilmez.
     #[serde(skip_serializing_if = "Option::is_none")]
     installation_id: Option<String>,
-    /// Sadece `X-Super-Properties`'te ve op 41'de; oturum başına üretilir (PROTOCOL_NOTES §4.1).
+    /// Op 41 `initialization_timestamp`: istemcinin başladığı an (unix ms).
     #[serde(skip)]
-    client_heartbeat_session_id: String,
+    initialization_timestamp_ms: u64,
     #[serde(skip)]
     chrome_major: u32,
 }
@@ -95,13 +98,37 @@ impl ClientProperties {
             client_event_source: None,
             client_launch_id: uuid_v4(),
             launch_signature: None,
+            client_heartbeat_session_id: uuid_v4(),
             client_app_state: "unfocused",
             is_fast_connect: false,
             gateway_connect_reasons: "AppSkeleton",
             installation_id: None,
-            client_heartbeat_session_id: uuid_v4(),
+            initialization_timestamp_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0)),
             chrome_major,
         }
+    }
+
+    /// Kalıcı kurulum kimliğini ayarlar (IDENTIFY `installation_id` ve `X-Installation-ID`).
+    pub fn set_installation_id(&mut self, id: Option<String>) {
+        self.installation_id = id;
+    }
+
+    pub fn installation_id(&self) -> Option<&str> {
+        self.installation_id.as_deref()
+    }
+
+    pub fn client_launch_id(&self) -> &str {
+        &self.client_launch_id
+    }
+
+    pub fn client_heartbeat_session_id(&self) -> &str {
+        &self.client_heartbeat_session_id
+    }
+
+    pub fn initialization_timestamp_ms(&self) -> u64 {
+        self.initialization_timestamp_ms
     }
 
     /// `X-Super-Properties` başlığı: alt kümenin JSON'unun base64'ü.
@@ -196,6 +223,7 @@ mod tests {
         let json = serde_json::to_value(&p).expect("json");
         // Gözlenen IDENTIFY'dan (PROTOCOL_NOTES §3.1); kaynağı belirsiz alanlar hariç.
         let launch_id = json["client_launch_id"].clone();
+        let hb_id = json["client_heartbeat_session_id"].clone();
         let expected = serde_json::json!({
             "os":"Linux","browser":"Chrome","device":"","device_model_name":"","system_locale":"tr-TR",
             "has_client_mods":false,
@@ -204,6 +232,7 @@ mod tests {
             "referrer_current":"","referring_domain_current":"","release_channel":"stable",
             "client_build_number":667580,"client_event_source":null,
             "client_launch_id": launch_id,
+            "client_heartbeat_session_id": hb_id,
             "client_app_state":"unfocused","is_fast_connect":false,"gateway_connect_reasons":"AppSkeleton"
         });
         assert_eq!(json, expected);
@@ -289,5 +318,24 @@ mod tests {
         assert_eq!(tr.accept_language(), "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7");
         let en = ClientProperties::chrome_linux("en-US", 155, 1);
         assert_eq!(en.accept_language(), "en-US,en;q=0.9");
+    }
+}
+
+#[cfg(test)]
+mod installation_tests {
+    use super::*;
+
+    #[test]
+    fn installation_id_is_serialized_last_when_set() {
+        let mut p = ClientProperties::chrome_linux("tr-TR", 155, 1);
+        assert!(p.installation_id().is_none());
+        p.set_installation_id(Some("123.abc".into()));
+        let s = serde_json::to_string(&p).expect("json");
+        assert!(
+            s.ends_with(r#""gateway_connect_reasons":"AppSkeleton","installation_id":"123.abc"}"#),
+            "{s}"
+        );
+        assert_eq!(p.installation_id(), Some("123.abc"));
+        assert!(p.initialization_timestamp_ms() > 1_700_000_000_000);
     }
 }

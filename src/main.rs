@@ -1,5 +1,6 @@
 mod config;
 mod controller;
+mod installation;
 mod keystore;
 mod logging;
 mod theme;

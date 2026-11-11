@@ -147,8 +147,13 @@ pub struct Http {
     client: reqwest::Client,
     base: String,
     auth: HeaderValue,
+    /// Sadece Discord API isteklerine eklenen başlıklar (harici yükleme adresine gitmez).
+    api_headers: HeaderMap,
     limiter: RateLimiter,
 }
+
+/// `Referer` sayfa bilgisi olmayan istekler için (PROTOCOL_NOTES §3.2).
+const DEFAULT_REFERER: &str = "https://discord.com/channels/@me";
 
 #[derive(Deserialize)]
 struct RateLimitBody {
@@ -193,6 +198,21 @@ impl Http {
             HeaderValue::from_static("\"Linux\""),
         );
 
+        // Resmi istemcinin her API isteğinde gönderdiği ek başlıklar (PROTOCOL_NOTES §3.2).
+        // `origin` GET'lerde gözlenmedi; eklenmiyor.
+        let mut api = HeaderMap::new();
+        api.insert(header::ACCEPT, HeaderValue::from_static("*/*"));
+        api.insert(name("priority"), HeaderValue::from_static("u=1, i"));
+        api.insert(name("sec-fetch-dest"), HeaderValue::from_static("empty"));
+        api.insert(name("sec-fetch-mode"), HeaderValue::from_static("cors"));
+        api.insert(
+            name("sec-fetch-site"),
+            HeaderValue::from_static("same-origin"),
+        );
+        if let Some(id) = props.installation_id() {
+            api.insert(name("x-installation-id"), value(id)?);
+        }
+
         // reqwest `rustls-no-provider` ile derleniyor: süreç genelinde ring kurulur.
         // Zaten kuruluysa (ör. gateway kurduysa) hata döner; yok sayılır.
         let _ = rustls::crypto::ring::default_provider().install_default();
@@ -208,8 +228,19 @@ impl Http {
             client,
             base: API_BASE.to_owned(),
             auth,
+            api_headers: api,
             limiter: RateLimiter::new(),
         })
+    }
+
+    /// `GET /experiments` → `installation` alanı (kalıcı kurulum kimliği). Resmi istemci bunu
+    /// kimlik doğrulamasız çağırdı; `Authorization` eklenmez. Doğrulanmadı: PROTOCOL_NOTES §3.2.
+    pub async fn fetch_installation_id(&self) -> Result<String, HttpError> {
+        let resp = self
+            .send_with(Method::GET, "/experiments", DEFAULT_REFERER, None, false)
+            .await?;
+        let body: Value = resp.json().await.map_err(|_| HttpError::BadResponse)?;
+        parse_installation(&body).ok_or(HttpError::BadResponse)
     }
 
     /// Testler için farklı taban adres.
@@ -472,9 +503,21 @@ impl Http {
         page: Page,
         body: Option<Value>,
     ) -> Result<reqwest::Response, HttpError> {
+        self.send_with(method, path, &page.referer(), body, true)
+            .await
+    }
+
+    /// `authed: false` ise `Authorization` eklenmez.
+    async fn send_with(
+        &self,
+        method: Method,
+        path: &str,
+        referer: &str,
+        body: Option<Value>,
+        authed: bool,
+    ) -> Result<reqwest::Response, HttpError> {
         let route = ratelimit::route_key(method.as_str(), path);
         let url = format!("{}{path}", self.base);
-        let referer = page.referer();
         // Aynı bucket'taki istekler sırayla gider; koruyucu istek bitene kadar tutulur.
         let _slot = self.limiter.acquire(&route).await;
         for _ in 0..=MAX_RETRIES {
@@ -482,8 +525,11 @@ impl Http {
             let mut req = self
                 .client
                 .request(method.clone(), &url)
-                .header(header::REFERER, &referer)
-                .header(header::AUTHORIZATION, self.auth.clone());
+                .headers(self.api_headers.clone())
+                .header(header::REFERER, referer);
+            if authed {
+                req = req.header(header::AUTHORIZATION, self.auth.clone());
+            }
             if let Some(b) = &body {
                 req = req.json(b);
             } else if matches!(method, Method::POST | Method::PUT | Method::PATCH) {
@@ -514,6 +560,22 @@ impl Http {
         }
         Err(HttpError::RateLimited)
     }
+}
+
+/// `/experiments` yanıtından `installation` değeri; başlığa ve dosyaya güvenle konabilecek
+/// biçimde (ASCII harf/rakam ve `.`, `-`, `_`; en çok 128 karakter) değilse `None`.
+pub fn parse_installation(body: &Value) -> Option<String> {
+    let id = body.get("installation")?.as_str()?;
+    valid_installation_id(id).then(|| id.to_owned())
+}
+
+/// Kurulum kimliği biçimi: ASCII harf/rakam ve `.`, `-`, `_`; 1..=128 karakter.
+pub fn valid_installation_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
 }
 
 fn name(n: &'static str) -> HeaderName {
@@ -653,10 +715,111 @@ mod tests {
             "sec-ch-ua: \"google chrome\";v=\"155\"",
             "sec-ch-ua-platform: \"linux\"",
             "accept-language: tr-tr,tr;q=0.9",
+            "accept: */*",
+            "priority: u=1, i",
+            "sec-fetch-dest: empty",
+            "sec-fetch-mode: cors",
+            "sec-fetch-site: same-origin",
         ] {
             assert!(req.contains(h), "eksik başlık {h}:\n{req}");
         }
         assert!(!req.contains("bot sahte-token"));
+        assert!(!req.contains("\r\norigin:"), "GET'te origin yok:\n{req}");
+        assert!(
+            !req.contains("x-installation-id"),
+            "bilinmiyorsa gönderilmez"
+        );
+    }
+
+    #[tokio::test]
+    async fn installation_header_and_referer_per_page() {
+        let (base, srv) = server(vec![reply("200 OK", "", "[]"), reply("200 OK", "", "[]")]).await;
+        let token = Token::new("sahte-token").expect("token");
+        let mut props = ClientProperties::chrome_linux("tr-TR", 155, 1);
+        props.set_installation_id(Some("111.abcDEF_-".into()));
+        let h = Http::new(&token, &props, "Europe/Istanbul")
+            .expect("istemci")
+            .with_base(base);
+        h.get_messages(PAGE, None, 10).await.expect("sunucu kanalı");
+        let dm = Page {
+            guild: None,
+            channel: Snowflake(5),
+        };
+        h.get_messages(dm, None, 10).await.expect("dm");
+        let seen = srv.await.expect("sunucu");
+        let a = lower(&seen[0]);
+        let b = lower(&seen[1]);
+        assert!(a.contains("x-installation-id: 111.abcdef_-"), "{a}");
+        assert!(
+            a.contains("referer: https://discord.com/channels/7/42\r\n"),
+            "{a}"
+        );
+        assert!(
+            b.contains("referer: https://discord.com/channels/@me/5\r\n"),
+            "{b}"
+        );
+    }
+
+    #[tokio::test]
+    async fn upload_put_has_no_api_headers() {
+        let (listener, base) = bind().await;
+        let slots = format!(
+            r#"{{"attachments":[{{"id":0,"upload_url":"{base}/up","upload_filename":"x/a.png"}}]}}"#
+        );
+        let srv = serve(listener, vec![reply("200 OK", "", &slots), no_content()]);
+        let mut props = ClientProperties::chrome_linux("tr-TR", 155, 1);
+        props.set_installation_id(Some("1.a".into()));
+        let token = Token::new("sahte-token").expect("token");
+        let h = Http::new(&token, &props, "Europe/Istanbul")
+            .expect("istemci")
+            .with_base(base);
+        h.upload_attachment(PAGE, "a.png", vec![1, 2, 3])
+            .await
+            .expect("yükleme");
+        let seen = srv.await.expect("sunucu");
+        let put = lower(&seen[1]);
+        assert!(put.starts_with("put /up "), "{put}");
+        for h in [
+            "x-installation-id",
+            "sec-fetch-site",
+            "authorization",
+            "referer",
+        ] {
+            assert!(!put.contains(h), "harici PUT'ta {h} olmamalı:\n{put}");
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_installation_id_is_unauthenticated() {
+        let body = r#"{"fingerprint":"f","assignments":[],"installation":"123456.AbC-d_E"}"#;
+        let (base, srv) = server(vec![reply("200 OK", "", body)]).await;
+        let id = http(&base).fetch_installation_id().await.expect("kimlik");
+        assert_eq!(id, "123456.AbC-d_E");
+        let req = lower(&srv.await.expect("sunucu")[0]);
+        assert!(req.starts_with("get /experiments "), "{req}");
+        assert!(!req.contains("authorization"), "{req}");
+        assert!(!req.contains("sahte-token"));
+        assert!(
+            req.contains("referer: https://discord.com/channels/@me\r\n"),
+            "{req}"
+        );
+    }
+
+    #[test]
+    fn installation_parsing_rejects_odd_values() {
+        let ok = json!({"installation":"1.a-b_C"});
+        assert_eq!(parse_installation(&ok).as_deref(), Some("1.a-b_C"));
+        for bad in [
+            json!({}),
+            json!({"installation":""}),
+            json!({"installation":7}),
+            json!({"installation":"a b"}),
+            json!({"installation":"a\r\nx: y"}),
+            json!({"installation":"é"}),
+            json!({"installation":"x".repeat(129)}),
+        ] {
+            assert!(parse_installation(&bad).is_none(), "{bad}");
+        }
     }
 
     #[test]

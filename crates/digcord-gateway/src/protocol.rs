@@ -20,6 +20,8 @@ pub const GATEWAY_QUERY: &str = "/?encoding=json&v=9&compress=zlib-stream";
 const CAPABILITIES: u64 = 1_767_421;
 /// Gözlenen op 40 `qos.ver` değeri.
 const QOS_VERSION: u32 = 31;
+/// Gözlenen op 4 `flags` değeri.
+const VOICE_STATE_FLAGS: u8 = 2;
 
 pub mod op {
     pub const DISPATCH: u8 = 0;
@@ -33,6 +35,8 @@ pub mod op {
     /// Web istemcisinin op 1 yerine kullandığı QoS heartbeat (PROTOCOL_NOTES §3.1).
     pub const QOS_HEARTBEAT: u8 = 40;
     pub const VOICE_STATE_UPDATE: u8 = 4;
+    /// Web istemcisinin IDENTIFY sonrası gönderdiği başlatma bilgisi (PROTOCOL_NOTES §3.2).
+    pub const CLIENT_INIT: u8 = 41;
     pub const REQUEST_GUILD_MEMBERS: u8 = 8;
     pub const GUILD_SUBSCRIPTIONS_BULK: u8 = 37;
 }
@@ -334,7 +338,8 @@ pub fn request_members(guild: Snowflake, user_ids: &[Snowflake]) -> String {
 }
 
 /// op 4: ses kanalına katıl (`channel: None` → ayrıl). DM aramasında `guild: None`.
-/// Alan seti belgelere göre; resmi istemcinin ek alanları (`flags` vb.) doğrulanmadı.
+/// Alan seti belgelere göre + `flags: 2` (boştaki op 4'te gözlendi; katılırken aynı olduğu
+/// varsayımı doğrulanmadı, PROTOCOL_NOTES §3.2).
 pub fn voice_state_update(
     guild: Option<Snowflake>,
     channel: Option<Snowflake>,
@@ -348,6 +353,7 @@ pub fn voice_state_update(
         self_mute: bool,
         self_deaf: bool,
         self_video: bool,
+        flags: u8,
     }
     to_json(
         op::VOICE_STATE_UPDATE,
@@ -357,17 +363,43 @@ pub fn voice_state_update(
             self_mute,
             self_deaf,
             self_video: false,
+            flags: VOICE_STATE_FLAGS,
+        },
+    )
+}
+
+/// IDENTIFY'dan hemen sonra gönderilen op 4 (kanalsız, `self_mute: true`; gözlenen).
+pub fn initial_voice_state() -> String {
+    voice_state_update(None, None, true, false)
+}
+
+/// op 41: `initialization_timestamp` (unix ms), `session_id` = `client_heartbeat_session_id`,
+/// `client_launch_id`; hepsi [`ClientProperties`]'ten.
+pub fn client_init(properties: &ClientProperties) -> String {
+    #[derive(Serialize)]
+    struct Init<'a> {
+        initialization_timestamp: u64,
+        session_id: &'a str,
+        client_launch_id: &'a str,
+    }
+    to_json(
+        op::CLIENT_INIT,
+        Init {
+            initialization_timestamp: properties.initialization_timestamp_ms(),
+            session_id: properties.client_heartbeat_session_id(),
+            client_launch_id: properties.client_launch_id(),
         },
     )
 }
 
 /// op 40 QoS heartbeat (web istemcisi op 1 göndermiyor, PROTOCOL_NOTES §3.1).
-pub fn heartbeat(seq: Option<u64>) -> String {
+/// `focused`: pencere odakta → `active: true, reasons: ["foregrounded"]` (PROTOCOL_NOTES §3.2).
+pub fn heartbeat(seq: Option<u64>, focused: bool) -> String {
     #[derive(Serialize)]
     struct Qos {
         active: bool,
         ver: u32,
-        reasons: [(); 0],
+        reasons: &'static [&'static str],
     }
     #[derive(Serialize)]
     struct Beat {
@@ -379,9 +411,9 @@ pub fn heartbeat(seq: Option<u64>) -> String {
         Beat {
             seq,
             qos: Qos {
-                active: false,
+                active: focused,
                 ver: QOS_VERSION,
-                reasons: [],
+                reasons: if focused { &["foregrounded"] } else { &[] },
             },
         },
     )
@@ -734,13 +766,40 @@ mod tests {
     #[test]
     fn heartbeat_matches_observed() {
         assert_eq!(
-            heartbeat(Some(7)),
+            heartbeat(Some(7), false),
             r#"{"op":40,"d":{"seq":7,"qos":{"active":false,"ver":31,"reasons":[]}}}"#
         );
         assert_eq!(
-            heartbeat(None),
+            heartbeat(None, false),
             r#"{"op":40,"d":{"seq":null,"qos":{"active":false,"ver":31,"reasons":[]}}}"#
         );
+        assert_eq!(
+            heartbeat(Some(1), true),
+            r#"{"op":40,"d":{"seq":1,"qos":{"active":true,"ver":31,"reasons":["foregrounded"]}}}"#
+        );
+    }
+
+    #[test]
+    fn post_identify_frames_match_observed() {
+        assert_eq!(
+            initial_voice_state(),
+            r#"{"op":4,"d":{"guild_id":null,"channel_id":null,"self_mute":true,"self_deaf":false,"self_video":false,"flags":2}}"#
+        );
+        let p = props();
+        let v: Value = serde_json::from_str(&client_init(&p)).expect("json");
+        assert_eq!(v["op"], 41);
+        assert_eq!(
+            v["d"]["initialization_timestamp"],
+            p.initialization_timestamp_ms()
+        );
+        assert_eq!(v["d"]["session_id"], p.client_heartbeat_session_id());
+        assert_eq!(v["d"]["client_launch_id"], p.client_launch_id());
+        let text = client_init(&p);
+        let pos: Vec<usize> = ["initialization_timestamp", "session_id", "client_launch_id"]
+            .iter()
+            .map(|k| text.find(k).expect("anahtar"))
+            .collect();
+        assert!(pos.windows(2).all(|w| w[0] < w[1]), "{text}");
     }
 
     #[test]
@@ -847,7 +906,7 @@ mod tests {
         assert_eq!(
             v,
             serde_json::json!({"op": 4, "d": {"guild_id": "1", "channel_id": "2",
-                "self_mute": false, "self_deaf": true, "self_video": false}})
+                "self_mute": false, "self_deaf": true, "self_video": false, "flags": 2}})
         );
         let leave: serde_json::Value =
             serde_json::from_str(&voice_state_update(None, None, false, false)).expect("json");

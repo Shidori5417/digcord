@@ -76,6 +76,9 @@ pub enum Command {
         self_mute: bool,
         self_deaf: bool,
     },
+    /// Pencere odağı değişti: op 40 `qos` (`active`/`reasons`) buna göre gider. Odak değişince
+    /// (oturum hazırsa) hemen bir op 40 gönderilir.
+    Focus(bool),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -114,6 +117,8 @@ struct Session {
 struct State {
     session: Option<Session>,
     seq: Option<u64>,
+    /// Pencere odakta mı; yeniden IDENTIFY'da da korunur.
+    focused: bool,
 }
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -138,7 +143,10 @@ pub async fn run(
             Exit::Closed { action, reason } => match action {
                 CloseAction::Resume => reason,
                 CloseAction::Reidentify => {
-                    state = State::default();
+                    state = State {
+                        focused: state.focused,
+                        ..State::default()
+                    };
                     reason
                 }
                 CloseAction::InvalidToken => {
@@ -217,7 +225,16 @@ async fn session_loop(
             protocol::identify(&config.token, &config.properties)
         }
     };
+    let is_identify = state.session.is_none();
     ws.send(Message::text(first)).await?;
+    if is_identify {
+        // Resmi istemci sırası: IDENTIFY → op 4 → (op 3 yok: durum kullanıcı ayarlarından
+        // gelir, modellemiyoruz) → op 41 → op 40. RESUME sonrası gönderilmez (PROTOCOL_NOTES §3.2).
+        ws.send(Message::text(protocol::initial_voice_state()))
+            .await?;
+        ws.send(Message::text(protocol::client_init(&config.properties)))
+            .await?;
+    }
 
     let mut next_beat = Instant::now() + hb.first_delay();
     // READY/RESUMED gelene kadar komutlar gönderilmez.
@@ -227,7 +244,7 @@ async fn session_loop(
             _ = sleep_until(next_beat) => {
                 next_beat += hb.interval();
                 match hb.on_tick() {
-                    Beat::Send => ws.send(Message::text(protocol::heartbeat(state.seq))).await?,
+                    Beat::Send => ws.send(Message::text(protocol::heartbeat(state.seq, state.focused))).await?,
                     Beat::Zombie => {
                         return Ok(Exit::Closed { action: CloseAction::Resume, reason: "heartbeat ACK gelmedi (zombi bağlantı)".into() });
                     }
@@ -236,6 +253,14 @@ async fn session_loop(
             }
             Some(cmd) = commands.recv(), if live => {
                 let text = match cmd {
+                    Command::Focus(focused) => {
+                        if focused == state.focused {
+                            continue;
+                        }
+                        state.focused = focused;
+                        hb.on_extra_sent();
+                        protocol::heartbeat(state.seq, focused)
+                    }
                     Command::SubscribeGuild { guild, large } => protocol::subscribe_guild(guild, large),
                     Command::RequestMembers { guild, user_ids } => protocol::request_members(guild, &user_ids),
                     Command::VoiceState { guild, channel, self_mute, self_deaf } => {
@@ -262,7 +287,7 @@ async fn session_loop(
                         });
                         backoff.reset();
                         // Web istemcisi READY'den hemen sonra bir op 40 gönderiyor (PROTOCOL_NOTES §3.1).
-                        ws.send(Message::text(protocol::heartbeat(state.seq)))
+                        ws.send(Message::text(protocol::heartbeat(state.seq, state.focused)))
                             .await?;
                         hb.on_extra_sent();
                         live = true;
@@ -281,7 +306,7 @@ async fn session_loop(
                 }
             }
             Event::HeartbeatRequest => {
-                ws.send(Message::text(protocol::heartbeat(state.seq)))
+                ws.send(Message::text(protocol::heartbeat(state.seq, state.focused)))
                     .await?;
                 hb.on_extra_sent();
             }
@@ -465,12 +490,40 @@ mod tests {
         let identify = peer.recv().await;
         assert_eq!(identify["op"], 2);
         assert_eq!(identify["d"]["token"], "sahte-token");
+        // IDENTIFY sonrası sıra: op 4 → op 41 (READY'yi beklemeden).
+        let vs = peer.recv().await;
+        assert_eq!(vs["op"], 4);
+        assert_eq!(vs["d"]["self_mute"], true);
+        assert_eq!(vs["d"]["flags"], 2);
+        assert_eq!(vs["d"]["channel_id"], Value::Null);
+        let init = peer.recv().await;
+        assert_eq!(init["op"], 41);
+        assert_eq!(
+            init["d"]["session_id"],
+            identify["d"]["properties"]["client_heartbeat_session_id"]
+        );
+        assert_eq!(
+            init["d"]["client_launch_id"],
+            identify["d"]["properties"]["client_launch_id"]
+        );
+        assert!(init["d"]["initialization_timestamp"].is_u64());
         peer.send(&ready_json(&url)).await;
         let beat = peer.recv().await;
         assert_eq!(beat["op"], 40);
         assert_eq!(beat["d"]["seq"], 1);
+        assert_eq!(beat["d"]["qos"]["active"], false);
         let sub = peer.recv().await;
         assert_eq!(sub["op"], 37, "komut READY sonrası gönderilmeli");
+        // Odak değişince hemen op 40; aynı değer tekrar gönderilmez.
+        cmd_tx.send(Command::Focus(true)).await.expect("komut");
+        cmd_tx.send(Command::Focus(true)).await.expect("komut");
+        let focus = peer.recv().await;
+        assert_eq!(focus["op"], 40);
+        assert_eq!(focus["d"]["qos"]["active"], true);
+        assert_eq!(
+            focus["d"]["qos"]["reasons"],
+            serde_json::json!(["foregrounded"])
+        );
         assert!(
             matches!(expect_update(&mut rx, Duration::from_secs(10), |u| matches!(u, Update::Ready(_))).await, Update::Ready(r) if r.guilds.len() == 3)
         );
@@ -530,7 +583,11 @@ mod tests {
         let mut peer = Peer::accept(&listener).await;
         peer.send(HELLO).await;
         assert_eq!(peer.recv().await["op"], 2);
+        // READY erken gönderilir: sanal saat boştayken ilerlediğinden, READY işlenmeden zamanlı
+        // vuruşlar zombi sayılmasın.
         peer.send(&ready_json(&url)).await;
+        assert_eq!(peer.recv().await["op"], 4);
+        assert_eq!(peer.recv().await["op"], 41);
         assert_eq!(peer.recv().await["op"], 40);
         // ACK hiç gönderilmez → ilk zamanlı vuruşta zombi.
         let u = expect_update(&mut rx, Duration::from_secs(600), |u| {
@@ -548,6 +605,9 @@ mod tests {
         let mut peer = Peer::accept(&listener).await;
         peer.send(HELLO).await;
         assert_eq!(peer.recv().await["op"], 2);
+        // Yeniden IDENTIFY'da op 4 + op 41 tekrar gider; RESUME'da gitmez (yukarıda görüldü).
+        assert_eq!(peer.recv().await["op"], 4);
+        assert_eq!(peer.recv().await["op"], 41);
 
         stop_tx.send(true).expect("durdur");
         timeout(Duration::from_secs(600), client)
