@@ -10,7 +10,8 @@ use std::fmt::Write as _;
 use std::time::Duration;
 
 use digcord_model::{
-    ClientProperties, Message, ReactionEmoji, SearchPage, SearchQuery, Snowflake, ThreadList, Token,
+    ClientProperties, Message, ReactionEmoji, SearchPage, SearchQuery, Snowflake, ThreadList,
+    Token, UserProfile,
 };
 use reqwest::header::{self, HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Method, StatusCode};
@@ -39,6 +40,19 @@ pub fn forum_threads_path(forum: Snowflake, limit: u8) -> String {
 /// Arşivli herkese açık thread'ler için yol.
 pub fn archived_threads_path(channel: Snowflake, limit: u8) -> String {
     format!("/channels/{channel}/threads/archived/public?limit={limit}")
+}
+
+/// Açılır profil isteğinin yolu (sorgu dahil): `GET /users/{id}/profile?...`. Resmi web
+/// istemcisinde gözlenen sorgu (2026-11-11); `guild_id` DM'de yok (doğrulanmadı,
+/// PROTOCOL_NOTES §4.7).
+pub fn profile_path(user: Snowflake, guild: Option<Snowflake>) -> String {
+    let mut path = format!(
+        "/users/{user}/profile?type=popout&with_mutual_guilds=true&with_mutual_friends=true&with_mutual_friends_count=false"
+    );
+    if let Some(g) = guild {
+        let _ = write!(path, "&guild_id={g}");
+    }
+    path
 }
 
 /// Aramanın kapsamı: bir sunucu ya da tek bir (DM) kanal.
@@ -312,6 +326,25 @@ impl Http {
         let resp = self.send(Method::GET, &path, page, None).await?;
         let body: Value = resp.json().await.map_err(|_| HttpError::BadResponse)?;
         digcord_model::parse_pins(&body).ok_or(HttpError::BadResponse)
+    }
+
+    /// Kullanıcı eylemiyle (üyeye tıklama) açılan profil: [`profile_path`]. `Referer` sunucu
+    /// sayfasıdır (kanal bilinmez; resmi istemcinin tam değeri doğrulanmadı).
+    pub async fn user_profile(
+        &self,
+        user: Snowflake,
+        guild: Option<Snowflake>,
+    ) -> Result<UserProfile, HttpError> {
+        let path = profile_path(user, guild);
+        let referer = match guild {
+            Some(g) => format!("https://discord.com/channels/{g}"),
+            None => DEFAULT_REFERER.to_owned(),
+        };
+        let resp = self
+            .send_with(Method::GET, &path, &referer, None, true)
+            .await?;
+        let body: Value = resp.json().await.map_err(|_| HttpError::BadResponse)?;
+        UserProfile::from_json(&body).ok_or(HttpError::BadResponse)
     }
 
     /// Forum/medya kanalının aktif gönderileri: `GET /channels/{f}/threads/search?...`
@@ -1370,5 +1403,39 @@ mod tests {
         let reqs = srv.await.expect("sunucu");
         assert!(reqs[0].starts_with("GET /channels/42/messages?around=10&limit=50 "));
         assert!(reqs[1].starts_with("GET /channels/42/pins "));
+    }
+
+    #[test]
+    fn profile_path_has_guild_only_in_servers() {
+        assert_eq!(
+            profile_path(Snowflake(7), Some(Snowflake(9))),
+            "/users/7/profile?type=popout&with_mutual_guilds=true&with_mutual_friends=true&with_mutual_friends_count=false&guild_id=9"
+        );
+        assert_eq!(
+            profile_path(Snowflake(7), None),
+            "/users/7/profile?type=popout&with_mutual_guilds=true&with_mutual_friends=true&with_mutual_friends_count=false"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetches_profile_with_server_referer() {
+        let body = r#"{"user":{"id":"7","username":"u"},"guild_member":{"roles":["3"]}}"#;
+        let (base, srv) = server(vec![reply("200 OK", "", body), reply("200 OK", "", "[]")]).await;
+        let h = http(&base);
+        let p = h
+            .user_profile(Snowflake(7), Some(Snowflake(9)))
+            .await
+            .expect("profil");
+        assert_eq!(p.username.as_deref(), Some("u"));
+        assert_eq!(p.guild_roles, vec![Snowflake(3)]);
+        assert!(matches!(
+            h.user_profile(Snowflake(7), None).await,
+            Err(HttpError::BadResponse)
+        ));
+        let reqs = srv.await.expect("sunucu");
+        assert!(reqs[0].starts_with("GET /users/7/profile?type=popout"));
+        assert!(reqs[0].contains("&guild_id=9 "));
+        assert!(lower(&reqs[0]).contains("referer: https://discord.com/channels/9\r\n"));
+        assert!(lower(&reqs[1]).contains("referer: https://discord.com/channels/@me\r\n"));
     }
 }

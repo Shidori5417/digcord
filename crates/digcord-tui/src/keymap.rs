@@ -222,6 +222,7 @@ pub(crate) enum Act {
     Copy,
     OpenMedia,
     Retry,
+    Profile,
 }
 
 struct Def {
@@ -281,6 +282,7 @@ const ACTIONS: &[Def] = &[
     def(Act::Copy, "copy", S, &["y"]),
     def(Act::OpenMedia, "open_media", S, &["o"]),
     def(Act::Retry, "retry", S, &["enter"]),
+    def(Act::Profile, "profile", S, &["p"]),
 ];
 
 /// Tuş → eylem eşlemesi.

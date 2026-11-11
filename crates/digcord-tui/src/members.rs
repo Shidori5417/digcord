@@ -80,17 +80,15 @@ fn group_title(st: &State, guild: Snowflake, id: GroupId, count: u32) -> String 
     }
 }
 
-fn guild_rows(
-    theme: &Theme,
-    st: &State,
-    guild: Snowflake,
-    width: usize,
-    max_rows: usize,
-) -> Vec<Line<'static>> {
+/// Satırlar ve her satırın kullanıcısı (grup başlığı: `None`); aynı uzunlukta.
+type Rows = (Vec<Line<'static>>, Vec<Option<Snowflake>>);
+
+fn guild_rows(theme: &Theme, st: &State, guild: Snowflake, width: usize, max_rows: usize) -> Rows {
     let Some(list) = st.member_list(guild) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let mut out = Vec::new();
+    let mut users = Vec::new();
     for item in list.items() {
         if out.len() >= max_rows {
             break;
@@ -110,6 +108,7 @@ fn guild_rows(
                     fit(&group_title(st, guild, *id, count), width),
                     theme.member_group(),
                 ));
+                users.push(None);
             }
             Some(ListItem::Member(m)) => {
                 let m: &ListMember = m;
@@ -121,22 +120,17 @@ fn guild_rows(
                     Some(m.presence),
                     width,
                 ));
+                users.push(Some(m.user.id));
             }
         }
     }
-    out
+    (out, users)
 }
 
 /// DM/grup DM: alıcılar (grup DM'de ben de); durum bilgisi olmadığından işaretsiz.
-fn dm_rows(
-    theme: &Theme,
-    st: &State,
-    channel: Snowflake,
-    width: usize,
-    max_rows: usize,
-) -> Vec<Line<'static>> {
+fn dm_rows(theme: &Theme, st: &State, channel: Snowflake, width: usize, max_rows: usize) -> Rows {
     let Some(ch) = st.channel(channel) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let mut ids: Vec<Snowflake> = ch.recipient_ids.clone();
     if ch.kind == channel_kind::GROUP_DM
@@ -149,6 +143,7 @@ fn dm_rows(
         fit(&format!("Üyeler — {}", ids.len()), width),
         theme.member_group(),
     )];
+    let mut users = vec![None];
     for id in ids {
         if out.len() >= max_rows {
             break;
@@ -157,21 +152,33 @@ fn dm_rows(
             .user(id)
             .map_or_else(|| id.to_string(), |u| u.display_name().to_owned());
         out.push(member_line(theme, &name, None, None, width));
+        users.push(Some(id));
     }
-    out
+    (out, users)
 }
 
 /// Panelin iç alanına sığan satırlar. `open`: açık kanal `(guild, kanal)`; yoksa boş.
+/// `skip`: üstte atlanan satır (tekerlek); listenin sonunu aşarsa son sayfaya çekilir.
+/// Dönüş: satırlar, satırların kullanıcıları ve uygulanan `skip`.
 pub(crate) fn rows(
     theme: &Theme,
     st: &State,
     open: Option<(Option<Snowflake>, Snowflake)>,
     width: usize,
     max_rows: usize,
-) -> Vec<Line<'static>> {
-    match open {
-        Some((Some(guild), _)) => guild_rows(theme, st, guild, width, max_rows),
-        Some((None, channel)) => dm_rows(theme, st, channel, width, max_rows),
-        None => Vec::new(),
-    }
+    skip: usize,
+) -> (Vec<Line<'static>>, Vec<Option<Snowflake>>, usize) {
+    let want = skip.saturating_add(max_rows);
+    let (mut lines, mut users) = match open {
+        Some((Some(guild), _)) => guild_rows(theme, st, guild, width, want),
+        Some((None, channel)) => dm_rows(theme, st, channel, width, want),
+        None => (Vec::new(), Vec::new()),
+    };
+    // Liste istenen aralıktan kısaysa son sayfaya hizala.
+    let skip = skip.min(lines.len().saturating_sub(max_rows));
+    lines.drain(..skip);
+    users.drain(..skip);
+    lines.truncate(max_rows);
+    users.truncate(max_rows);
+    (lines, users, skip)
 }

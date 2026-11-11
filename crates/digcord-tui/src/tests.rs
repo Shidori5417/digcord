@@ -2983,3 +2983,412 @@ fn avatar_drawn_over_gutter_when_ready_and_scrolling_stays_consistent() {
     press(&mut app, &[KeyCode::PageUp]);
     let _ = draw(&app, 100, 16);
 }
+
+// ------------------------------------------------------------------ fare ve profil
+
+use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+fn mouse_ev(kind: MouseEventKind, x: u16, y: u16) -> UiEvent {
+    UiEvent::Input(Event::Mouse(MouseEvent {
+        kind,
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    }))
+}
+
+fn click(app: &mut App, x: u16, y: u16) -> Option<Action> {
+    app.handle(mouse_ev(MouseEventKind::Down(MouseButton::Left), x, y))
+}
+
+fn wheel(app: &mut App, x: u16, y: u16, down: bool) {
+    let kind = if down {
+        MouseEventKind::ScrollDown
+    } else {
+        MouseEventKind::ScrollUp
+    };
+    app.handle(mouse_ev(kind, x, y));
+}
+
+/// Üye listesi yüklü uygulama, çizilmiş (100x24): şerit x=1..5, kanallar x=7..29,
+/// mesajlar x=31..79, üyeler x=81..99.
+fn drawn_app() -> App {
+    let mut app = members_app();
+    app.guild_sel = 0;
+    draw(&app, 100, 24);
+    app.focus = Focus::Guilds;
+    app
+}
+
+#[test]
+fn click_strip_selects_guild_and_focuses_channels() {
+    let mut app = drawn_app();
+    assert_eq!(click(&mut app, 2, 1), None);
+    assert_eq!(app.guild_sel, 0, "ilk satır DM");
+    assert_eq!(click(&mut app, 2, 2), None);
+    assert_eq!(app.guild_sel, 1);
+    assert_eq!(app.focus, Focus::Channels);
+    // Şerit dışındaki boş satır: değişmez.
+    click(&mut app, 2, 10);
+    assert_eq!(app.guild_sel, 1);
+}
+
+#[test]
+fn click_icon_strip_maps_two_rows_per_guild() {
+    let mut app = avatar_app(vec![]);
+    app.focus = Focus::Guilds;
+    draw(&app, 100, 20);
+    // Satırlar: DM y1-2, sunucu y3-4.
+    assert_eq!(click(&mut app, 2, 4), None);
+    assert_eq!(app.guild_sel, 1);
+    assert_eq!(app.focus, Focus::Channels);
+    click(&mut app, 2, 2);
+    assert_eq!(app.guild_sel, 0, "DM'nin ikinci satırı");
+}
+
+#[test]
+fn click_channel_list_opens_toggles_and_joins() {
+    let mut app = test_app(shared_with(vec![], true));
+    draw(&app, 100, 24);
+    click(&mut app, 2, 2); // sunucu
+    draw(&app, 100, 24);
+    // Satırlar: 0 kategori, 1 sohbet, 2 duyurular, 3 Ses.
+    let a = click(&mut app, 10, 2);
+    assert_eq!(
+        a,
+        Some(Action::OpenChannel {
+            guild: Some(Snowflake(GUILD)),
+            channel: Snowflake(SOHBET),
+            previous: None
+        })
+    );
+    assert_eq!(app.focus, Focus::Messages, "açılınca mesajlara odak");
+    draw(&app, 100, 24);
+    assert_eq!(
+        click(&mut app, 10, 4),
+        Some(Action::JoinVoice {
+            guild: Some(Snowflake(GUILD)),
+            channel: Snowflake(13)
+        })
+    );
+    // Kategori satırı daraltır.
+    click(&mut app, 10, 1);
+    assert!(app.collapsed.contains(&Snowflake(10)));
+    // Listede olmayan satır yok sayılır.
+    draw(&app, 100, 24);
+    assert_eq!(click(&mut app, 10, 20), None);
+}
+
+#[test]
+fn click_message_selects_it() {
+    let msgs: Vec<Message> = (0..5)
+        .map(|i| msg(i, i * 10, FRIEND, &format!("m{i}")))
+        .collect();
+    let ids: Vec<Snowflake> = msgs.iter().map(|m| m.id).collect();
+    let mut app = test_app(shared_with(msgs, true));
+    open_sohbet(&mut app);
+    draw(&app, 100, 24);
+    app.focus = Focus::Guilds;
+    let list = app.hits.messages.get();
+    let rows = app.hits.message_rows.borrow().clone();
+    assert_eq!(rows.len(), usize::from(list.height));
+    let target = ids[2];
+    let r = rows.iter().position(|r| *r == Some(target)).expect("satır");
+    click(
+        &mut app,
+        list.x + 2,
+        list.y + u16::try_from(r).expect("sığar"),
+    );
+    assert_eq!(app.selected, Some(target));
+    assert_eq!(app.mode, compose::Mode::Select);
+    assert_eq!(app.focus, Focus::Messages);
+}
+
+#[test]
+fn click_member_opens_profile_action() {
+    let mut app = drawn_app();
+    // Satır 0 grup başlığı (kullanıcı yok), satır 1 "Mod Kişi" (300).
+    assert_eq!(click(&mut app, 85, 1), None);
+    assert_ne!(app.mode, compose::Mode::Profile);
+    let a = click(&mut app, 85, 2);
+    assert_eq!(
+        a,
+        Some(Action::LoadProfile {
+            user: Snowflake(300),
+            guild: Some(Snowflake(GUILD))
+        })
+    );
+    assert_eq!(app.mode, compose::Mode::Profile);
+}
+
+#[test]
+fn wheel_scrolls_messages_channels_and_members() {
+    let msgs: Vec<Message> = (0..100)
+        .map(|i| msg(i, i * 10, FRIEND, &format!("mesaj {i}")))
+        .collect();
+    let shared = shared_with(msgs, true);
+    shared
+        .state
+        .write()
+        .expect("kilit")
+        .apply_member_list(&member_update());
+    let mut app = test_app(shared);
+    open_sohbet(&mut app);
+    draw(&app, 100, 12);
+    wheel(&mut app, 50, 5, false);
+    assert!(app.scroll.anchor.is_some(), "yukarı çentik eskiye kaydırır");
+    for _ in 0..50 {
+        wheel(&mut app, 50, 5, true);
+    }
+    assert_eq!(app.scroll, Scroll::default());
+    // Kanal listesi: seçim kayar, odak değişmez.
+    let focus = app.focus;
+    let before = app.chan_sel;
+    wheel(&mut app, 10, 3, false);
+    assert_eq!(app.chan_sel, before - 1);
+    assert_eq!(app.focus, focus);
+    // Üye paneli: kaydırma sınırlanır (liste kısa ve ekrana sığıyor).
+    wheel(&mut app, 85, 3, true);
+    draw(&app, 100, 12);
+    assert_eq!(app.members_offset.get(), 0);
+    draw(&app, 100, 6);
+    wheel(&mut app, 85, 3, true);
+    draw(&app, 100, 6);
+    assert!(app.members_offset.get() > 0);
+}
+
+#[test]
+fn mouse_disabled_ignores_events() {
+    let mut app = drawn_app();
+    app.mouse = false;
+    click(&mut app, 2, 2);
+    assert_eq!(app.guild_sel, 0);
+    assert_eq!(click(&mut app, 85, 2), None);
+    assert_ne!(app.mode, compose::Mode::Profile);
+}
+
+#[test]
+fn drags_and_other_buttons_are_ignored() {
+    let mut app = drawn_app();
+    app.handle(mouse_ev(MouseEventKind::Drag(MouseButton::Left), 2, 2));
+    app.handle(mouse_ev(MouseEventKind::Down(MouseButton::Right), 2, 2));
+    app.handle(mouse_ev(MouseEventKind::Up(MouseButton::Left), 2, 2));
+    app.handle(mouse_ev(MouseEventKind::Moved, 2, 2));
+    assert_eq!(app.guild_sel, 0);
+}
+
+#[test]
+fn click_switcher_row_selects_then_second_click_activates() {
+    let mut app = test_app(shared_with(vec![], true));
+    app.handle(key_mod(KeyCode::Char('k'), KeyModifiers::CONTROL));
+    draw(&app, 100, 24);
+    let list = app.hits.overlay_list.get();
+    assert!(list.height > 2);
+    assert_eq!(click(&mut app, list.x + 2, list.y + 2), None);
+    assert_eq!(app.comp_sel, 2);
+    let target = app.switcher_matches()[2].channel;
+    let a = click(&mut app, list.x + 2, list.y + 2);
+    assert!(
+        matches!(a, Some(Action::OpenChannel { channel, .. }) if channel == target),
+        "{a:?}"
+    );
+    // Tekerlek seçimi kaydırır.
+    app.handle(key_mod(KeyCode::Char('k'), KeyModifiers::CONTROL));
+    draw(&app, 100, 24);
+    wheel(&mut app, 50, 10, true);
+    assert_eq!(app.comp_sel, 1);
+}
+
+#[test]
+fn click_settings_row_selects_then_activates() {
+    let mut app = test_app(Arc::new(Shared::default()));
+    app.settings = settings::State::new(setting_items());
+    run_command(&mut app, "settings");
+    draw(&app, 90, 10);
+    let list = app.hits.overlay_list.get();
+    assert_eq!(click(&mut app, list.x + 3, list.y + 1), None);
+    assert_eq!(app.settings.sel, 1);
+    click(&mut app, list.x + 3, list.y); // satır 0'a geç
+    assert_eq!(app.settings.sel, 0);
+    let a = click(&mut app, list.x + 3, list.y);
+    assert!(matches!(a, Some(Action::ApplySetting { .. })), "{a:?}");
+}
+
+#[test]
+fn click_search_row_selects_and_wheel_moves() {
+    let msgs = vec![
+        msg(1, 0, FRIEND, "bir"),
+        msg(2, 1, FRIEND, "iki"),
+        msg(3, 2, FRIEND, "üç"),
+    ];
+    let hits = msgs.clone();
+    let mut app = test_app(shared_with(msgs, true));
+    open_sohbet(&mut app);
+    run_command(&mut app, "pins");
+    app.handle(UiEvent::SearchResults {
+        seq: app.search_seq,
+        total: 3,
+        hits,
+    });
+    draw(&app, 100, 12);
+    let list = app.hits.overlay_list.get();
+    click(&mut app, list.x + 2, list.y + 2);
+    assert_eq!(app.search.as_ref().map(|v| v.sel), Some(2));
+    wheel(&mut app, 50, 5, false);
+    assert_eq!(app.search.as_ref().map(|v| v.sel), Some(1));
+}
+
+#[test]
+fn wheel_scrolls_help() {
+    let mut app = test_app(Arc::new(Shared::default()));
+    run_command(&mut app, "help");
+    draw(&app, 100, 12);
+    wheel(&mut app, 50, 5, true);
+    assert_eq!(app.help_scroll, 3);
+    wheel(&mut app, 50, 5, false);
+    assert_eq!(app.help_scroll, 0);
+}
+
+#[test]
+fn p_in_select_and_profile_command_open_load_action() {
+    let mut app = test_app(shared_with(vec![msg(1, 0, FRIEND, "selam")], true));
+    open_sohbet(&mut app);
+    press(&mut app, &[KeyCode::Char('v')]);
+    let want = Action::LoadProfile {
+        user: Snowflake(FRIEND),
+        guild: Some(Snowflake(GUILD)),
+    };
+    assert_eq!(press(&mut app, &[KeyCode::Char('p')]), [want]);
+    assert_eq!(app.mode, compose::Mode::Profile);
+    press(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.mode, compose::Mode::Select, "kapanınca önceki moda");
+
+    press(&mut app, &[KeyCode::Esc]);
+    let a = run_command(&mut app, "profile @arkadas");
+    assert_eq!(
+        a,
+        [Action::LoadProfile {
+            user: Snowflake(FRIEND),
+            guild: Some(Snowflake(GUILD))
+        }]
+    );
+    press(&mut app, &[KeyCode::Esc]);
+    // Kimlikle de olur; bilinmeyen ad bildirim verir.
+    let a = run_command(&mut app, "profile 777");
+    assert!(matches!(
+        a[..],
+        [Action::LoadProfile {
+            user: Snowflake(777),
+            ..
+        }]
+    ));
+    press(&mut app, &[KeyCode::Esc]);
+    assert!(run_command(&mut app, "profile yokboyle").is_empty());
+    assert!(
+        app.notice
+            .as_deref()
+            .is_some_and(|n| n.contains("bulunamadı"))
+    );
+    assert!(run_command(&mut app, "profile").is_empty());
+}
+
+#[test]
+fn profile_command_resolves_guild_nick_and_dm_has_no_guild() {
+    let mut app = members_app();
+    let a = run_command(&mut app, "profile takma");
+    assert_eq!(
+        a,
+        [Action::LoadProfile {
+            user: Snowflake(300),
+            guild: Some(Snowflake(GUILD))
+        }]
+    );
+    press(&mut app, &[KeyCode::Esc]);
+    // DM'de sunucu yok.
+    let mut dm = test_app(shared_with(vec![], true));
+    dm.open = Some(Open {
+        guild: None,
+        channel: Snowflake(DM),
+    });
+    let a = run_command(&mut dm, &format!("profile {FRIEND}"));
+    assert_eq!(
+        a,
+        [Action::LoadProfile {
+            user: Snowflake(FRIEND),
+            guild: None
+        }]
+    );
+}
+
+fn sample_profile() -> Box<digcord_model::UserProfile> {
+    let v = serde_json::json!({
+        "user": {"id": FRIEND.to_string(), "username": "arkadas", "global_name": "Arkadaş"},
+        "user_profile": {"bio": "Merhaba, ben bir deneme biyografisiyim.\nİkinci satır.", "pronouns": "o/o"},
+        "badges": [{"id": "x", "description": "Aktif Geliştirici"}],
+        "mutual_guilds": [{"id": GUILD.to_string(), "nick": null}, {"id": "999"}],
+        "mutual_friends": [], "mutual_friends_count": 2,
+        "guild_member": {"nick": "Ark", "roles": ["7"], "joined_at": "2023-05-06T07:08:09+00:00"},
+        "connected_accounts": [{"type": "github", "name": "ark", "verified": true}]
+    });
+    Box::new(digcord_model::UserProfile::from_json(&v).expect("profil"))
+}
+
+fn profile_app() -> App {
+    let mut app = test_app(shared_with(vec![], true));
+    open_sohbet(&mut app);
+    app.open_profile(Snowflake(FRIEND));
+    app
+}
+
+#[test]
+fn profile_popup_snapshots() {
+    let mut app = profile_app();
+    insta::assert_snapshot!("profile_loading", draw(&app, 80, 24));
+    app.handle(UiEvent::Profile {
+        user: Snowflake(FRIEND),
+        guild: Some(Snowflake(GUILD)),
+        result: Ok(sample_profile()),
+    });
+    insta::assert_snapshot!("profile_ready", draw(&app, 80, 24));
+    let mut app = profile_app();
+    app.handle(UiEvent::Profile {
+        user: Snowflake(FRIEND),
+        guild: Some(Snowflake(GUILD)),
+        result: Err("Profil alınamadı: sunucu 403 döndü".into()),
+    });
+    insta::assert_snapshot!("profile_error", draw(&app, 80, 24));
+}
+
+#[test]
+fn profile_ignores_stale_response_and_retries_on_error() {
+    let mut app = profile_app();
+    app.handle(UiEvent::Profile {
+        user: Snowflake(5),
+        guild: Some(Snowflake(GUILD)),
+        result: Ok(sample_profile()),
+    });
+    assert!(matches!(
+        app.profile.as_ref().map(|v| &v.load),
+        Some(profile::Load::Loading)
+    ));
+    app.handle(UiEvent::Profile {
+        user: Snowflake(FRIEND),
+        guild: Some(Snowflake(GUILD)),
+        result: Err("x".into()),
+    });
+    let a = press(&mut app, &[KeyCode::Char('r')]);
+    assert_eq!(
+        a,
+        [Action::LoadProfile {
+            user: Snowflake(FRIEND),
+            guild: Some(Snowflake(GUILD))
+        }]
+    );
+    // Pencere dışına tıklamak kapatır, içine tıklamak kapatmaz.
+    draw(&app, 80, 24);
+    let p = app.hits.popup.get();
+    click(&mut app, p.x + 2, p.y + 2);
+    assert_eq!(app.mode, compose::Mode::Profile);
+    click(&mut app, 0, 0);
+    assert_eq!(app.mode, compose::Mode::Normal);
+}

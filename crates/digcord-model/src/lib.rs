@@ -4,6 +4,7 @@ mod client;
 mod member_list;
 mod message;
 mod permissions;
+mod profile;
 mod ready;
 mod search;
 mod snowflake;
@@ -19,6 +20,7 @@ pub use message::{
     VoiceState, message_kind,
 };
 pub use permissions::{MemberContext, Overwrite, OverwriteKind, Permissions, Role};
+pub use profile::{ConnectedAccount, MutualGuild, ProfileBadge, UserProfile};
 pub use ready::{
     Channel, ChannelOverride, CustomEmoji, Entries, ForumTag, Guild, GuildMembersChunk,
     GuildProperties, GuildSettings, Member, MuteConfig, ReadStateEntry, Ready, Relationship,

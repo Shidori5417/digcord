@@ -241,6 +241,8 @@ pub(crate) fn draw(app: &App, frame: &mut Frame) {
 
     let h = usize::from(list.height).max(1);
     let offset = s.sel.saturating_sub(h - 1);
+    app.hits.overlay_list.set(list);
+    app.hits.overlay_offset.set(offset);
     let key_w = s.items.iter().map(|i| i.key.len()).max().unwrap_or(0) + 2;
     let lines: Vec<Line> = s
         .items

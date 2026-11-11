@@ -36,6 +36,8 @@ pub(crate) enum Mode {
     Search,
     /// `?` / `:help` tam ekran yardım.
     Help,
+    /// Kullanıcı profili penceresi.
+    Profile,
 }
 
 /// Yazılan metnin hedefi.
@@ -290,6 +292,7 @@ impl App {
                 return Some(Action::Copy(text));
             }
             Some(Act::OpenMedia) => return self.open_media(open.channel, sel),
+            Some(Act::Profile) => return self.profile_of_selected(),
             Some(Act::Retry) if self.shared.read().is_failed(sel) => {
                 return Some(Action::Retry {
                     guild: open.guild,
@@ -517,6 +520,7 @@ impl App {
             }
             "search" => self.search_command(rest),
             "pins" => self.pins_command(),
+            "profile" => self.profile_command(rest),
             "members" => Some(self.toggle_members()),
             "theme" => {
                 let theme = rest.trim();
@@ -844,6 +848,7 @@ pub(crate) fn mode_label(mode: Mode) -> &'static str {
         Mode::Settings => " [AYAR] ",
         Mode::Search => " [ARAMA] ",
         Mode::Help => " [YARDIM] ",
+        Mode::Profile => " [PROFİL] ",
     }
 }
 

@@ -44,6 +44,7 @@ fn describe(act: Act) -> &'static str {
         Act::Copy => "mesajı kopyala",
         Act::OpenMedia => "resmi / bağlantıyı aç",
         Act::Retry => "başarısız mesajı yeniden gönder",
+        Act::Profile => "yazarın profilini aç",
     }
 }
 
@@ -94,6 +95,28 @@ const FIXED: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "Profil penceresi",
+        &[
+            ("j k ↓ ↑ PgDn PgUp", "kaydır"),
+            ("r", "yüklenemediyse yeniden dene"),
+            ("Esc q", "kapat"),
+        ],
+    ),
+    (
+        "Fare (ui.mouse)",
+        &[
+            (
+                "sol tık",
+                "sunucu / kanal / mesaj / üye seç; listede ikinci tık etkinleştirir",
+            ),
+            ("tekerlek", "altındaki paneli kaydır"),
+            (
+                "Shift+sürükle",
+                "terminalde metin seç (fare yakalama açıkken)",
+            ),
+        ],
+    ),
+    (
         "Yardım (bu ekran)",
         &[("j k ↓ ↑ PgDn PgUp", "kaydır"), ("Esc q", "kapat")],
     ),
@@ -107,6 +130,7 @@ const COMMANDS: &[(&str, &str)] = &[
         "kanalda / sunucuda ara",
     ),
     (":pins", "sabitlenmiş mesajlar"),
+    (":profile <ad | kimlik>", "kullanıcı profilini aç"),
     (":threads", "seçili kanalın thread listesini aç / kapat"),
     (":archived", "arşivli thread'leri yükle"),
     (":members", "üye panelini aç / kapat"),

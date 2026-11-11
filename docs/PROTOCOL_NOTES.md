@@ -350,6 +350,26 @@ bucket mantığıyla yönetilir (`GET /guilds/:id/messages/search`).
 - Liste kimliği değişince eski listeyi atıyoruz (kanal değişince yeni `id` ile gelen SYNC yerine geçer).
 - Başka kanalda aynı `id` ile gelen liste yeniden SYNC'lenir mi bilinmiyor.
 
+### 4.7 Kullanıcı profili (açılır profil) — 2026-11-11 gözlemi
+
+Resmi web istemcisinde üye listesinde bir kişiye tıklayınca (yan hesap, Chrome 155). Kayıt yalnızca
+istek ve **yanıt biçimini** içerir, değer yok (`captures/profile-shape-2026-11-11.json`, commit'lenmez).
+
+- `GET /api/v9/users/{user_id}/profile?type=popout&with_mutual_guilds=true&with_mutual_friends=true&with_mutual_friends_count=false&guild_id={guild_id}`
+  Başlıklar diğer GET'lerle aynı (§3.2). `guild_id` sunucuda gönderiliyor; **DM'de çıkarıldığı
+  doğrulanmadı** (biz çıkarıyoruz).
+- Resmi istemci aynı kişiyi ikinci kez açınca istek göndermedi (istemci önbelleği). Biz de
+  (kullanıcı, sunucu) başına oturum boyunca önbellekliyoruz; hata önbelleğe alınmaz.
+- Yanıt anahtarları: `user{id,username,global_name,avatar,bio,accent_color,banner_color,...}`,
+  `user_profile{bio,pronouns,accent_color}`, `badges[{id,description,icon}]`, `mutual_guilds[{id,nick}]`,
+  `mutual_friends[]`, `mutual_friends_count`, `guild_member{nick,roles[],joined_at,...}`,
+  `guild_member_profile{pronouns}`, `premium_since`, `connected_accounts[{type,name,verified}]`.
+  Ayrıştırma hoşgörülü: eksik/beklenmeyen türde alan varsayılana düşer.
+- ⚠️ Doğrulanmadı: `Referer` değeri. Biz sunucuda `https://discord.com/channels/{guild}`, DM'de
+  `https://discord.com/channels/@me` gönderiyoruz (kanal bilinmiyor); resmi istemcinin tam
+  değeri (kanal içerip içermediği) kayıtta yok. `bot` alanı yanıtta gözlenmedi; rozet için store'daki
+  kullanıcıya da bakılıyor. Yalnızca kullanıcı eylemiyle istenir; üyelere toplu/önceden istek yok.
+
 ## 5. Davranış kuralları (ban riskini azaltmak için)
 
 - Resmi istemcinin **yapmadığı** şeyi yapma: toplu geçmiş indirme, otomatik yanıt, çok hızlı

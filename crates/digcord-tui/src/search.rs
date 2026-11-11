@@ -436,6 +436,8 @@ pub(crate) fn draw(app: &App, frame: &mut Frame) {
     } else {
         let st = app.shared.read();
         let offset = v.sel.saturating_sub(h - 1);
+        app.hits.overlay_list.set(list);
+        app.hits.overlay_offset.set(offset);
         v.hits
             .iter()
             .enumerate()

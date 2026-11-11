@@ -280,6 +280,7 @@ pub(crate) fn draw(app: &App, frame: &mut Frame) {
 
     let full = frame.area();
     frame.buffer_mut().set_style(full, app.theme.base());
+    app.hits.reset();
     let st = app.shared.read();
     draw_strip(app, &st, frame, strip);
     draw_channels(app, &st, frame, channels);
@@ -290,13 +291,17 @@ pub(crate) fn draw(app: &App, frame: &mut Frame) {
             .border_style(app.theme.border_style(false));
         let inner = block.inner(members);
         frame.render_widget(block, members);
-        let lines = crate::members::rows(
+        let (lines, users, skip) = crate::members::rows(
             &app.theme,
             &st,
             app.open.map(|o| (o.guild, o.channel)),
             usize::from(inner.width),
             usize::from(inner.height),
+            app.members_offset.get(),
         );
+        app.members_offset.set(skip);
+        app.hits.members.set(inner);
+        *app.hits.member_rows.borrow_mut() = users;
         frame.render_widget(Paragraph::new(lines), inner);
     }
     frame.render_widget(
@@ -328,6 +333,8 @@ pub(crate) fn draw(app: &App, frame: &mut Frame) {
         crate::help::draw(app, frame);
     } else if app.mode == Mode::Switcher {
         draw_switcher(app, frame);
+    } else if app.mode == Mode::Profile {
+        crate::profile::draw(app, frame);
     } else if let (Mode::Viewer, Some(v)) = (app.mode, &app.viewer) {
         crate::viewer::draw(v, &app.images, &app.theme, frame);
     }
@@ -347,6 +354,7 @@ fn draw_switcher(app: &App, frame: &mut Frame) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let [input, list] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
+    app.hits.overlay_list.set(list);
     let (rows, cur) = app.command.layout(input.width.saturating_sub(2).max(1));
     let mut line = Line::from(Span::styled("> ", app.theme.dim()));
     line.spans
@@ -516,6 +524,9 @@ fn draw_strip(app: &App, st: &State, frame: &mut Frame, area: Rect) {
                 drawn.push((i - skip, digcord_media::cdn::guild_icon(g.0, hash)));
             }
         }
+        app.hits.strip.set(inner);
+        app.hits.strip_skip.set(skip);
+        app.hits.strip_row_h.set(ICON_ROWS);
         frame.render_widget(
             Paragraph::new(lines).block(panel(String::new(), focused, &app.theme)),
             area,
@@ -552,6 +563,8 @@ fn draw_strip(app: &App, st: &State, frame: &mut Frame, area: Rect) {
     }
     let inner_h = usize::from(area.height.saturating_sub(2));
     let skip = app.guild_sel.saturating_sub(inner_h.saturating_sub(1));
+    app.hits.strip.set(area.inner(Margin::new(1, 1)));
+    app.hits.strip_skip.set(skip);
     frame.render_widget(
         Paragraph::new(lines.split_off(skip.min(lines.len()))).block(panel(
             String::new(),
@@ -582,6 +595,7 @@ fn draw_channels(app: &App, st: &State, frame: &mut Frame, area: Rect) {
         offset = app.chan_sel + 1 - inner_h;
     }
     app.chan_offset.set(offset);
+    app.hits.channels.set(area.inner(Margin::new(1, 1)));
 
     let open = app.open.map(|o| o.channel);
     let lines: Vec<Line> = entries
@@ -629,6 +643,7 @@ fn draw_channels(app: &App, st: &State, frame: &mut Frame, area: Rect) {
 
 fn draw_messages(app: &App, st: &State, frame: &mut Frame, area: Rect) {
     let focused = app.focus == Focus::Messages && matches!(app.screen, Screen::Main);
+    app.hits.messages_panel.set(area);
     let Some(open) = app.open else {
         app.msg_area
             .set((area.width.saturating_sub(2), area.height.saturating_sub(2)));
@@ -642,6 +657,7 @@ fn draw_messages(app: &App, st: &State, frame: &mut Frame, area: Rect) {
         );
         return;
     };
+    app.hits.messages_panel.set(area);
     let block = panel(String::new(), focused, &app.theme);
     let full = block.inner(area);
     frame.render_widget(block, area);
@@ -658,6 +674,7 @@ fn draw_messages(app: &App, st: &State, frame: &mut Frame, area: Rect) {
     let [inner, input] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(input_h)]).areas(full);
     app.msg_area.set((inner.width, inner.height));
+    app.hits.messages.set(inner);
 
     let Some(msgs) = st.messages(open.channel) else {
         frame.render_widget(
@@ -675,6 +692,8 @@ fn draw_messages(app: &App, st: &State, frame: &mut Frame, area: Rect) {
     // Görünen resim yerleri: (yer, ilk satırın alttan sırası, kaynak mesaj).
     let mut slots: Vec<(render::ImageSlot, usize, (Snowflake, Snowflake))> = Vec::new();
     let mut out: VecDeque<Line<'static>> = VecDeque::with_capacity(h + 1);
+    // `out` ile aynı sırada: her satırın mesajı (tıklama eşlemesi).
+    let mut ids: VecDeque<Option<Snowflake>> = VecDeque::with_capacity(h + 1);
     let mut reached_oldest = msgs.is_empty();
     let selected =
         if app.mode == Mode::Select || matches!(app.mode, Mode::React | Mode::ConfirmDelete(_)) {
@@ -711,6 +730,7 @@ fn draw_messages(app: &App, st: &State, frame: &mut Frame, area: Rect) {
                     break;
                 }
                 out.push_front(l);
+                ids.push_front(Some(msgs[idx].id));
             }
             if out.len() == h {
                 break;
@@ -730,13 +750,16 @@ fn draw_messages(app: &App, st: &State, frame: &mut Frame, area: Rect) {
             "yükleniyor…"
         };
         out.push_front(Line::styled(marker, app.theme.dim()).centered());
+        ids.push_front(None);
         // Kısa içerik alta yaslanır (sohbet düzeni).
         while out.len() < h {
             out.push_front(Line::default());
+            ids.push_front(None);
         }
     } else if reached_oldest && !st.history_complete(open.channel) {
         app.want_older.set(true);
     }
+    *app.hits.message_rows.borrow_mut() = Vec::from(ids);
     frame.render_widget(Paragraph::new(Vec::from(out)), inner);
     draw_slots(app, frame, inner, &slots);
     // Tamamlama penceresi mesaj listesinin üstüne çizildiği için en son.

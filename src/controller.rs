@@ -11,7 +11,7 @@ use digcord_http::{Http, HttpError, NewMessage, Page, SearchOutcome, SearchScope
 use digcord_media::{Fetcher, MediaError};
 use digcord_model::{
     ClientProperties, DEFAULT_BUILD_NUMBER, DEFAULT_CHROME_MAJOR, Message, MessageDelete,
-    ReactionEmoji, Ready, SearchQuery, Snowflake, Token, channel_kind,
+    ReactionEmoji, Ready, SearchQuery, Snowflake, Token, UserProfile, channel_kind,
 };
 use digcord_store::{NotifyFilter, State, VoiceCall, VoicePhase};
 use digcord_tui::{Action, ImageJob, SettingValue, Shared, Status, ToastKind, UiEvent};
@@ -35,6 +35,55 @@ const MEMBERS_PER_REQUEST: usize = 100;
 const MEMBER_RANGE_END: u32 = 99;
 /// Medya disk önbelleğinin üst sınırı; açılışta en eskiler silinir.
 const MEDIA_CACHE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Profil önbelleği anahtarı: (kullanıcı, sunucu); sunucu `None` DM.
+type ProfileKey = (Snowflake, Option<Snowflake>);
+
+/// Önbellekte tutulan en çok profil (aşılırsa baştan başlanır; kullanıcı eylemiyle dolduğundan
+/// pratikte hiç aşılmaz).
+const PROFILE_CACHE_MAX: usize = 256;
+
+/// Oturum boyunca (kullanıcı, sunucu) başına profil önbelleği ve süren istekler: aynı anahtar için
+/// ağa tek istek gider, başarılı yanıt tekrar istenmez (resmi istemci de önbellekliyor).
+#[derive(Default)]
+struct ProfileCache {
+    done: std::collections::HashMap<ProfileKey, UserProfile>,
+    inflight: HashSet<ProfileKey>,
+}
+
+#[derive(Debug, PartialEq)]
+enum ProfileLookup {
+    /// Önbellekte var: ağa gidilmez.
+    Hit(Box<UserProfile>),
+    /// Aynı anahtarın isteği sürüyor: yanıt gelince TUI'ye gider.
+    InFlight,
+    /// Yok: istek başlatılmalı (süren olarak işaretlendi).
+    Miss,
+}
+
+impl ProfileCache {
+    fn lookup(&mut self, key: ProfileKey) -> ProfileLookup {
+        if let Some(p) = self.done.get(&key) {
+            return ProfileLookup::Hit(Box::new(p.clone()));
+        }
+        if self.inflight.insert(key) {
+            ProfileLookup::Miss
+        } else {
+            ProfileLookup::InFlight
+        }
+    }
+
+    /// İstek bitti; başarılıysa önbelleğe alınır (hata önbelleğe alınmaz: yeniden denenebilir).
+    fn finish(&mut self, key: ProfileKey, profile: Option<&UserProfile>) {
+        self.inflight.remove(&key);
+        if let Some(p) = profile {
+            if self.done.len() >= PROFILE_CACHE_MAX {
+                self.done.clear();
+            }
+            self.done.insert(key, p.clone());
+        }
+    }
+}
 
 struct Session {
     stop: watch::Sender<bool>,
@@ -222,6 +271,8 @@ struct Controller {
     loading: HashSet<Snowflake>,
     /// Thread listesi isteği sürmekte olan (üst kanal, arşivli mi) çiftleri.
     loading_threads: HashSet<(Snowflake, bool)>,
+    /// Kullanıcı profili önbelleği (oturum boyunca).
+    profiles: ProfileCache,
     /// op 8 ile zaten istenmiş (guild, kullanıcı) çiftleri.
     requested_members: HashSet<(Snowflake, Snowflake)>,
     /// Terminal odakta mı (odak olayları desteklenmiyorsa hep `true`).
@@ -824,6 +875,8 @@ impl Controller {
         if let Some(old) = self.session.take() {
             old.stop().await;
         }
+        // Başka hesap olabilir: önceki hesabın profilleri atılır.
+        self.profiles = ProfileCache::default();
         match Session::start(token, &self.env, self.updates_tx.clone(), self.focused).await {
             Ok(s) => self.session = Some(s),
             Err(e) => self.send(UiEvent::Status(Status::Failed(e.to_string()))),
@@ -1152,6 +1205,49 @@ impl Controller {
         );
     }
 
+    /// `Action::LoadProfile`: önbellekte varsa ağa gitmeden yanıtlar; yoksa tek istek.
+    fn load_profile(&mut self, user: Snowflake, guild: Option<Snowflake>) {
+        let key = (user, guild);
+        let Some(http) = self.session.as_ref().map(|s| s.http.clone()) else {
+            self.send(UiEvent::Profile {
+                user,
+                guild,
+                result: Err("Bağlı değil".into()),
+            });
+            return;
+        };
+        match self.profiles.lookup(key) {
+            ProfileLookup::Hit(p) => self.send(UiEvent::Profile {
+                user,
+                guild,
+                result: Ok(p),
+            }),
+            ProfileLookup::InFlight => {}
+            ProfileLookup::Miss => self.spawn(
+                async move { http.user_profile(user, guild).await },
+                move |c, result| match result {
+                    Ok(p) => {
+                        c.profiles.finish(key, Some(&p));
+                        c.send(UiEvent::Profile {
+                            user,
+                            guild,
+                            result: Ok(Box::new(p)),
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!("profil alınamadı: {e}");
+                        c.profiles.finish(key, None);
+                        c.send(UiEvent::Profile {
+                            user,
+                            guild,
+                            result: Err(format!("Profil alınamadı: {e}")),
+                        });
+                    }
+                },
+            ),
+        }
+    }
+
     /// Yüklü olmayan bir mesaja atla: önceki kanal kırpılır, hedef kanal mesajın çevresiyle açılır.
     fn jump_to(&mut self, open: Open, message: Snowflake, previous: Option<Snowflake>) {
         if let Some(prev) = previous {
@@ -1437,6 +1533,7 @@ impl Controller {
                 message,
                 previous,
             } => self.jump_to(Open { guild, channel }, message, previous),
+            Action::LoadProfile { user, guild } => self.load_profile(user, guild),
             Action::LoadThreads {
                 guild,
                 channel,
@@ -1611,6 +1708,7 @@ pub async fn run(
         members_subscribed: None,
         loading: HashSet::new(),
         loading_threads: HashSet::new(),
+        profiles: ProfileCache::default(),
         requested_members: HashSet::new(),
         focused: true,
         last_ack: std::collections::HashMap::new(),
@@ -1736,5 +1834,40 @@ mod tests {
         assert!(settings.toasts);
         let off = AppConfig::parse("[ui]\ntoasts = false\n").expect("geçerli");
         assert!(!Settings::from_config(&off).toasts);
+    }
+
+    #[test]
+    fn profile_cache_requests_once_per_user_and_guild() {
+        let (u, g) = (Snowflake(1), Some(Snowflake(2)));
+        let profile = UserProfile {
+            username: Some("x".into()),
+            ..UserProfile::default()
+        };
+        let mut cache = ProfileCache::default();
+        assert_eq!(cache.lookup((u, g)), ProfileLookup::Miss);
+        // İstek sürerken aynı anahtar yeni istek doğurmaz.
+        assert_eq!(cache.lookup((u, g)), ProfileLookup::InFlight);
+        // Sunucu ya da kullanıcı farklıysa ayrı anahtar.
+        assert_eq!(cache.lookup((u, None)), ProfileLookup::Miss);
+        assert_eq!(cache.lookup((Snowflake(3), g)), ProfileLookup::Miss);
+        cache.finish((u, g), Some(&profile));
+        assert_eq!(
+            cache.lookup((u, g)),
+            ProfileLookup::Hit(Box::new(profile)),
+            "ikinci açılışta ağa gidilmez"
+        );
+    }
+
+    #[test]
+    fn failed_profile_is_not_cached_and_can_retry() {
+        let key = (Snowflake(1), None);
+        let mut cache = ProfileCache::default();
+        assert_eq!(cache.lookup(key), ProfileLookup::Miss);
+        cache.finish(key, None);
+        assert_eq!(
+            cache.lookup(key),
+            ProfileLookup::Miss,
+            "hata sonrası yeniden denenir"
+        );
     }
 }

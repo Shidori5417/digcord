@@ -112,7 +112,7 @@ kılmaları doğru görünür; atanmamış eylem `(atanmamış)` yazar): *Genel*
 (tuşlar, açıklama, köşeli parantezde `[keys]` eylem adı), ardından yeniden atanamayan tuşlar
 (*Sabit*, *YAZ*, *Resim görüntüleyici*, *Arama / sabitlenenler*, *Ayarlar*, *Yardım*) ve en altta
 komutlar (`:upload`, `:search`, `:pins`, `:threads`, `:archived`, `:members`, `:settings`, `:theme`,
-`:devices`, `:leave`, `:mute`, `:deaf`, `:call`, `:vol`, `:help`, `:q`). `j`/`k` (`↓`/`↑`) kaydır,
+`:profile`, `:devices`, `:leave`, `:mute`, `:deaf`, `:call`, `:vol`, `:help`, `:q`). `j`/`k` (`↓`/`↑`) kaydır,
 `PgUp`/`PgDn` sayfa, `Home`/`End` başa/sona, `Esc`/`q` kapat; SEÇ modundan açılmışsa aynı mod ve seçim
 korunarak dönülür. YAZ modunda `?` düz karakterdir.
 
@@ -199,11 +199,41 @@ korunarak dönülür. YAZ modunda `?` düz karakterdir.
   0.012) `:settings`'ten `+`/`-` ile anında değişir. Aygıt değişikliği bir sonraki katılımda
   geçerli. Ayrı bir ses ayarları penceresi ve ayarlanabilir PTT tuşu yok: Ctrl+Space sabit. (sonra)
 
+### Fare ve profil penceresi
+
+**Fare** (`ui.mouse = true`, varsayılan; yeniden başlatınca geçerli): terminalde fare yakalama
+açılır, çıkışta ve panikte kapatılır. Yakalama açıkken terminalin kendi metin seçimi için
+**Shift+sürükle** gerekir (çoğu terminalde, kitty dahil). Sürükleme ve sol dışındaki düğmeler yok
+sayılır; klavye davranışı değişmez. NORMAL/SEÇ modunda:
+
+| Hedef | Sol tık | Tekerlek |
+|---|---|---|
+| Sunucu şeridi | sunucuyu seç, kanal paneline odaklan (`j/k`+`Enter` gibi) | seçimi kaydır |
+| Kanal paneli | satırı seç ve etkinleştir (kanal aç / kategori aç-kapat / ses kanalına katıl / forum aç) | seçimi kaydır |
+| Mesaj alanı | mesaj paneline odaklan, tıklanan mesajı seç (SEÇ moduna girer) | 3 satır kaydır |
+| Üye paneli | üyenin profil penceresi | listeyi kaydır |
+
+Hızlı geçiş, ayarlar ve arama/sabitlenenler ekranlarında tık satırı seçer, **aynı satıra ikinci
+tık** etkinleştirir (`Enter` gibi); tekerlek seçimi kaydırır. Yardım ekranında tekerlek kaydırır.
+YAZ/KOMUT/TEPKİ/silme onayı/resim görüntüleyicide tıklama yok sayılır (taslak kaybolmasın);
+YAZ modunda tekerlek mesajları kaydırır. Çizim, her karede panel dikdörtgenlerini ve satır→mesaj/üye
+eşlemesini kaydeder; tık bu eşlemeyle çözülür.
+
+**Profil penceresi** (`[PROFİL]` modu, ortada): görünen ad (sunucu rol renginde) + `BOT` rozeti,
+`@kullanıcı_adı · zamirler`, hakkında (bio, sarılmış), sunucuya katılma tarihi (yerel saat dilimi,
+Türkçe ay adları), sunucudaki roller (renkli), rozet açıklamaları, ortak sunucular (adlar store'dan;
+bilinmeyenler sayı olarak), ortak arkadaş sayısı, bağlı hesaplar (`tür: ad ✓`). Yükleniyor ve hata
+durumları vardır (`r` yeniden dener). `j/k`/tekerlek kaydırır, `Esc`/`q` ya da pencere dışına tık kapatır.
+Açma yolları: üye paneline tık, SEÇ modunda `p` (eylem adı `profile`, `[keys]` ile değişir; seçili
+mesajın yazarı), `:profile <ad | kimlik | @anma>` (bilinen kullanıcı adı/görünen ad ya da sunucu
+takma adı). İstek `Action::LoadProfile`; denetleyici (kullanıcı, sunucu) başına oturum boyunca
+önbellekler, tek kullanıcı eylemi tek istek (önceden getirme yok). Ayrıntı: PROTOCOL_NOTES §4.7.
+
 ## Config
 
 `~/.config/digcord/config.toml`
 
-**Şu an desteklenenler:** `ui.theme`, `ui.show_member_list`, `ui.toasts`, `ui.images`, `ui.image_max_rows`,
+**Şu an desteklenenler:** `ui.theme`, `ui.show_member_list`, `ui.toasts`, `ui.mouse`, `ui.images`, `ui.image_max_rows`,
 `ui.code_highlight`, `ui.code_theme`, `ui.avatars`, `ui.server_icons`,
 `voice.mode` (`"vad"`, `"ptt"`), `voice.jitter_ms`, `voice.vad_threshold` (0.001–0.5; aralık dışı
 uyarıyla düzeltilir), `voice.input_device`, `voice.output_device`, `behavior.send_typing`,

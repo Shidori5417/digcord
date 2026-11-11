@@ -23,6 +23,7 @@ const KNOWN_KEYS: &[&str] = &[
     "ui.theme",
     "ui.show_member_list",
     "ui.toasts",
+    "ui.mouse",
     "ui.images",
     "ui.image_max_rows",
     "ui.code_highlight",
@@ -105,6 +106,8 @@ pub struct Ui {
     pub show_member_list: bool,
     /// Köşe bildirimleri (yeni DM/anma, hatalar).
     pub toasts: bool,
+    /// Fare desteği (tıklama, tekerlek); açıkken terminal metin seçimi için Shift+sürükle gerekir.
+    pub mouse: bool,
     pub images: Images,
     /// Bir resmin en fazla satır yüksekliği.
     pub image_max_rows: u16,
@@ -184,6 +187,7 @@ impl Default for Ui {
             theme: crate::theme::DEFAULT_NAME.to_owned(),
             show_member_list: true,
             toasts: true,
+            mouse: true,
             images: Images::Thumbnail,
             image_max_rows: 10,
             code_highlight: true,
@@ -227,6 +231,7 @@ impl Config {
             image_max_rows: self.ui.image_max_rows.clamp(1, 100),
             push_to_talk: self.voice.mode == VoiceMode::Ptt,
             show_member_list: self.ui.show_member_list,
+            mouse: self.ui.mouse,
             code_highlight: self.ui.code_highlight,
             code_theme: self.ui.code_theme.clone(),
             avatars: self.ui.avatars,
@@ -284,6 +289,7 @@ impl Config {
                 false,
             ),
             SettingItem::new("ui.toasts", SettingValue::Bool(self.ui.toasts), Bool, true),
+            SettingItem::new("ui.mouse", SettingValue::Bool(self.ui.mouse), Bool, false),
             SettingItem::new(
                 "ui.images",
                 text(self.ui.images.as_str()),
@@ -550,6 +556,7 @@ theme = "default"        # temalar ~/.config/digcord/themes/*.toml
 timestamp_format = "%H:%M"
 show_member_list = true
 toasts = true            # köşe bildirimleri
+mouse = true             # fare: tıklama + tekerlek (metin seçimi: Shift+sürükle)
 images = "thumbnail"     # "off" | "thumbnail" | "full"
 image_max_rows = 10
 code_highlight = true
@@ -594,6 +601,7 @@ build_number = 0          # 0 = otomatik/varsayılan
 theme = "light"
 show_member_list = false
 toasts = false
+mouse = false
 images = "full"
 image_max_rows = 20
 code_highlight = false
@@ -626,6 +634,7 @@ chrome_major = 130
                     theme: "light".into(),
                     show_member_list: false,
                     toasts: false,
+                    mouse: false,
                     images: Images::Full,
                     image_max_rows: 20,
                     code_highlight: false,

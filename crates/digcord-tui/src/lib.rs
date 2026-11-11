@@ -12,6 +12,8 @@ mod keymap;
 mod markdown;
 mod media;
 mod members;
+mod mouse;
+mod profile;
 mod render;
 mod search;
 mod settings;
@@ -37,7 +39,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, RwLock, RwLockReadGuard};
 
-use digcord_model::{Message, ReactionEmoji, SearchQuery, Snowflake, channel_kind};
+use digcord_model::{Message, ReactionEmoji, SearchQuery, Snowflake, UserProfile, channel_kind};
 use digcord_store::{State, TreeKind};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{DefaultTerminal, Frame};
@@ -138,6 +140,13 @@ pub enum UiEvent {
     },
     /// Gateway gecikmesi (heartbeat → ACK); durum çubuğunda gösterilir.
     Latency(std::time::Duration),
+    /// `Action::LoadProfile` yanıtı (önbellekten ya da istekten). Açık profil penceresinin
+    /// (kullanıcı, sunucu) çiftiyle eşleşmeyen yanıt yok sayılır.
+    Profile {
+        user: Snowflake,
+        guild: Option<Snowflake>,
+        result: Result<Box<UserProfile>, String>,
+    },
 }
 
 /// Bağlantı durumu (durum çubuğunda gösterilir).
@@ -242,6 +251,12 @@ pub enum Action {
         message: Snowflake,
         previous: Option<Snowflake>,
     },
+    /// Kullanıcı profilini iste (`guild: None` DM). Denetleyici oturum boyunca (kullanıcı,
+    /// sunucu) başına önbellekler; sonuç [`UiEvent::Profile`].
+    LoadProfile {
+        user: Snowflake,
+        guild: Option<Snowflake>,
+    },
     /// Panoya kopyala.
     Copy(String),
     /// Üye paneli açıldı/kapandı (`toggle_members`, `:members`); açılınca açık kanalın üye
@@ -297,7 +312,10 @@ pub fn run(
     mut actions: impl FnMut(Action),
 ) -> io::Result<()> {
     ratatui::run(|terminal| {
-        use ratatui::crossterm::event::{DisableFocusChange, EnableFocusChange};
+        use ratatui::crossterm::event::{
+            DisableFocusChange, DisableMouseCapture, EnableFocusChange,
+        };
+        let app_mouse = options.mouse;
         // Grafik yeteneği sorgusu terminale yazıp yanıtını okur: alternatif ekrana geçtikten
         // sonra, girdi thread'i başlamadan önce yapılmalı (yoksa yanıtı girdi thread'i yer).
         let picker = (options.images != ImageMode::Off).then(|| {
@@ -324,10 +342,14 @@ pub fn run(
             .spawn(move || input_loop(&tx))?;
         // Odak olayları desteklenmiyorsa sorun değil: bildirim kararı "odakta" varsayar.
         let _ = ratatui::crossterm::execute!(io::stdout(), EnableFocusChange);
+        if options.mouse {
+            enable_mouse_capture();
+        }
         let mut app = App::new(shared);
         app.push_to_talk = options.push_to_talk && enhanced;
         app.theme = options.theme;
         app.show_members = options.show_member_list;
+        app.mouse = options.mouse;
         app.code_theme = options.code_highlight.then(|| options.code_theme.clone());
         if app.code_theme.is_some() {
             highlight::warm_up();
@@ -346,8 +368,25 @@ pub fn run(
             );
         }
         let _ = ratatui::crossterm::execute!(io::stdout(), DisableFocusChange);
+        if app_mouse {
+            let _ = ratatui::crossterm::execute!(io::stdout(), DisableMouseCapture);
+        }
         result
     })
+}
+
+/// Fare yakalamayı açar ve panikte de kapatan bir panic hook zincirler: `ratatui::restore`
+/// yalnızca ham kipi ve alternatif ekranı geri alır, fare yakalamayı değil (kapatılmazsa
+/// kabuk fare olaylarıyla dolar). `ratatui::run` kendi hook'unu önce kurduğundan bu hook
+/// terminal geri yüklenmeden önce çalışır.
+fn enable_mouse_capture() {
+    use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+    let _ = ratatui::crossterm::execute!(io::stdout(), EnableMouseCapture);
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = ratatui::crossterm::execute!(io::stdout(), DisableMouseCapture);
+        previous(info);
+    }));
 }
 
 /// Terminal girdisini okur. Tek bir okuma hatası (ör. yeniden boyutlandırma sırasında boyut
@@ -515,6 +554,16 @@ pub struct App {
     fixed_now: Option<jiff::Timestamp>,
     /// `:pins` ile öğrenilen sabitlenmiş mesaj sayıları (kanal başına; getirme yapılmaz).
     pin_counts: std::collections::HashMap<Snowflake, usize>,
+    /// Fare açık mı (`ui.mouse`).
+    mouse: bool,
+    /// Son çizimin tıklanabilir bölgeleri.
+    hits: mouse::Hits,
+    /// Katman listesinde son tıklanan satır (aynı satıra ikinci tıklama etkinleştirir).
+    click_row: Option<usize>,
+    /// Üye panelinin ilk görünen satırı (tekerlek; çizimde sınırlanır).
+    members_offset: Cell<usize>,
+    /// Açık profil penceresi (`Mode::Profile`).
+    profile: Option<profile::View>,
 }
 
 impl App {
@@ -564,6 +613,11 @@ impl App {
             latency: None,
             fixed_now: None,
             pin_counts: std::collections::HashMap::new(),
+            mouse: true,
+            hits: mouse::Hits::default(),
+            click_row: None,
+            members_offset: Cell::new(0),
+            profile: None,
         }
     }
 
@@ -658,6 +712,7 @@ impl App {
                 }
                 None
             }
+            UiEvent::Input(Event::Mouse(m)) => self.handle_mouse(m),
             UiEvent::Input(Event::FocusGained) => Some(Action::Focus(true)),
             UiEvent::Input(Event::FocusLost) => Some(Action::Focus(false)),
             UiEvent::Input(_) => None,
@@ -670,6 +725,14 @@ impl App {
             }
             UiEvent::Latency(d) => {
                 self.latency = Some(d);
+                None
+            }
+            UiEvent::Profile {
+                user,
+                guild,
+                result,
+            } => {
+                self.profile_loaded(user, guild, result);
                 None
             }
             UiEvent::Toast { title, body, kind } => {
@@ -764,6 +827,7 @@ impl App {
         }
 
         self.notice = None;
+        self.click_row = None;
         // Ses: her modda (kitty klavye protokolü gerekir; yoksa :mute / :deaf).
         match self.keys.lookup(Scope::Global, &key) {
             Some(Act::ToggleMute) => return Some(Action::ToggleMute),
@@ -781,6 +845,7 @@ impl App {
             compose::Mode::Settings => return self.settings_key(key),
             compose::Mode::Search => return self.search_key(key),
             compose::Mode::Help => return self.help_key(key),
+            compose::Mode::Profile => return self.profile_key(key),
             compose::Mode::Normal => {}
         }
         let act = self.keys.lookup(Scope::Normal, &key)?;
@@ -1034,6 +1099,7 @@ impl App {
             None => self.new_marker = None,
         }
         self.open = Some(Open { guild, channel });
+        self.members_offset.set(0);
         self.scroll = Scroll::default();
         self.focus = Focus::Messages;
         self.editor.clear();
