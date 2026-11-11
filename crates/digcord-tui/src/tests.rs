@@ -269,6 +269,157 @@ fn message_view_snapshot() {
     insta::assert_snapshot!(draw(&app, 100, 16));
 }
 
+/// Ekran satırları (kenar çubuğu dahil); metin aramaları için.
+fn screen_rows(backend: &TestBackend) -> Vec<String> {
+    format!("{backend}").lines().map(str::to_owned).collect()
+}
+
+fn row_index(rows: &[String], needle: &str) -> Option<usize> {
+    rows.iter().position(|r| r.contains(needle))
+}
+
+/// Okunma kaydı `read_upto`'ya kadar olan, ardından yeni mesajlar gelen sohbet.
+fn unread_channel(read_upto: usize, msgs: &[Message]) -> Arc<Shared> {
+    let shared = shared_with(msgs[..read_upto].to_vec(), true);
+    {
+        let mut st = shared.state.write().expect("kilit");
+        st.mark_read(Snowflake(SOHBET), msgs[read_upto - 1].id);
+        for m in &msgs[read_upto..] {
+            st.message_create(m.clone());
+        }
+    }
+    shared
+}
+
+#[test]
+fn date_separators_between_days_with_consistent_heights() {
+    let msgs = vec![
+        msg(1, 0, FRIEND, "bir"),
+        msg(2, 5, FRIEND, "iki"),
+        msg(3, 24 * 60, FRIEND, "üç"),
+        msg(4, 24 * 60 + 1, FRIEND, "dört"),
+    ];
+    let mut app = test_app(shared_with(msgs, true));
+    open_sohbet(&mut app);
+    let rows = screen_rows(&draw(&app, 100, 20));
+    let d1 = row_index(&rows, "── 1 Ocak 2026 ──").expect("ilk gün");
+    let d2 = row_index(&rows, "── 2 Ocak 2026 ──").expect("ikinci gün");
+    assert!(d1 < d2);
+    // Aynı gün içinde ikinci ayırıcı yok.
+    assert_eq!(
+        rows.iter().filter(|r| r.contains("Ocak 2026 ──")).count(),
+        2
+    );
+    // Ayırıcının hemen altında yazar başlığı: gün atlayınca gruplama kesilir.
+    assert!(rows[d2 + 1].contains("arkadas"), "{}", rows[d2 + 1]);
+    assert!(rows[d1 + 1].contains("arkadas"));
+    // Dar ekranda da kaydırma yükseklikleri ayırıcıları içerir: en eskiye çıkılabilir.
+    draw(&app, 100, 10);
+    app.scroll_up(1000);
+    let rows = screen_rows(&draw(&app, 100, 10));
+    assert!(row_index(&rows, "kanalın başlangıcı").is_some());
+}
+
+#[test]
+fn new_messages_line_is_placed_kept_and_cleared() {
+    let msgs: Vec<Message> = (1..=4)
+        .map(|i| msg(i, i, FRIEND, &format!("m{i}")))
+        .collect();
+    let shared = unread_channel(2, &msgs);
+    let mut app = test_app(Arc::clone(&shared));
+    open_sohbet(&mut app);
+    let rows = screen_rows(&draw(&app, 100, 20));
+    let line = row_index(&rows, "Yeni mesajlar").expect("çizgi");
+    assert!(rows[line + 1].contains("arkadas"), "çizgi m3'ün üstünde");
+    assert!(rows[line + 2].contains("m3"), "{}", rows[line + 2]);
+    assert!(row_index(&rows, "m2").is_some_and(|r| r < line));
+    // Renk: tema `new_messages` yuvası (kırmızı).
+    let buf = draw(&app, 100, 20);
+    let col = rows[line].chars().position(|c| c == 'Y').expect("Y sütunu");
+    assert_eq!(buf.buffer()[(col as u16, line as u16)].fg, Color::Red);
+
+    // Canlı okundu işareti çizgiyi silmez.
+    shared
+        .state
+        .write()
+        .expect("kilit")
+        .mark_read(Snowflake(SOHBET), msgs[3].id);
+    let rows = screen_rows(&draw(&app, 100, 20));
+    assert!(row_index(&rows, "Yeni mesajlar").is_some());
+
+    // G / End siler.
+    press(&mut app, &[KeyCode::Char('G')]);
+    let rows = screen_rows(&draw(&app, 100, 20));
+    assert!(row_index(&rows, "Yeni mesajlar").is_none());
+}
+
+#[test]
+fn new_messages_line_cleared_on_channel_switch_and_absent_when_read() {
+    let msgs: Vec<Message> = (1..=3)
+        .map(|i| msg(i, i, FRIEND, &format!("m{i}")))
+        .collect();
+    let mut app = test_app(unread_channel(1, &msgs));
+    open_sohbet(&mut app);
+    assert!(app.new_marker.is_some());
+    app.open_channel(Some(Snowflake(GUILD)), Snowflake(12));
+    assert!(app.new_marker.is_none());
+    // Okunmuş kanalı açınca çizgi yok.
+    let mut app = test_app(shared_with(msgs, true));
+    open_sohbet(&mut app);
+    assert!(app.new_marker.is_none());
+    let rows = screen_rows(&draw(&app, 100, 20));
+    assert!(row_index(&rows, "Yeni mesajlar").is_none());
+}
+
+#[test]
+fn author_role_color_bot_badge_and_reply_line() {
+    let mut colored = msg(1, 0, FRIEND, "renkli");
+    colored.member = serde_json::from_value(serde_json::json!({"roles": ["7"]})).expect("üye");
+    let mut bot = msg(2, 1, ME, "ben botum");
+    bot.author.bot = true;
+    let mut reply = msg(3, 2, FRIEND, "cevap");
+    reply.kind = 19;
+    reply.referenced_message = Some(Box::new(msg(1, 0, FRIEND, "renkli")));
+    let mut app = test_app(shared_with(vec![colored, bot, reply], true));
+    open_sohbet(&mut app);
+    let backend = draw(&app, 100, 20);
+    let rows = screen_rows(&backend);
+    // Moderatör rolü kırmızı: yazar adı Rgb(255,0,0).
+    let r = row_index(&rows, "arkadas  01.01.2026 12:00").expect("renkli başlık");
+    let col = rows[r].chars().position(|c| c == 'a').expect("ad");
+    // Kenar çubuğu çok baytlı karakterler içerebilir; sütun = karakter sırası (hepsi dar).
+    assert_eq!(
+        backend.buffer()[(col as u16, r as u16)].fg,
+        Color::Rgb(255, 0, 0)
+    );
+    assert!(
+        row_index(&rows, "ben BOT  01.01.2026 12:01").is_some(),
+        "{rows:#?}"
+    );
+    assert!(
+        row_index(&rows, "╭─ arkadas: renkli").is_some(),
+        "{rows:#?}"
+    );
+}
+
+#[test]
+fn message_extras_snapshot() {
+    let mut bot = msg(2, 1, ME, "**BOT** mesajı");
+    bot.author.bot = true;
+    let mut reply = msg(4, 24 * 60 + 3, FRIEND, "cevap <@100>");
+    reply.kind = 19;
+    reply.referenced_message = Some(Box::new(msg(2, 1, ME, "ilk <@200>")));
+    let msgs = vec![
+        msg(1, 0, FRIEND, "dünden kalan"),
+        bot,
+        msg(3, 24 * 60, FRIEND, "bugün"),
+        reply,
+    ];
+    let mut app = test_app(unread_channel(2, &msgs));
+    open_sohbet(&mut app);
+    insta::assert_snapshot!(draw(&app, 100, 22));
+}
+
 #[test]
 fn scroll_up_down_and_follow() {
     let msgs: Vec<Message> = (0..100)
@@ -731,6 +882,7 @@ fn unread_mentions_shown_and_alt_down_jumps() {
             id: Snowflake(ME),
             username: "ben".into(),
             global_name: None,
+            bot: false,
         }];
         st.message_create(m);
     }

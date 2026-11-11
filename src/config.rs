@@ -24,6 +24,8 @@ const KNOWN_KEYS: &[&str] = &[
     "ui.show_member_list",
     "ui.images",
     "ui.image_max_rows",
+    "ui.code_highlight",
+    "ui.code_theme",
     "behavior.send_typing",
     "behavior.send_read_receipts",
     "notifications.enabled",
@@ -101,6 +103,10 @@ pub struct Ui {
     pub images: Images,
     /// Bir resmin en fazla satır yüksekliği.
     pub image_max_rows: u16,
+    /// Kod bloklarını çite yazılan dile göre renklendir.
+    pub code_highlight: bool,
+    /// Renklendirme teması (`digcord_tui::CODE_THEMES`); bilinmeyen ad varsayılana düşer.
+    pub code_theme: String,
 }
 
 /// `ui.images`: resim gösterimi.
@@ -170,6 +176,8 @@ impl Default for Ui {
             show_member_list: true,
             images: Images::Thumbnail,
             image_max_rows: 10,
+            code_highlight: true,
+            code_theme: digcord_tui::DEFAULT_CODE_THEME.to_owned(),
         }
     }
 }
@@ -207,6 +215,8 @@ impl Config {
             image_max_rows: self.ui.image_max_rows.clamp(1, 100),
             push_to_talk: self.voice.mode == VoiceMode::Ptt,
             show_member_list: self.ui.show_member_list,
+            code_highlight: self.ui.code_highlight,
+            code_theme: self.ui.code_theme.clone(),
             theme,
             keys,
             settings: self.setting_items(),
@@ -273,6 +283,18 @@ impl Config {
                     max: 100,
                     step: 1,
                 },
+                false,
+            ),
+            SettingItem::new(
+                "ui.code_highlight",
+                SettingValue::Bool(self.ui.code_highlight),
+                Bool,
+                false,
+            ),
+            SettingItem::new(
+                "ui.code_theme",
+                text(&self.ui.code_theme),
+                texts(digcord_tui::CODE_THEMES),
                 false,
             ),
             SettingItem::new(
@@ -502,6 +524,8 @@ timestamp_format = "%H:%M"
 show_member_list = true
 images = "thumbnail"     # "off" | "thumbnail" | "full"
 image_max_rows = 10
+code_highlight = true
+code_theme = "base16-ocean.dark"
 
 [behavior]
 send_typing = true
@@ -541,6 +565,8 @@ theme = "light"
 show_member_list = false
 images = "full"
 image_max_rows = 20
+code_highlight = false
+code_theme = "InspiredGitHub"
 
 [behavior]
 send_typing = false
@@ -568,6 +594,8 @@ chrome_major = 130
                     show_member_list: false,
                     images: Images::Full,
                     image_max_rows: 20,
+                    code_highlight: false,
+                    code_theme: "InspiredGitHub".into(),
                 },
                 behavior: Behavior {
                     send_typing: false,

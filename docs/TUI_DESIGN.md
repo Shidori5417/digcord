@@ -21,7 +21,9 @@
 
 - **Sunucu şeridi** (en sol, dar): DM + sunucu kısaltmaları/ikonları, okunmamış noktası, mention sayısı.
 - **Kanal ağacı:** kategoriler katlanabilir, okunmamış kalın, mention sayısı sağda. Altta ses durumu çubuğu.
-- **Mesaj görünümü:** gruplanmış mesajlar (aynı yazar, < 7 dk), yanıt önizlemesi, tepkiler, ekler, embed'ler.
+- **Mesaj görünümü:** gruplanmış mesajlar (aynı yazar, < 7 dk), yanıt önizlemesi, tepkiler, ekler, embed'ler;
+  gün ayırıcıları, "Yeni mesajlar" çizgisi, rol renkli yazar adları, `BOT` rozeti, renkli kod blokları
+  (ayrıntı: "Mesaj işleme").
 - **Üye listesi** (sağ panel, 20 sütun): sunucu kanalında gateway'in üye listesi (op 37 `channels`
   aboneliği, `GUILD_MEMBER_LIST_UPDATE`); `ROLADI — N` / `Çevrimiçi — N` / `Çevrimdışı — N` başlıkları
   altında üyeler, ad önceliği takma ad > global ad > kullanıcı adı, rengi en yüksek renkli rolden,
@@ -87,13 +89,36 @@ varsayılan tuşları gösterir.
 ## Mesaj işleme
 
 - Markdown alt kümesi: **kalın**, *italik*, __altı çizili__, ~~üstü çizili~~, `kod`, kod blokları
-  (dil adına göre sözdizimi renklendirme — `syntect` opsiyonel), `> alıntı`, `||spoiler||` (gizli, `o` ile aç),
+  (dil adına göre sözdizimi renklendirme, aşağıda), `> alıntı`, `||spoiler||` (gizli, `o` ile aç),
   başlıklar, listeler.
 - Mention'lar (`<@id>`, `<#id>`, `<@&rol>`) isimle ve renkle; kendine mention vurgulu arka plan.
 - Özel emoji: satır içinde `:isim:` (terminal hücre yapısı yüzünden satır içi resim yok);
   sadece emojiden oluşan mesajlarda (en fazla 27) emojiler büyük resim olarak yan yana.
 - Unicode emoji genişliği `unicode-width` ile; hizalama bozulmalarına dikkat.
 - Zaman damgaları `<t:...:R>` biçimleri yerelleştirilmiş gösterilir.
+- **Gün ayırıcısı:** yerel saat dilimine göre günü değişen mesajın (ve yüklü ilk mesajın) üstünde ortalı,
+  soluk `── 11 Kasım 2026 ──` (Türkçe ay adları). Ayırıcıdan sonra mesaj başlığı yeniden yazılır
+  (gruplama kesilir). Satırlar mesajın kendi yüksekliğine dahildir: sanal kaydırma (çapa + ofset)
+  aynı `view::lines` yolundan geçtiği için yükseklikler çizimle birebir tutarlıdır.
+- **"Yeni mesajlar" çizgisi:** kanal açılırken okunmamış mesaj varsa, *açılış anındaki* okuma işaretinden
+  yeni ilk mesajın üstünde ortalı `── Yeni mesajlar ──` (`new_messages` yuvası, varsayılan kırmızı).
+  Canlı okuma işareti ilerleyince silinmez; başka kanal açılınca ya da `G`/`End` ile silinir. Yüklü
+  pencerenin en eski mesajı ilk okunmamışsa (öncesi yüklü değil) çizilmez.
+- **Yazar:** sunucu kanalında adın rengi üyenin rengi olan en yüksek rolüdür (`State::author_color`;
+  üye rolleri mesajın `member` alanından, üye listesinden ve chunk'lardan gelir); DM'de ve rol
+  bilinmiyorsa `author` yuvası. `user.bot` olan yazarın adından sonra `BOT` rozeti (`bot_badge`).
+  Sistem mesajları değişmeden `→ metin  saat` biçimindedir.
+- **Yanıt:** yanıtın üstünde soluk `╭─ Ad: metin` (ilk satır, genişliğe göre `…` ile kısalır; anmalar
+  normal içerik gibi çözülür ve renklerini korur). Hedef silinmişse `╭─ (silinmiş mesaj)`.
+- **Kod bloğu renklendirme:** çitin dili (`rust`, `py`, `js`, `ts`→js, `json`, `bash`/`sh`…) `syntect`
+  (MIT; saf Rust `regex-fancy`, C bağımlılığı yok) ile renklendirilir; renkler `Color::Rgb`. Bilinmeyen
+  dil, dilsiz çit, 100 satır / 8 KiB'den büyük blok ve satır içi kod eski düz `code` stilinde kalır.
+  Sözdizimi/tema dökümleri açılışta arka plan iş parçacığında yüklenip ısıtılır (yüklenene kadar düz
+  çizilir); sonuçlar kod özetine göre önbelleğe alınır (isabet ≈ 0,5 µs). Renklendirme sarmayı
+  değiştirmez, yani satır sayısı/yükseklik aynıdır. İlk renklendirme (önbellek ıskası) 40 satırda
+  ≈ 9 ms (release). Ayarlar: `ui.code_highlight` (`true`/`false`), `ui.code_theme` (`base16-ocean.dark`
+  varsayılan, `base16-eighties.dark`, `base16-mocha.dark`, `base16-ocean.light`, `InspiredGitHub`,
+  `Solarized (dark)`, `Solarized (light)`); ikisi de yeniden başlatınca geçerli.
 
 ## Resim gösterimi
 
@@ -134,6 +159,7 @@ varsayılan tuşları gösterir.
 `~/.config/digcord/config.toml`
 
 **Şu an desteklenenler:** `ui.theme`, `ui.show_member_list`, `ui.images`, `ui.image_max_rows`,
+`ui.code_highlight`, `ui.code_theme`,
 `voice.mode` (`"vad"`, `"ptt"`), `voice.jitter_ms`, `voice.vad_threshold` (0.001–0.5; aralık dışı
 uyarıyla düzeltilir), `voice.input_device`, `voice.output_device`, `behavior.send_typing`,
 `behavior.send_read_receipts`, `notifications.enabled`, `notifications.on` (`"mention"`, `"dm"`,
@@ -148,6 +174,8 @@ timestamp_format = "%H:%M"
 show_member_list = true
 images = "thumbnail"     # "off" | "thumbnail" | "full"
 image_max_rows = 10
+code_highlight = true     # kod bloklarını dile göre renklendir
+code_theme = "base16-ocean.dark"
 
 [behavior]
 send_typing = true
@@ -233,7 +261,7 @@ thread'inde yapılmaz (açılışta ve `:theme` ile denetleyicide). Örnek: `the
 | `text` | `reset` | Varsayılan metin rengi |
 | `border` | `reset` | Odakta olmayan panel çerçevesi |
 | `border_focused` | `cyan` | Odaktaki panel, açılır pencereler, ayarlar |
-| `author` | `cyan` | Mesaj yazarı (kalın) |
+| `author` | `cyan` | Mesaj yazarı (kalın); rol rengi varsa o kullanılır |
 | `timestamp` | `reset` (soluk) | Saatler, `<t:…>` zaman damgaları |
 | `dim` | `reset` (soluk) | İkincil metin, ipuçları, yanıt önizlemesi, ekler |
 | `quote` | `reset` (soluk) | Alıntı (`>`) işareti |
@@ -242,7 +270,7 @@ thread'inde yapılmaz (açılışta ve `:theme` ile denetleyicide). Örnek: `the
 | `mention_me_bg` | `#3c3200` | Seni anan mesajda anmanın arka planı |
 | `link` | `cyan` | Bağlantılar (altı çizili) |
 | `highlight` | `lightblue` | Bağlantılı embed başlığı, kendi tepkilerin |
-| `code` | `yellow` | Satır içi kod, kod bloğu |
+| `code` | `yellow` | Satır içi kod, renklendirilmeyen kod bloğu |
 | `emoji` | `yellow` | `:özel_emoji:` adları |
 | `spoiler` | `darkgray` | Gizli (spoiler) metin |
 | `selection_bg` | `#2d2d3c` | Seçili mesajın arka planı |
@@ -255,6 +283,8 @@ thread'inde yapılmaz (açılışta ve `:theme` ile denetleyicide). Örnek: `the
 | `error` | `red` | Hata mesajları, gönderilemeyen mesaj |
 | `warning` | `yellow` | Bildirimler, yeniden bağlanma, silme onayı |
 | `success` | `green` | Bağlı durumu, ses bağlantısı |
+| `new_messages` | `red` | "Yeni mesajlar" çizgisi (kalın) |
+| `bot_badge` | `blue` | Bot yazarların `BOT` rozeti (kalın) |
 | `status_fg` / `status_bg` | `reset` | Durum çubuğu |
 | `member_group` | `reset` | Üye listesi grup başlıkları (soluk) |
 | `presence_online` / `presence_idle` / `presence_dnd` / `presence_offline` | `green` / `yellow` / `red` / `darkgray` | Üye listesi durum işareti |

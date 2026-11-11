@@ -1,0 +1,26 @@
+---
+source: crates/digcord-tui/src/tests.rs
+expression: "draw(&app, 100, 22)"
+---
+"┌────┐┌ Test Sunucusu ───────┐┌ #sohbet — konu ────────────────────────────────┐┌ Üyeler ──────────┐"
+"│DM  ││▾ GENEL               ││                                                ││                  │"
+"│TS  ││  # sohbet            ││             — kanalın başlangıcı —             ││                  │"
+"│    ││  # duyurular         ││                ── 1 Ocak 2026 ──               ││                  │"
+"│    ││  🔊 Ses              ││arkadas  01.01.2026 12:00                       ││                  │" Hidden by multi-width symbols: [(10, " ")]
+"│    ││                      ││  dünden kalan                                  ││                  │"
+"│    ││                      ││                                                ││                  │"
+"│    ││                      ││ben BOT  01.01.2026 12:01                       ││                  │"
+"│    ││                      ││  BOT mesajı                                    ││                  │"
+"│    ││                      ││                                                ││                  │"
+"│    ││                      ││                ── 2 Ocak 2026 ──               ││                  │"
+"│    ││                      ││               ── Yeni mesajlar ──              ││                  │"
+"│    ││                      ││arkadas  02.01.2026 12:00                       ││                  │"
+"│    ││                      ││  bugün                                         ││                  │"
+"│    ││                      ││                                                ││                  │"
+"│    ││                      ││╭─ ben: ilk @arkadas                            ││                  │"
+"│    ││                      ││arkadas  02.01.2026 12:03                       ││                  │"
+"│    ││                      ││  cevap @ben                                    ││                  │"
+"│    ││                      ││i: yaz · v: mesaj seç · :upload <yol>           ││                  │"
+"│    ││                      ││>                                               ││                  │"
+"└────┘└──────────────────────┘└────────────────────────────────────────────────┘└──────────────────┘"
+" [NORMAL] Digcord · başlatılıyor…                                                                   "

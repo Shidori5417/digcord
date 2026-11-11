@@ -17,6 +17,10 @@ ratatui = "0.30"
 # Terminal grafik protokolleri (kitty/sixel/iTerm2) + yarım blok yedeği; MIT. Varsayılan
 # özellikler kapalı: `chafa-dyn` LGPL bir C kütüphanesine bağlanır.
 ratatui-image = { version = "11.1.0", default-features = false, features = ["crossterm"] }
+# Kod bloğu sözdizimi renklendirme (MIT). Varsayılan özellikler kapalı: `regex-onig` C
+# kütüphanesine (Oniguruma) bağlanır; saf Rust `regex-fancy` + yerleşik sözdizimi/tema
+# dökümleri yeterli (HTML/plist/yaml yükleyicileri gereksiz).
+syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
 # Tema/kısayol ayrıştırma hataları için (diğer kütüphane crate'leriyle aynı sürüm).
 thiserror = "2.0.21"
 tracing = "0.1.44"

@@ -36,6 +36,10 @@ pub(crate) struct Res<'a> {
     today: jiff::civil::Date,
     images: Option<&'a Images>,
     theme: &'a Theme,
+    /// "Yeni mesajlar" çizgisi: kanal açılırken okunmuş son mesaj; ondan yeni ilk mesajın üstüne.
+    unread_after: Option<Snowflake>,
+    /// Kod bloğu renklendirme teması (`None`: kapalı).
+    code_theme: Option<&'a str>,
 }
 
 impl<'a> Res<'a> {
@@ -48,7 +52,20 @@ impl<'a> Res<'a> {
             today: Timestamp::now().to_zoned(tz.clone()).date(),
             images: None,
             theme: &Theme::DEFAULT,
+            unread_after: None,
+            code_theme: None,
         }
+    }
+
+    pub(crate) fn with_unread_after(mut self, id: Option<Snowflake>) -> Self {
+        self.unread_after = id;
+        self
+    }
+
+    /// Renklendirme satır sayısını değiştirmez; bu yüzden yükseklik hesapları bunu atlar.
+    pub(crate) fn with_code_theme(mut self, theme: Option<&'a str>) -> Self {
+        self.code_theme = theme;
+        self
     }
 
     /// Resim boyutları için (kaydırma hesapları da aynı çözücüyü kullanmalı).
@@ -73,6 +90,21 @@ impl<'a> Res<'a> {
 impl Resolver for Res<'_> {
     fn theme(&self) -> &Theme {
         self.theme
+    }
+
+    fn code_theme(&self) -> Option<&str> {
+        self.code_theme
+    }
+
+    fn day(&self, unix_ms: u64) -> Option<jiff::civil::Date> {
+        i64::try_from(unix_ms)
+            .ok()
+            .and_then(|ms| self.zoned(ms))
+            .map(|z| z.date())
+    }
+
+    fn author_color(&self, user: &User) -> Option<u32> {
+        self.st.author_color(self.guild, user.id)
     }
 
     fn image_fit(&self, w: u32, h: u32, max_cols: u16) -> Option<ImageFit> {
@@ -179,9 +211,26 @@ pub(crate) fn lines(
     let Some(msg) = msgs.get(idx) else {
         return render::Layout::default();
     };
-    let grouped = render::is_grouped(prev, msg);
+    let date = render::date_separator(prev, msg, res, width);
+    let new_line = res
+        .unread_after
+        .is_some_and(|mark| msg.id > mark && prev.is_some_and(|p| p.id <= mark));
+    // Ayırıcıdan sonra mesaj başlığı yeniden yazılır (gruplama kesilir).
+    let grouped = date.is_none() && !new_line && render::is_grouped(prev, msg);
     let mut out = render::message_layout(msg, grouped, res, width.max(1));
-    if idx == 0 && !grouped && out.lines.first().is_some_and(|l| l.width() == 0) {
+    if date.is_some() || new_line {
+        // Ayırıcılar baştaki boşluk satırının hemen altına girer (ayırıcı ile başlık bitişik).
+        let at = usize::from(out.lines.first().is_some_and(|l| l.width() == 0));
+        let seps: Vec<_> = date
+            .into_iter()
+            .chain(new_line.then(|| render::new_messages_line(res, width.max(1))))
+            .collect();
+        for slot in &mut out.images {
+            slot.line += seps.len();
+        }
+        out.lines.splice(at..at, seps);
+    }
+    if idx == 0 && out.lines.first().is_some_and(|l| l.width() == 0) {
         out.lines.remove(0);
         for slot in &mut out.images {
             slot.line = slot.line.saturating_sub(1);
@@ -480,9 +529,10 @@ fn draw_messages(app: &App, st: &State, frame: &mut Frame, area: Rect) {
         draw_input(app, st, open, frame, input);
         return;
     };
-    let res = Res::new(st, open.guild, &app.tz)
-        .with_images(&app.images)
-        .with_theme(&app.theme);
+    let res = app
+        .res(st, open)
+        .with_theme(&app.theme)
+        .with_code_theme(app.code_theme.as_deref());
     let h = usize::from(inner.height);
     // Görünen resim yerleri: (yer, ilk satırın alttan sırası, kaynak mesaj).
     let mut slots: Vec<(render::ImageSlot, usize, (Snowflake, Snowflake))> = Vec::new();

@@ -105,6 +105,7 @@ impl State {
                         (update.guild_id, m.user.id),
                         MemberInfo {
                             nick: m.nick.clone(),
+                            roles: m.roles.clone(),
                         },
                     );
                 }

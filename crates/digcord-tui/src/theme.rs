@@ -107,6 +107,10 @@ theme! {
     presence_dnd = Color::Red,
     /// Üye listesi: çevrimdışı işareti.
     presence_offline = Color::DarkGray,
+    /// Mesaj listesindeki "Yeni mesajlar" çizgisi.
+    new_messages = Color::Red,
+    /// Bot yazarların `BOT` rozeti.
+    bot_badge = Color::Blue,
     /// Durum çubuğu metni.
     status_fg = Color::Reset,
     /// Durum çubuğu arka planı.
@@ -222,6 +226,12 @@ impl Theme {
     }
     pub(crate) fn badge(&self) -> Style {
         Self::fg(self.badge).add_modifier(Modifier::BOLD)
+    }
+    pub(crate) fn new_messages(&self) -> Style {
+        Self::fg(self.new_messages).add_modifier(Modifier::BOLD)
+    }
+    pub(crate) fn bot_badge(&self) -> Style {
+        Self::fg(self.bot_badge).add_modifier(Modifier::BOLD)
     }
     pub(crate) fn error(&self) -> Style {
         Self::fg(self.error)

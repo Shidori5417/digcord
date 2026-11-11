@@ -86,6 +86,11 @@ impl State {
         }
     }
 
+    /// Kanalda en son okunan mesaj (kayıt yoksa `None`).
+    pub fn last_read(&self, channel: Snowflake) -> Option<Snowflake> {
+        self.read.get(&channel)?.last_read
+    }
+
     pub fn mention_count(&self, channel: Snowflake) -> u32 {
         self.read.get(&channel).map_or(0, |m| m.mentions)
     }

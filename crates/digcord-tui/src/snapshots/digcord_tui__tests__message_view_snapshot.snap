@@ -3,8 +3,8 @@ source: crates/digcord-tui/src/tests.rs
 expression: "draw(&app, 100, 16)"
 ---
 "┌────┐┌ Test Sunucusu ───────┐┌ #sohbet — konu ────────────────────────────────┐┌ Üyeler ──────────┐"
-"│DM  ││▾ GENEL               ││                                                ││                  │"
-"│TS  ││  # sohbet            ││             — kanalın başlangıcı —             ││                  │"
+"│DM  ││▾ GENEL               ││             — kanalın başlangıcı —             ││                  │"
+"│TS  ││  # sohbet            ││                ── 1 Ocak 2026 ──               ││                  │"
 "│    ││  # duyurular         ││arkadas  01.01.2026 12:00                       ││                  │"
 "│    ││  🔊 Ses              ││  selam herkese                                 ││                  │" Hidden by multi-width symbols: [(10, " ")]
 "│    ││                      ││  kalın ve kod                                  ││                  │"

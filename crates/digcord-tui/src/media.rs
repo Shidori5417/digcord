@@ -46,6 +46,10 @@ pub struct Options {
     pub push_to_talk: bool,
     /// Üye listesi paneli başlangıçta açık mı (`ui.show_member_list`).
     pub show_member_list: bool,
+    /// Kod bloklarını çite yazılan dile göre renklendir (`ui.code_highlight`).
+    pub code_highlight: bool,
+    /// Renklendirme teması (`ui.code_theme`; bkz. `highlight::THEMES`).
+    pub code_theme: String,
     pub theme: crate::Theme,
     pub keys: crate::Keymap,
     /// Ayarlar ekranındaki satırlar (`:settings`).
@@ -59,6 +63,8 @@ impl Default for Options {
             image_max_rows: 10,
             push_to_talk: false,
             show_member_list: true,
+            code_highlight: true,
+            code_theme: crate::highlight::DEFAULT_THEME.to_owned(),
             theme: crate::Theme::default(),
             keys: crate::Keymap::default(),
             settings: Vec::new(),

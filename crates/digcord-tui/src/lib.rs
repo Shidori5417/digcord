@@ -6,6 +6,7 @@
 mod compose;
 mod editor;
 mod fuzzy;
+mod highlight;
 mod keymap;
 mod markdown;
 mod media;
@@ -17,6 +18,7 @@ mod theme;
 mod view;
 mod viewer;
 
+pub use highlight::{DEFAULT_THEME as DEFAULT_CODE_THEME, THEMES as CODE_THEMES};
 pub use keymap::Keymap;
 pub use media::{ImageDone, ImageJob, ImageMode, Options};
 /// Tema yuvalarının türü.
@@ -315,6 +317,10 @@ pub fn run(
         app.push_to_talk = options.push_to_talk && enhanced;
         app.theme = options.theme;
         app.show_members = options.show_member_list;
+        app.code_theme = options.code_highlight.then(|| options.code_theme.clone());
+        if app.code_theme.is_some() {
+            highlight::warm_up();
+        }
         app.keys = options.keys.clone();
         app.settings = settings::State::new(options.settings.clone());
         app.images = media::Images::new(picker, options);
@@ -481,6 +487,12 @@ pub struct App {
     pending_jump: Option<(Snowflake, Snowflake)>,
     /// Üye paneli açık mı (`ui.show_member_list`, `toggle_members`); dar terminalde yine gizlenir.
     show_members: bool,
+    /// Kod bloğu renklendirme teması (`ui.code_highlight` / `ui.code_theme`; `None`: kapalı).
+    code_theme: Option<String>,
+    /// Kanal açılırken okunmamış mesaj varsa: (kanal, o ana kadar okunmuş son mesaj). "Yeni
+    /// mesajlar" çizgisi için; canlı okuma işaretinden bağımsız, kanal değişince ya da `G`/`End`
+    /// ile silinir.
+    new_marker: Option<(Snowflake, Snowflake)>,
 }
 
 impl App {
@@ -521,6 +533,8 @@ impl App {
             search_seq: 0,
             pending_jump: None,
             show_members: true,
+            code_theme: None,
+            new_marker: None,
         }
     }
 
@@ -729,6 +743,7 @@ impl App {
             Act::PageUp => self.scroll_up(half_page),
             Act::ScrollBottom => {
                 self.scroll = Scroll::default();
+                self.new_marker = None;
                 // Eski bir mesaja atlanmışsa güncel mesajlar yeniden yüklenir.
                 if let Some(o) = self.open
                     && self.shared.read().is_detached(o.channel)
@@ -906,6 +921,18 @@ impl App {
         from_list.or_else(|| self.open.and_then(|o| pick(o.channel)))
     }
 
+    /// Mesaj görünümü çözümleyicisi (resimler + "yeni mesajlar" işareti). Tutulan okuma
+    /// korumasıyla çağrılır; iç içe okuma kilitlenir.
+    pub(crate) fn res<'a>(&'a self, st: &'a State, open: Open) -> view::Res<'a> {
+        let mark = self
+            .new_marker
+            .filter(|(c, _)| *c == open.channel)
+            .map(|(_, m)| m);
+        view::Res::new(st, open.guild, &self.tz)
+            .with_images(&self.images)
+            .with_unread_after(mark)
+    }
+
     /// Kanalı açar: şerit ve liste seçimini ona taşır, mesaj görünümünü sıfırlar.
     fn open_channel(&mut self, guild: Option<Snowflake>, channel: Snowflake) -> Action {
         let previous = self.open.map(|o| o.channel).filter(|c| *c != channel);
@@ -931,7 +958,18 @@ impl App {
             .iter()
             .position(|e| e.id == channel)
             .unwrap_or(0);
+        // Okunmamış mesaj varsa çizginin yeri açılış anındaki okuma işaretidir.
+        let unread_from = st
+            .is_unread(channel)
+            .then(|| st.last_read(channel))
+            .flatten();
         drop(st);
+        match unread_from {
+            Some(mark) => self.new_marker = Some((channel, mark)),
+            // Aynı kanal yeniden açılırsa (zaten okunmuş) eski çizgi korunur.
+            None if self.new_marker.is_some_and(|(c, _)| c == channel) => {}
+            None => self.new_marker = None,
+        }
         self.open = Some(Open { guild, channel });
         self.scroll = Scroll::default();
         self.focus = Focus::Messages;
@@ -1156,7 +1194,7 @@ impl App {
         let Some(msgs) = st.messages(open.channel).filter(|m| !m.is_empty()) else {
             return;
         };
-        let res = view::Res::new(&st, open.guild, &self.tz).with_images(&self.images);
+        let res = self.res(&st, open);
         let mut idx = view::anchor_index(msgs, self.scroll.anchor);
         let mut offset = self.scroll.offset + n;
         loop {
@@ -1191,7 +1229,7 @@ impl App {
             self.scroll = Scroll::default();
             return;
         };
-        let res = view::Res::new(&st, open.guild, &self.tz).with_images(&self.images);
+        let res = self.res(&st, open);
         let mut idx = view::anchor_index(msgs, self.scroll.anchor);
         let mut offset = self.scroll.offset;
         loop {

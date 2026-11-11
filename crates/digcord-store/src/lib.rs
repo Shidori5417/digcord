@@ -53,6 +53,7 @@ struct GuildData {
 
 struct MemberInfo {
     nick: Option<String>,
+    roles: Vec<Snowflake>,
 }
 
 #[derive(Default)]
@@ -279,6 +280,7 @@ impl State {
                 (chunk.guild_id, uid),
                 MemberInfo {
                     nick: m.nick.clone(),
+                    roles: m.roles.clone(),
                 },
             );
             if Some(uid) == me
@@ -556,6 +558,13 @@ impl State {
             .to_owned()
     }
 
+    /// Yazarın sunucudaki görünen rengi (rengi olan en yüksek rol); DM'de ve bilinmiyorsa `None`.
+    pub fn author_color(&self, guild: Option<Snowflake>, user: Snowflake) -> Option<u32> {
+        let guild = guild?;
+        let info = self.members.get(&(guild, user))?;
+        self.member_color(guild, &info.roles)
+    }
+
     /// Üye bilgisi bilinmeyen yazarlar (en çok `max`, tekrarsız). DM'de boş.
     pub fn unknown_members(&self, channel: Snowflake, max: usize) -> Vec<Snowflake> {
         let Some(gid) = self.channels.get(&channel).and_then(|c| c.guild_id) else {
@@ -587,6 +596,7 @@ impl State {
                 (gid, msg.author.id),
                 MemberInfo {
                     nick: m.nick.clone(),
+                    roles: m.roles.clone(),
                 },
             );
         }

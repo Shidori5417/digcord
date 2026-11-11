@@ -2,11 +2,14 @@
 //!
 //! Saf fonksiyonlar: ağ/disk yok. Dış dünya (isim çözümleme, saat biçimi) `Resolver` ile gelir.
 
+use std::sync::Arc;
+
 use digcord_model::{Embed, Message, User, message_kind as kind};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::highlight;
 use crate::markdown::{self, Block, BlockKind, Span as Md};
 use crate::theme::Theme;
 
@@ -17,6 +20,11 @@ const INDENT: usize = 2;
 const EDITED: &str = " (düzenlendi)";
 /// Yanıt (reply) mesaj türü.
 const KIND_REPLY: u8 = 19;
+const BOT_BADGE: &str = "BOT";
+const MONTHS: [&str; 12] = [
+    "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim",
+    "Kasım", "Aralık",
+];
 
 /// Çizimin dış dünyadan ihtiyaç duyduğu her şey.
 pub trait Resolver {
@@ -50,6 +58,20 @@ pub trait Resolver {
     /// Renkler (varsayılan: yerleşik tema).
     fn theme(&self) -> &Theme {
         &Theme::DEFAULT
+    }
+    /// Zaman damgasının yerel takvim günü (gün ayırıcıları için). Varsayılan: UTC.
+    fn day(&self, unix_ms: u64) -> Option<jiff::civil::Date> {
+        let ms = i64::try_from(unix_ms).ok()?;
+        let ts = jiff::Timestamp::from_millisecond(ms).ok()?;
+        Some(ts.to_zoned(jiff::tz::TimeZone::UTC).date())
+    }
+    /// Yazarın sunucudaki rol rengi (`0xRRGGBB`); `None`: temanın yazar rengi.
+    fn author_color(&self, _user: &User) -> Option<u32> {
+        None
+    }
+    /// Kod bloğu renklendirme teması; `None`: renklendirme kapalı.
+    fn code_theme(&self) -> Option<&str> {
+        None
     }
 }
 
@@ -141,18 +163,28 @@ pub fn message_layout(msg: &Message, grouped: bool, r: &dyn Resolver, width: u16
             out.push(reply_line(reply, r, width));
         } else if msg.kind == KIND_REPLY {
             out.push(fit_line(
-                vec![("  ↳ (silinmiş mesaj)".into(), t.dim())],
+                vec![("╭─ (silinmiş mesaj)".into(), t.dim())],
                 width,
             ));
         }
-        out.push(fit_line(
-            vec![
-                (r.author_name(&msg.author), t.author()),
-                ("  ".into(), Style::new()),
-                (r.clock(msg.timestamp_ms()), t.timestamp()),
-            ],
-            width,
-        ));
+        let name_style = match r.author_color(&msg.author) {
+            Some(c) if c != 0 => Style::new()
+                .fg(ratatui::style::Color::Rgb(
+                    (c >> 16) as u8,
+                    (c >> 8) as u8,
+                    c as u8,
+                ))
+                .add_modifier(Modifier::BOLD),
+            _ => t.author(),
+        };
+        let mut head = vec![(r.author_name(&msg.author), name_style)];
+        if msg.author.bot {
+            head.push((" ".into(), Style::new()));
+            head.push((BOT_BADGE.into(), t.bot_badge()));
+        }
+        head.push(("  ".into(), Style::new()));
+        head.push((r.clock(msg.timestamp_ms()), t.timestamp()));
+        out.push(fit_line(head, width));
     }
 
     let jumbo = jumbo_emoji(msg, r, width);
@@ -566,37 +598,114 @@ fn fit_line(parts: Vec<(String, Style)>, width: usize) -> Line<'static> {
     Line::from(spans)
 }
 
+/// `╭─ Ad: metin`: yanıtlanan mesajın ilk satırı; anmalar normal içerik gibi çözülür.
 fn reply_line(reply: &Message, r: &dyn Resolver, width: usize) -> Line<'static> {
     let first = reply.content.lines().next().unwrap_or("");
     let dim = r.theme().dim();
+    let mut parts = vec![
+        ("╭─ ".to_string(), dim),
+        (
+            r.author_name(&reply.author),
+            dim.add_modifier(Modifier::BOLD),
+        ),
+        (": ".to_string(), dim),
+    ];
+    let blocks = markdown::parse(first);
+    let spans: Vec<Md> = blocks.into_iter().flat_map(|b| b.spans).collect();
+    parts.extend(
+        inline_pieces(&spans, Style::new(), reply, r)
+            .into_iter()
+            .map(|(text, st)| {
+                // Renkli parçalar (anmalar) renklerini korur; kalanı soluk.
+                let st = if st.fg.is_some() { st } else { st.patch(dim) };
+                (text, st)
+            }),
+    );
+    fit_line(parts, width)
+}
+
+/// `── 11 Kasım 2026 ──` (ortalı, soluk); `prev` ile aynı yerel günse `None`.
+pub fn date_separator(
+    prev: Option<&Message>,
+    msg: &Message,
+    r: &dyn Resolver,
+    width: u16,
+) -> Option<Line<'static>> {
+    let day = r.day(msg.timestamp_ms())?;
+    if prev.is_some_and(|p| r.day(p.timestamp_ms()) == Some(day)) {
+        return None;
+    }
+    let month = MONTHS.get(usize::try_from(day.month() - 1).unwrap_or(0))?;
+    let text = format!("── {} {month} {} ──", day.day(), day.year());
+    Some(fit_line(vec![(text, r.theme().dim())], usize::from(width).max(1)).centered())
+}
+
+/// `── Yeni mesajlar ──` (ortalı, renkli).
+pub fn new_messages_line(r: &dyn Resolver, width: u16) -> Line<'static> {
     fit_line(
-        vec![
-            ("  ↳ ".into(), dim),
-            (
-                r.author_name(&reply.author),
-                dim.add_modifier(Modifier::BOLD),
-            ),
-            (": ".into(), dim),
-            (first.to_string(), dim),
-        ],
-        width,
+        vec![("── Yeni mesajlar ──".into(), r.theme().new_messages())],
+        usize::from(width).max(1),
     )
+    .centered()
 }
 
 // ---------------------------------------------------------------- içerik
 
 type Run = (String, Style);
 
+/// Bir kod satırının renklendirilmiş parçaları: (blok önbelleği, satır dizini).
+type Colored = Option<(Arc<Vec<highlight::Runs>>, usize)>;
+
+/// Ardışık aynı dilli kod satırlarını bir blok sayıp renklendirir (durum satırlar arasında
+/// taşınır). Renklendirme kapalı/yüklenmemiş/bilinmeyen dilde hepsi `None` (düz stil).
+fn colorize(blocks: &[Block], r: &dyn Resolver) -> Vec<Colored> {
+    let mut out: Vec<Colored> = vec![None; blocks.len()];
+    let Some(theme) = r.code_theme() else {
+        return out;
+    };
+    fn lang_of(b: &Block) -> Option<&str> {
+        match &b.kind {
+            BlockKind::CodeBlock { lang: Some(l) } => Some(l.as_str()),
+            _ => None,
+        }
+    }
+    let mut i = 0;
+    while i < blocks.len() {
+        let Some(lang) = lang_of(&blocks[i]) else {
+            i += 1;
+            continue;
+        };
+        let mut j = i + 1;
+        while j < blocks.len() && lang_of(&blocks[j]) == Some(lang) {
+            j += 1;
+        }
+        let code = blocks[i..j]
+            .iter()
+            .flat_map(|b| b.spans.iter().map(span_text))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if let Some(h) = highlight::highlight(lang, theme, &code) {
+            for (n, slot) in out[i..j].iter_mut().enumerate() {
+                *slot = Some((Arc::clone(&h), n));
+            }
+        }
+        i = j;
+    }
+    out
+}
+
 fn content_lines(msg: &Message, r: &dyn Resolver, width: usize) -> Vec<Line<'static>> {
     let blocks = markdown::parse(&msg.content);
+    let colored = colorize(&blocks, r);
     let mut rendered: Vec<(Vec<Line<'static>>, bool)> = blocks
         .iter()
-        .map(|b| {
+        .zip(&colored)
+        .map(|(b, c)| {
             let empty = b
                 .spans
                 .iter()
                 .all(|s| matches!(s, Md::Text { text, .. } if text.trim().is_empty()));
-            (block_lines(b, msg, r, width), empty)
+            (block_lines(b, c.as_ref(), msg, r, width), empty)
         })
         .collect();
     while rendered.last().is_some_and(|(_, empty)| *empty) {
@@ -605,7 +714,13 @@ fn content_lines(msg: &Message, r: &dyn Resolver, width: usize) -> Vec<Line<'sta
     rendered.into_iter().flat_map(|(l, _)| l).collect()
 }
 
-fn block_lines(block: &Block, msg: &Message, r: &dyn Resolver, width: usize) -> Vec<Line<'static>> {
+fn block_lines(
+    block: &Block,
+    colored: Option<&(Arc<Vec<highlight::Runs>>, usize)>,
+    msg: &Message,
+    r: &dyn Resolver,
+    width: usize,
+) -> Vec<Line<'static>> {
     let t = r.theme();
     let indent = indent_for(width);
     let (first, cont, pstyle) = match &block.kind {
@@ -620,10 +735,13 @@ fn block_lines(block: &Block, msg: &Message, r: &dyn Resolver, width: usize) -> 
     let avail = width.saturating_sub(indent + first.width()).max(1);
 
     let runs = match &block.kind {
-        BlockKind::CodeBlock { .. } => {
-            let text = block.spans.iter().map(span_text).collect::<String>();
-            hard_wrap(&text, t.code(), avail)
-        }
+        BlockKind::CodeBlock { .. } => match colored {
+            Some((all, i)) => hard_wrap_runs(all.get(*i).map_or(&[][..], Vec::as_slice), avail),
+            None => {
+                let text = block.spans.iter().map(span_text).collect::<String>();
+                hard_wrap(&text, t.code(), avail)
+            }
+        },
         kind => {
             let extra = match kind {
                 BlockKind::Heading(1) => {
@@ -828,6 +946,17 @@ fn hard_wrap(text: &str, style: Style, avail: usize) -> Vec<Vec<Run>> {
     buf.finish()
 }
 
+/// [`hard_wrap`] ama parçalar kendi stilini taşır (renklendirilmiş kod).
+fn hard_wrap_runs(runs: &[Run], avail: usize) -> Vec<Vec<Run>> {
+    let mut buf = LineBuf::new(avail);
+    for (text, style) in runs {
+        for c in clean(text).chars() {
+            buf.push_hard(c, *style, cwidth(c));
+        }
+    }
+    buf.finish()
+}
+
 /// Açgözlü kelime sarma; stiller bölünen run'larda korunur.
 fn wrap_words(pieces: &[Run], avail: usize) -> Vec<Vec<Run>> {
     let mut buf = LineBuf::new(avail);
@@ -962,6 +1091,181 @@ mod tests {
         l.spans.last().map(|s| s.style).unwrap_or_default()
     }
 
+    /// Rol rengi, kod renklendirme ve UTC dışı gün için zengin çözümleyici.
+    struct Rich;
+
+    impl Resolver for Rich {
+        fn user_name(&self, id: u64) -> Option<String> {
+            Fake.user_name(id)
+        }
+        fn channel_name(&self, id: u64) -> Option<String> {
+            Fake.channel_name(id)
+        }
+        fn role_name(&self, id: u64) -> Option<String> {
+            Fake.role_name(id)
+        }
+        fn is_me(&self, id: u64) -> bool {
+            Fake.is_me(id)
+        }
+        fn author_name(&self, user: &User) -> String {
+            Fake.author_name(user)
+        }
+        fn clock(&self, unix_ms: u64) -> String {
+            Fake.clock(unix_ms)
+        }
+        fn timestamp(&self, unix_secs: i64, format: Option<char>) -> String {
+            Fake.timestamp(unix_secs, format)
+        }
+        fn author_color(&self, _user: &User) -> Option<u32> {
+            Some(0xff0000)
+        }
+        fn code_theme(&self) -> Option<&str> {
+            Some(crate::highlight::DEFAULT_THEME)
+        }
+    }
+
+    #[test]
+    fn reply_preview_resolves_mentions_and_marks_deleted() {
+        let mut v = mjson(T0, 1, "cevap");
+        v["type"] = json!(19);
+        v["referenced_message"] = mjson(T0 - MIN, 2, "selam <@5> **kalın**");
+        let m = build(v);
+        let lines = message_lines(&m, false, &Fake, 80);
+        assert_eq!(text(&lines[1]), "╭─ Ayşe: selam @kisi5 kalın");
+        // Anma rengini korur; düz metin soluk.
+        let mention = lines[1]
+            .spans
+            .iter()
+            .find(|s| s.content == "@kisi5")
+            .unwrap();
+        assert_eq!(mention.style.fg, Some(Color::LightBlue));
+        let plain = lines[1]
+            .spans
+            .iter()
+            .find(|s| s.content.contains("selam"))
+            .unwrap();
+        assert!(plain.style.add_modifier.contains(Modifier::DIM));
+
+        let mut v = mjson(T0, 1, "cevap");
+        v["type"] = json!(19);
+        let lines = message_lines(&build(v), false, &Fake, 80);
+        assert_eq!(text(&lines[1]), "╭─ (silinmiş mesaj)");
+    }
+
+    #[test]
+    fn date_separator_only_between_different_days() {
+        // T0 = 2023-11-14 22:13:20 UTC.
+        let a = msg(T0, 1, "a");
+        let same_day = msg(T0 + 30 * MIN, 1, "b");
+        let next_day = msg(T0 + 120 * MIN, 1, "c");
+        let first = date_separator(None, &a, &Fake, 80).expect("ilk mesajdan önce");
+        assert_eq!(text(&first), "── 14 Kasım 2023 ──");
+        assert_eq!(first.alignment, Some(ratatui::layout::Alignment::Center));
+        assert!(first.spans[0].style.add_modifier.contains(Modifier::DIM));
+        assert!(date_separator(Some(&a), &same_day, &Fake, 80).is_none());
+        let sep = date_separator(Some(&same_day), &next_day, &Fake, 80).expect("gün değişti");
+        assert_eq!(text(&sep), "── 15 Kasım 2023 ──");
+        for w in 1..40 {
+            assert_fits(&[date_separator(None, &a, &Fake, w).unwrap()], w);
+            assert_fits(&[new_messages_line(&Fake, w)], w);
+        }
+    }
+
+    #[test]
+    fn new_messages_line_uses_theme_slot() {
+        let line = new_messages_line(&Fake, 40);
+        assert_eq!(text(&line), "── Yeni mesajlar ──");
+        assert_eq!(line.spans[0].style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn author_role_color_and_bot_badge() {
+        let m = msg(T0, 1, "selam");
+        let lines = message_lines(&m, false, &Rich, 80);
+        assert_eq!(lines[1].spans[0].style.fg, Some(Color::Rgb(255, 0, 0)));
+        assert!(
+            lines[1].spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+        // Rengi olmayan (Fake) → tema yazar rengi.
+        let lines = message_lines(&m, false, &Fake, 80);
+        assert_eq!(lines[1].spans[0].style.fg, Some(Color::Cyan));
+        assert_eq!(text(&lines[1]), "Ayşe  14:02");
+
+        let mut v = mjson(T0, 1, "selam");
+        v["author"]["bot"] = json!(true);
+        let lines = message_lines(&build(v), false, &Fake, 80);
+        assert_eq!(text(&lines[1]), "Ayşe BOT  14:02");
+        let badge = lines[1].spans.iter().find(|s| s.content == "BOT").unwrap();
+        assert_eq!(badge.style.fg, Some(Color::Blue));
+        for w in 1..30 {
+            assert_fits(
+                &message_lines(&build(mjson(T0, 1, "x")), false, &Rich, w),
+                w,
+            );
+        }
+    }
+
+    fn fg_set(lines: &[Line]) -> std::collections::HashSet<Option<Color>> {
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter(|s| !s.content.trim().is_empty())
+            .map(|s| s.style.fg)
+            .collect()
+    }
+
+    #[test]
+    fn code_blocks_are_highlighted_by_language() {
+        crate::highlight::load_blocking();
+        let rust = msg(
+            T0,
+            1,
+            "```rust\nfn main() {\n    let x = 1; // sayı\n}\n```",
+        );
+        let lines = body(&rust, 60);
+        let plain = message_lines(&rust, true, &Fake, 60);
+        assert!(fg_set(&lines).len() == 1, "{:?}", fg_set(&lines));
+        let colored = message_lines(&rust, true, &Rich, 60);
+        assert!(fg_set(&colored).len() >= 3, "{:?}", fg_set(&colored));
+        // Aynı metin, aynı satır sayısı (yükseklik renklendirmeden bağımsız).
+        assert_eq!(texts(&plain), texts(&colored));
+
+        for fence in ["```nosuchlang\nfn main() {}\n```", "```\nfn main() {}\n```"] {
+            let lines = message_lines(&msg(T0, 1, fence), true, &Rich, 60);
+            assert_eq!(fg_set(&lines), [Some(Color::Yellow)].into(), "{fence}");
+        }
+        // Satır içi kod değişmez.
+        let inline = message_lines(&msg(T0, 1, "bak `fn main()`"), true, &Rich, 60);
+        assert_eq!(
+            fg_set(&inline),
+            [None, Some(Color::Yellow)].into(),
+            "satır içi kod yalnızca tema kod rengi"
+        );
+    }
+
+    #[test]
+    fn highlighted_code_never_exceeds_width() {
+        crate::highlight::load_blocking();
+        let m = msg(
+            T0,
+            1,
+            "```rust\nlet s = \"日本語日本語日本語\"; // 🎉🎉🎉 uzun uzun yorum satırı\n```",
+        );
+        for w in 1..50 {
+            let lines = message_lines(&m, true, &Rich, w);
+            assert_fits(&lines, w);
+            // Satır sayısı düz çizimle aynı.
+            assert_eq!(
+                lines.len(),
+                message_lines(&m, true, &Fake, w).len(),
+                "w={w}"
+            );
+        }
+    }
+
     #[test]
     fn grouping_rules() {
         let a = msg(T0, 1, "a");
@@ -1011,7 +1315,7 @@ mod tests {
         v["referenced_message"] = mjson(T0 - MIN, 2, "çılgın şeyler 🎉🎉🎉 oluyor\nikinci satır");
         let m = build(v);
         let lines = message_lines(&m, false, &Fake, 80);
-        assert_eq!(text(&lines[1]), "  ↳ Ayşe: çılgın şeyler 🎉🎉🎉 oluyor");
+        assert_eq!(text(&lines[1]), "╭─ Ayşe: çılgın şeyler 🎉🎉🎉 oluyor");
         assert!(
             lines[1].spans[1]
                 .style
@@ -1027,7 +1331,7 @@ mod tests {
         let mut v = mjson(T0, 1, "cevap");
         v["type"] = json!(19);
         let lines = message_lines(&build(v), false, &Fake, 40);
-        assert_eq!(text(&lines[1]), "  ↳ (silinmiş mesaj)");
+        assert_eq!(text(&lines[1]), "╭─ (silinmiş mesaj)");
     }
 
     #[test]

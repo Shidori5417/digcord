@@ -6,8 +6,8 @@ expression: screen
 "│DM  ││▾ GENEL               ││                                                │"
 "│TS  ││  # sohbet            ││                                                │"
 "│    ││  # duyurular         ││                                                │"
-"│    ││  🔊 Ses              ││                                                │" Hidden by multi-width symbols: [(10, " ")]
-"│    ││                      ││             — kanalın başlangıcı —             │"
+"│    ││  🔊 Ses              ││             — kanalın başlangıcı —             │" Hidden by multi-width symbols: [(10, " ")]
+"│    ││                      ││                ── 1 Ocak 2026 ──               │"
 "│    ││                      ││arkadas  01.01.2026 12:00                       │"
 "│    ││                      ││  selam                                         │"
 "│    ││                      ││i: yaz · v: mesaj seç · :upload <yol>           │"

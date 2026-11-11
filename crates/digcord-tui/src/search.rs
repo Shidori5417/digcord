@@ -303,7 +303,7 @@ impl App {
                 offset: 0,
             }
         } else {
-            let res = view::Res::new(&st, open.guild, &self.tz).with_images(&self.images);
+            let res = self.res(&st, open);
             let (mut last, mut used) = (idx, 0);
             while last + 1 < msgs.len() && used < usize::from(height / 2) {
                 last += 1;

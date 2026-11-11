@@ -107,6 +107,9 @@ pub struct User {
     pub id: Snowflake,
     pub username: String,
     pub global_name: Option<String>,
+    /// Bot hesabı (`BOT` rozeti).
+    #[serde(default)]
+    pub bot: bool,
 }
 
 impl User {
