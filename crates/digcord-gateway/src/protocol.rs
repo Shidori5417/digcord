@@ -5,8 +5,9 @@
 use std::time::Duration;
 
 use digcord_model::{
-    Channel, ClientProperties, Guild, GuildMembersChunk, Message, MessageAck, MessageDelete,
-    ReactionEvent, Ready, Snowflake, ThreadListSync, Token, TypingStart, VoiceServer, VoiceState,
+    Channel, ClientProperties, Guild, GuildMembersChunk, MemberListUpdate, Message, MessageAck,
+    MessageDelete, ReactionEvent, Ready, Snowflake, ThreadListSync, Token, TypingStart,
+    VoiceServer, VoiceState,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -96,6 +97,8 @@ pub enum GatewayEvent {
     ThreadListSync(ThreadListSync),
     GuildCreate(Box<Guild>),
     GuildMembersChunk(GuildMembersChunk),
+    /// Kanal üye listesi güncellemesi (PROTOCOL_NOTES §4.6).
+    MemberListUpdate(Box<MemberListUpdate>),
     ReactionAdd(ReactionEvent),
     ReactionRemove(ReactionEvent),
     TypingStart(TypingStart),
@@ -177,6 +180,12 @@ fn parse_event(t: &str, d: &str) -> Dispatch {
         "THREAD_LIST_SYNC" => de(t, d).map(E::ThreadListSync),
         "GUILD_CREATE" => de(t, d).map(|g| E::GuildCreate(Box::new(g))),
         "GUILD_MEMBERS_CHUNK" => de(t, d).map(E::GuildMembersChunk),
+        "GUILD_MEMBER_LIST_UPDATE" => MemberListUpdate::parse(d)
+            .map(|u| E::MemberListUpdate(Box::new(u)))
+            .or_else(|| {
+                tracing::warn!(event = t, "gateway olayı ayrıştırılamadı");
+                None
+            }),
         "MESSAGE_REACTION_ADD" => de(t, d).map(E::ReactionAdd),
         "MESSAGE_REACTION_REMOVE" => de(t, d).map(E::ReactionRemove),
         "TYPING_START" => de(t, d).map(E::TypingStart),
@@ -263,16 +272,11 @@ pub fn resume(token: &Token, session_id: &str, seq: Option<u64>) -> String {
     )
 }
 
-/// op 37 guild aboneliği; biçim guild büyüklüğüne göre (PROTOCOL_NOTES §4.1).
-pub fn subscribe_guild(guild: Snowflake, large: bool) -> String {
+/// op 37 guild aboneliği: web istemcisi küçük/büyük her guild için aynı tam biçimi gönderir
+/// (PROTOCOL_NOTES §4.1).
+pub fn subscribe_guild(guild: Snowflake) -> String {
     #[derive(Serialize)]
-    struct Small {
-        typing: bool,
-        activities: bool,
-        threads: bool,
-    }
-    #[derive(Serialize)]
-    struct Large {
+    struct Sub {
         typing: bool,
         threads: bool,
         activities: bool,
@@ -283,40 +287,50 @@ pub fn subscribe_guild(guild: Snowflake, large: bool) -> String {
     }
     #[derive(Serialize)]
     struct Empty {}
+    to_json(
+        op::GUILD_SUBSCRIPTIONS_BULK,
+        Subs {
+            subscriptions: [(
+                guild.to_string(),
+                Sub {
+                    typing: true,
+                    threads: true,
+                    activities: true,
+                    members: [],
+                    member_updates: false,
+                    channels: Empty {},
+                    thread_member_lists: [],
+                },
+            )]
+            .into(),
+        },
+    )
+}
+
+#[derive(Serialize)]
+struct Subs<T> {
+    subscriptions: std::collections::BTreeMap<String, T>,
+}
+
+/// op 37, üye listesi görünürken: kanalın istenen aralıkları (`[[0,99]]`, kaydırınca
+/// `[[0,99],[100,199]]`; çoklu aralık doğrulanmadı, PROTOCOL_NOTES §4.6).
+pub fn subscribe_channels(guild: Snowflake, channel: Snowflake, ranges: &[(u32, u32)]) -> String {
     #[derive(Serialize)]
-    struct Subs<T> {
-        subscriptions: std::collections::BTreeMap<String, T>,
+    struct Sub<'a> {
+        channels: std::collections::BTreeMap<String, &'a [(u32, u32)]>,
     }
-    let key = guild.to_string();
-    if large {
-        let v = Large {
-            typing: true,
-            threads: true,
-            activities: true,
-            members: [],
-            member_updates: false,
-            channels: Empty {},
-            thread_member_lists: [],
-        };
-        to_json(
-            op::GUILD_SUBSCRIPTIONS_BULK,
-            Subs {
-                subscriptions: [(key, v)].into(),
-            },
-        )
-    } else {
-        let v = Small {
-            typing: true,
-            activities: true,
-            threads: true,
-        };
-        to_json(
-            op::GUILD_SUBSCRIPTIONS_BULK,
-            Subs {
-                subscriptions: [(key, v)].into(),
-            },
-        )
-    }
+    to_json(
+        op::GUILD_SUBSCRIPTIONS_BULK,
+        Subs {
+            subscriptions: [(
+                guild.to_string(),
+                Sub {
+                    channels: [(channel.to_string(), ranges)].into(),
+                },
+            )]
+            .into(),
+        },
+    )
 }
 
 /// op 8: mesaj yazarlarının üye bilgisi (takma ad, roller) — `presences: false` (gözlenen).
@@ -699,14 +713,35 @@ mod tests {
     }
 
     #[test]
+    fn parses_member_list_update_and_survives_garbage() {
+        let ok = r#"{"t":"GUILD_MEMBER_LIST_UPDATE","s":11,"op":0,"d":{"id":"x","guild_id":"1","member_count":1,"online_count":0,"groups":[{"id":"offline","count":1}],"ops":[{"op":"DELETE","index":0}]}}"#;
+        assert!(matches!(
+            parse(ok).expect("liste"),
+            Event::Dispatch { dispatch: Dispatch::Event(GatewayEvent::MemberListUpdate(u)), .. } if u.guild_id == Snowflake(1)
+        ));
+        let bad = r#"{"t":"GUILD_MEMBER_LIST_UPDATE","s":12,"op":0,"d":{"id":"x","ops":[{"op":"DELETE"}]}}"#;
+        assert!(matches!(
+            parse(bad).expect("bozuk olay hata değil"),
+            Event::Dispatch {
+                dispatch: Dispatch::Other,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn subscription_payloads_match_observed() {
         assert_eq!(
-            subscribe_guild(Snowflake(9), false),
-            r#"{"op":37,"d":{"subscriptions":{"9":{"typing":true,"activities":true,"threads":true}}}}"#
+            subscribe_guild(Snowflake(9)),
+            r#"{"op":37,"d":{"subscriptions":{"9":{"typing":true,"threads":true,"activities":true,"members":[],"member_updates":false,"channels":{},"thread_member_lists":[]}}}}"#
         );
         assert_eq!(
-            subscribe_guild(Snowflake(9), true),
-            r#"{"op":37,"d":{"subscriptions":{"9":{"typing":true,"threads":true,"activities":true,"members":[],"member_updates":false,"channels":{},"thread_member_lists":[]}}}}"#
+            subscribe_channels(Snowflake(9), Snowflake(5), &[(0, 99)]),
+            r#"{"op":37,"d":{"subscriptions":{"9":{"channels":{"5":[[0,99]]}}}}}"#
+        );
+        assert_eq!(
+            subscribe_channels(Snowflake(9), Snowflake(5), &[(0, 99), (100, 199)]),
+            r#"{"op":37,"d":{"subscriptions":{"9":{"channels":{"5":[[0,99],[100,199]]}}}}}"#
         );
         assert_eq!(
             request_members(Snowflake(9), &[Snowflake(1), Snowflake(2)]),

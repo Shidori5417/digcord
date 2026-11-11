@@ -510,6 +510,7 @@ impl App {
             }
             "search" => self.search_command(rest),
             "pins" => self.pins_command(),
+            "members" => Some(self.toggle_members()),
             "theme" => {
                 let theme = rest.trim();
                 if theme.is_empty() {

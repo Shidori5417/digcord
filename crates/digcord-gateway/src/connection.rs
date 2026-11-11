@@ -63,7 +63,12 @@ pub enum Update {
 pub enum Command {
     SubscribeGuild {
         guild: Snowflake,
-        large: bool,
+    },
+    /// op 37: kanalın üye listesi aralıkları (üye paneli görünürken).
+    SubscribeChannels {
+        guild: Snowflake,
+        channel: Snowflake,
+        ranges: Vec<(u32, u32)>,
     },
     RequestMembers {
         guild: Snowflake,
@@ -261,7 +266,10 @@ async fn session_loop(
                         hb.on_extra_sent();
                         protocol::heartbeat(state.seq, focused)
                     }
-                    Command::SubscribeGuild { guild, large } => protocol::subscribe_guild(guild, large),
+                    Command::SubscribeGuild { guild } => protocol::subscribe_guild(guild),
+                    Command::SubscribeChannels { guild, channel, ranges } => {
+                        protocol::subscribe_channels(guild, channel, &ranges)
+                    }
                     Command::RequestMembers { guild, user_ids } => protocol::request_members(guild, &user_ids),
                     Command::VoiceState { guild, channel, self_mute, self_deaf } => {
                         protocol::voice_state_update(guild, channel, self_mute, self_deaf)
@@ -479,7 +487,6 @@ mod tests {
         cmd_tx
             .send(Command::SubscribeGuild {
                 guild: Snowflake(9),
-                large: false,
             })
             .await
             .expect("komut");

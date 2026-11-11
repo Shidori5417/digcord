@@ -31,6 +31,8 @@ const OLDER_PAGE: u8 = 20;
 const AROUND_PAGE: u8 = 50;
 /// op 8 isteği başına en fazla kullanıcı.
 const MEMBERS_PER_REQUEST: usize = 100;
+/// Üye listesinin ilk aralığının son dizini (web istemcisi `[0, 99]` ister).
+const MEMBER_RANGE_END: u32 = 99;
 /// Medya disk önbelleğinin üst sınırı; açılışta en eskiler silinir.
 const MEDIA_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 
@@ -98,6 +100,8 @@ pub struct Settings {
     pub build_number: u32,
     pub chrome_major: u32,
     pub push_to_talk: bool,
+    /// Üye paneli açık başlar (`ui.show_member_list`); TUI değiştirince `MembersVisible` gelir.
+    pub show_member_list: bool,
     /// Ses çalmadan önce biriktirilen kare sayısı (20 ms).
     pub jitter_frames: usize,
     /// Ses algılama eşiği (RMS).
@@ -128,6 +132,7 @@ impl Settings {
                 n => n,
             },
             push_to_talk: c.voice.mode == VoiceMode::Ptt,
+            show_member_list: c.ui.show_member_list,
             jitter_frames: usize::try_from(c.voice.jitter_ms.div_ceil(20)).unwrap_or(3),
             vad_threshold: c.voice.vad_threshold,
             input_device: crate::config::Voice::device(&c.voice.input_device),
@@ -205,6 +210,10 @@ struct Controller {
     open: Option<Open>,
     /// Bu oturumda op 37 gönderilen guild'ler.
     subscribed: HashSet<Snowflake>,
+    /// Üye paneli görünür mü (kapalıyken kanal aralığı aboneliği gönderilmez).
+    members_visible: bool,
+    /// Üye listesi aralığı en son istenen (guild, kanal); aynı kanal için tekrar gönderilmez.
+    members_subscribed: Option<(Snowflake, Snowflake)>,
     /// Geçmiş isteği sürmekte olan kanallar.
     loading: HashSet<Snowflake>,
     /// Thread listesi isteği sürmekte olan (üst kanal, arşivli mi) çiftleri.
@@ -852,11 +861,9 @@ impl Controller {
         if let Some(gid) = open.guild
             && self.subscribed.insert(gid)
         {
-            let large = self
-                .shared
-                .read_state(|st| st.guilds().iter().any(|g| g.id == gid && g.large));
-            self.command(Command::SubscribeGuild { guild: gid, large });
+            self.command(Command::SubscribeGuild { guild: gid });
         }
+        self.subscribe_members(open);
         if let Some(message) = around {
             if !self.fetch(open, None, Some(message), AROUND_PAGE) {
                 self.send(UiEvent::JumpFailed(
@@ -1115,6 +1122,21 @@ impl Controller {
         self.open_channel_at(open, Some(message));
     }
 
+    /// Üye paneli görünürken sunucu kanalının üye listesinin ilk aralığını ister (op 37
+    /// `channels`). Aynı kanal için bir kez; DM/grup DM'de abonelik yok (alıcılar kanaldan gelir).
+    fn subscribe_members(&mut self, open: Open) {
+        let Some(guild) = open.guild else { return };
+        if !self.members_visible || self.members_subscribed == Some((guild, open.channel)) {
+            return;
+        }
+        self.members_subscribed = Some((guild, open.channel));
+        self.command(Command::SubscribeChannels {
+            guild,
+            channel: open.channel,
+            ranges: vec![(0, MEMBER_RANGE_END)],
+        });
+    }
+
     /// Görünen yazarlardan üye bilgisi bilinmeyenler için op 8.
     fn request_members(&mut self, open: Open) {
         let Some(gid) = open.guild else { return };
@@ -1179,6 +1201,7 @@ impl Controller {
                 self.write(|st| st.load_ready(&ready));
                 // Yeni oturum: abonelikler ve istekler sıfırlanır; açık kanal yeniden yüklenir.
                 self.subscribed.clear();
+                self.members_subscribed = None;
                 self.requested_members.clear();
                 self.loading.clear();
                 self.loading_threads.clear();
@@ -1240,6 +1263,7 @@ impl Controller {
             E::ThreadListSync(sync) => self.write(|st| st.thread_list_sync(&sync)),
             E::GuildCreate(g) => self.write(|st| st.upsert_guild(&g)),
             E::GuildMembersChunk(c) => self.write(|st| st.add_members(&c)),
+            E::MemberListUpdate(u) => self.write(|st| st.apply_member_list(&u)),
             E::ReactionAdd(r) => self.write(|st| st.reaction_add(&r)),
             E::ReactionRemove(r) => self.write(|st| st.reaction_remove(&r)),
             E::TypingStart(t) => self.write(|st| st.typing_start(&t)),
@@ -1436,6 +1460,12 @@ impl Controller {
                     v.set_vad_threshold(self.env.settings.vad_threshold);
                 }
             }
+            Action::MembersVisible(visible) => {
+                self.members_visible = visible;
+                if visible && let Some(open) = self.open {
+                    self.subscribe_members(open);
+                }
+            }
             Action::ListDevices => self.list_devices(),
             Action::SaveSettings(changes) => self.save_settings(changes),
             Action::LoadTheme(name) => self.load_theme(name),
@@ -1504,6 +1534,7 @@ pub async fn run(
     let (updates_tx, mut updates) = mpsc::channel(256);
     let (history_tx, mut history) = mpsc::channel(16);
     let (jobs_tx, mut jobs) = mpsc::unbounded_channel::<Job>();
+    let members_visible = env.settings.show_member_list;
     let mut c = Controller {
         ui,
         shared,
@@ -1517,6 +1548,8 @@ pub async fn run(
         last_online: None,
         open: None,
         subscribed: HashSet::new(),
+        members_visible,
+        members_subscribed: None,
         loading: HashSet::new(),
         loading_threads: HashSet::new(),
         requested_members: HashSet::new(),

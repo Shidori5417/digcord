@@ -95,6 +95,8 @@ pub struct State {
     threads_fetched: HashSet<Snowflake>,
     /// Arşivli thread listesi istenmiş (altında dim gösterilen) üst kanallar.
     archived_shown: HashSet<Snowflake>,
+    /// Guild başına güncel üye listesi (op 37 `channels` aboneliği).
+    member_lists: HashMap<Snowflake, MemberList>,
 }
 
 fn is_voice(kind: u8) -> bool {
@@ -700,10 +702,12 @@ fn insert_sorted(deque: &mut VecDeque<Message>, msg: Message) {
 }
 
 mod compose;
+mod members;
 mod threads;
 mod unread;
 mod voice;
 
+pub use members::MemberList;
 pub use threads::ThreadItem;
 pub use unread::NotifyFilter;
 pub use voice::{VoiceCall, VoicePhase};

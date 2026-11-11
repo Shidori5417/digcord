@@ -87,6 +87,7 @@ reddedilmiyor, 30 dk kesintisiz çalışıyor, ses thread'i CPU'nun < %3'ünü k
 - [x] Temalar, tam kısayol özelleştirme, ayarlar ekranı (`:settings`, `:theme`, `[keys]`; ayrıntı `TUI_DESIGN.md`).
 - [x] Thread'ler ve forum kanalları: okuma + yazma (oluşturma kapsam dışı); ayrıntı `TUI_DESIGN.md`, protokol `PROTOCOL_NOTES.md` §4.4 (⚠️ doğrulanmadı).
 - [x] Arama (`:search`, `/search` uç noktaları) ve sabitlenen mesajlar (`:pins`), mesaja atlama (`around`); ayrıntı `TUI_DESIGN.md`, protokol `PROTOCOL_NOTES.md` §4.5 (⚠️ arama uç noktaları doğrulanmadı).
+- [x] Üye listesi paneli: op 37 `channels` aboneliği + `GUILD_MEMBER_LIST_UPDATE` (SYNC/INSERT/UPDATE/DELETE/INVALIDATE), `Alt+M` / `:members`; protokol `PROTOCOL_NOTES.md` §4.6 (⚠️ INSERT/UPDATE/DELETE/INVALIDATE ve çoklu aralık doğrulanmadı; kaydırma yok). op 37 guild aboneliği artık her guild için tam biçim.
 - Performans profili: açılış süresi, bellek (hedef: büyük hesapta < 150 MB).
   - [x] Sentetik büyük hesapla ölçüldü (veri işleme < 10 ms, ~50 MiB; bkz. `docs/PERFORMANCE.md`).
   - [ ] Gerçek hesapla canlı ölçüm (bekliyor).

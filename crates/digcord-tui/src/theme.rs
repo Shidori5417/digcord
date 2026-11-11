@@ -97,6 +97,16 @@ theme! {
     warning = Color::Yellow,
     /// Başarı/bağlı durumu.
     success = Color::Green,
+    /// Üye listesi grup başlıkları (`reset`: soluk).
+    member_group = Color::Reset,
+    /// Üye listesi: çevrimiçi işareti.
+    presence_online = Color::Green,
+    /// Üye listesi: boşta işareti.
+    presence_idle = Color::Yellow,
+    /// Üye listesi: rahatsız etmeyin işareti.
+    presence_dnd = Color::Red,
+    /// Üye listesi: çevrimdışı işareti.
+    presence_offline = Color::DarkGray,
     /// Durum çubuğu metni.
     status_fg = Color::Reset,
     /// Durum çubuğu arka planı.
@@ -161,6 +171,18 @@ impl Theme {
     }
     pub(crate) fn quote(&self) -> Style {
         Self::muted(self.quote)
+    }
+    pub(crate) fn member_group(&self) -> Style {
+        Self::muted(self.member_group)
+    }
+    pub(crate) fn presence(&self, p: digcord_model::Presence) -> Style {
+        use digcord_model::Presence as P;
+        Self::fg(match p {
+            P::Online => self.presence_online,
+            P::Idle => self.presence_idle,
+            P::Dnd => self.presence_dnd,
+            P::Offline => self.presence_offline,
+        })
     }
     pub(crate) fn author(&self) -> Style {
         Self::fg(self.author).add_modifier(Modifier::BOLD)

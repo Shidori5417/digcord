@@ -210,8 +210,9 @@ kuruluma özel), `Referer: https://discord.com/channels/<guild>/<kanal>`,
 CDP'nin bazı başlıkları göstermemesi mümkün — **doğrulanmadı**. 429 işleme yine de zorunlu.
 
 **Kanal açılınca giden gateway mesajları — ✅ gözlendi**
-- op 37 guild aboneliği. Küçük sunucu: `{"subscriptions":{"<guild>":{"typing":true,"activities":true,"threads":true}}}`.
-  Büyük sunucu (~250 bin üye): ek olarak `"members":[],"member_updates":false,"channels":{},"thread_member_lists":[]`.
+- op 37 guild aboneliği. 2026-11-11 gözlemi: resmi istemci küçük/büyük **her** guild için aynı tam biçimi
+  yollar (önceki "küçük sunucu" kısa biçimi artık kullanılmıyor):
+  `{"subscriptions":{"<guild>":{"typing":true,"threads":true,"activities":true,"members":[],"member_updates":false,"channels":{},"thread_member_lists":[]}}}`.
   Büyük sunucuda op 37 sonrası `GUILD_CREATE` geldi (tam guild nesnesi, `lazy: true`).
 - op 43: `{"guild_id":"<guild>","fields":["status","voice_start_time"]}` → `CHANNEL_INFO`.
 - op 8: `{"guild_id":["<guild>"],"user_ids":[<görünen yazarlar>],"presences":false}` → `GUILD_MEMBERS_CHUNK`
@@ -322,6 +323,32 @@ bucket mantığıyla yönetilir (`GET /guilds/:id/messages/search`).
 - Arama sonuç mesajlarındaki `member` / `guild_id` alanlarının eksik olabileceği varsayıldı;
   yazar adı store'daki üye bilgisinden, yoksa mesajın `author`'ından gösterilir. Sonuçlar
   store'a yazılmaz (yalnızca atlanan mesajın `around` penceresi yazılır).
+
+### 4.6 Üye listesi — op 37 `channels` ve `GUILD_MEMBER_LIST_UPDATE` (2026-11-11 gözlemi)
+
+**✅ Gözlendi** (web istemcisi, yan hesap; ham kayıt `captures/compare-*.json`, `op37_seen` / `gmlu`):
+- Üye listesi görünürken **ayrı** bir op 37: `{"subscriptions":{"<guild>":{"channels":{"<kanal>":[[0,99]]}}}}`.
+  Diğer anahtarlar (`typing`, `members`...) bu mesajda yok. Kanal başına bir kez (kanal açılınca)
+  gönderiyoruz. Kullanıcı bir üyeye bakınca ayrıca `{"<guild>":{"members":["<kullanıcı>"]}}` gidiyor
+  (kullanmıyoruz).
+- Yanıt: dispatch `GUILD_MEMBER_LIST_UPDATE`,
+  `d = {id, guild_id, member_count, online_count, groups:[{id,count}], ops:[...]}`.
+  `id`: liste kimliği (string; kanalın izin kümesine göre — farklı kanallar aynı listeyi paylaşabilir).
+  `groups[].id`: rol kimliği, `"online"` ya da `"offline"`.
+- `ops[]`, gözlenen: `{"op":"SYNC","range":[0,99],"items":[...]}`; `items[]` ya `{"group":{"id"}}`
+  (SYNC içinde `count` yok; sayılar `groups`'tan) ya da `{"member":{user{id,username,global_name,...},
+  roles[], nick, presence{status,...}, ...}}`. Dizinler grup başlıkları + üyeler iç içe **düz** listedeki
+  konumlardır. Sunucu SYNC'te istenenden az öğe döndürürse liste orada biter. Çevrimdışı üyede `presence`
+  yok (biz çevrimdışı sayıyoruz); `presence.activities` kullanılmıyor.
+
+**⚠️ Doğrulanmadı** (topluluk belgelerine göre uygulandı):
+- `{"op":"INSERT","index","item"}`, `UPDATE` (`index`,`item`), `DELETE` (`index`), `INVALIDATE` (`range`)
+  bu kayıtta **görülmedi**; biçimleri topluluk belgelerinden. `INVALIDATE`'te aralık boşaltılır
+  (sunucunun yeniden SYNC göndereceği varsayıldı).
+- Kaydırırken çoklu aralık (`[[0,99],[100,199]]`) görülmedi; komut (`subscribe_channels`) destekler ama
+  arayüz henüz kaydırma istemiyor: panel yalnızca ilk 100 öğeyi gösterir.
+- Liste kimliği değişince eski listeyi atıyoruz (kanal değişince yeni `id` ile gelen SYNC yerine geçer).
+- Başka kanalda aynı `id` ile gelen liste yeniden SYNC'lenir mi bilinmiyor.
 
 ## 5. Davranış kuralları (ban riskini azaltmak için)
 

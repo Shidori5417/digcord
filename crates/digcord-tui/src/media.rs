@@ -44,6 +44,8 @@ pub struct Options {
     /// Ses: bas-konuş tuşu (`push_to_talk` eylemi; varsayılan Ctrl+Space) basılıyken konuş
     /// (kitty klavye protokolü gerekir).
     pub push_to_talk: bool,
+    /// Üye listesi paneli başlangıçta açık mı (`ui.show_member_list`).
+    pub show_member_list: bool,
     pub theme: crate::Theme,
     pub keys: crate::Keymap,
     /// Ayarlar ekranındaki satırlar (`:settings`).
@@ -56,6 +58,7 @@ impl Default for Options {
             images: ImageMode::Thumbnail,
             image_max_rows: 10,
             push_to_talk: false,
+            show_member_list: true,
             theme: crate::Theme::default(),
             keys: crate::Keymap::default(),
             settings: Vec::new(),

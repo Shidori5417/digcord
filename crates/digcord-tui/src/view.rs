@@ -197,7 +197,7 @@ pub(crate) fn height(msgs: &VecDeque<Message>, idx: usize, res: &Res<'_>, width:
 pub(crate) fn draw(app: &App, frame: &mut Frame) {
     let [main, status] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
-    let show_members = main.width >= MEMBERS_MIN_WIDTH;
+    let show_members = app.show_members && main.width >= MEMBERS_MIN_WIDTH;
     let [strip, channels, messages, members] = Layout::horizontal([
         Constraint::Length(STRIP_WIDTH),
         Constraint::Length(CHANNELS_WIDTH),
@@ -213,12 +213,19 @@ pub(crate) fn draw(app: &App, frame: &mut Frame) {
     draw_channels(app, &st, frame, channels);
     draw_messages(app, &st, frame, messages);
     if show_members {
-        frame.render_widget(
-            Block::bordered()
-                .title(" Üyeler ")
-                .border_style(app.theme.border_style(false)),
-            members,
+        let block = Block::bordered()
+            .title(" Üyeler ")
+            .border_style(app.theme.border_style(false));
+        let inner = block.inner(members);
+        frame.render_widget(block, members);
+        let lines = crate::members::rows(
+            &app.theme,
+            &st,
+            app.open.map(|o| (o.guild, o.channel)),
+            usize::from(inner.width),
+            usize::from(inner.height),
         );
+        frame.render_widget(Paragraph::new(lines), inner);
     }
     drop(st);
     frame.render_widget(

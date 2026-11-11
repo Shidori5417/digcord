@@ -9,6 +9,7 @@ mod fuzzy;
 mod keymap;
 mod markdown;
 mod media;
+mod members;
 mod render;
 mod search;
 mod settings;
@@ -230,6 +231,9 @@ pub enum Action {
     },
     /// Panoya kopyala.
     Copy(String),
+    /// Üye paneli açıldı/kapandı (`toggle_members`, `:members`); açılınca açık kanalın üye
+    /// listesi istenir.
+    MembersVisible(bool),
     /// Terminal penceresi odak kazandı/kaybetti (bildirim ve okundu kararları için).
     Focus(bool),
     /// Resmi indir, çöz ve terminal için kodla; sonuç [`UiEvent::Image`].
@@ -310,6 +314,7 @@ pub fn run(
         let mut app = App::new(shared);
         app.push_to_talk = options.push_to_talk && enhanced;
         app.theme = options.theme;
+        app.show_members = options.show_member_list;
         app.keys = options.keys.clone();
         app.settings = settings::State::new(options.settings.clone());
         app.images = media::Images::new(picker, options);
@@ -474,6 +479,8 @@ pub struct App {
     search_seq: u64,
     /// Store'a gelmesi beklenen atlama hedefi: (kanal, mesaj).
     pending_jump: Option<(Snowflake, Snowflake)>,
+    /// Üye paneli açık mı (`ui.show_member_list`, `toggle_members`); dar terminalde yine gizlenir.
+    show_members: bool,
 }
 
 impl App {
@@ -513,7 +520,14 @@ impl App {
             search: None,
             search_seq: 0,
             pending_jump: None,
+            show_members: true,
         }
+    }
+
+    /// Üye panelini aç/kapat; denetleyiciye yeni durumu bildirir.
+    fn toggle_members(&mut self) -> Action {
+        self.show_members = !self.show_members;
+        Action::MembersVisible(self.show_members)
     }
 
     fn run(
@@ -679,6 +693,7 @@ impl App {
         match self.keys.lookup(Scope::Global, &key) {
             Some(Act::ToggleMute) => return Some(Action::ToggleMute),
             Some(Act::ToggleDeaf) => return Some(Action::ToggleDeaf),
+            Some(Act::ToggleMembers) => return Some(self.toggle_members()),
             _ => {}
         }
         match self.mode {

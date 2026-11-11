@@ -149,6 +149,7 @@ pub(crate) enum Act {
     ToggleMute,
     ToggleDeaf,
     PushToTalk,
+    ToggleMembers,
     // NORMAL
     Quit,
     Switcher,
@@ -208,6 +209,8 @@ const ACTIONS: &[Def] = &[
     def(Act::ToggleMute, "toggle_mute", G, &["ctrl+shift+m"]),
     def(Act::ToggleDeaf, "toggle_deaf", G, &["ctrl+shift+d"]),
     def(Act::PushToTalk, "push_to_talk", G, &["ctrl+space"]),
+    // Ctrl+M terminalde Enter ile aynıdır; bu yüzden Alt+M.
+    def(Act::ToggleMembers, "toggle_members", G, &["alt+m"]),
     def(Act::Quit, "quit", N, &["q"]),
     def(Act::Switcher, "switcher", N, &["ctrl+k"]),
     def(Act::NextFocus, "next_focus", N, &["tab"]),

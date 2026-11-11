@@ -22,7 +22,14 @@
 - **Sunucu şeridi** (en sol, dar): DM + sunucu kısaltmaları/ikonları, okunmamış noktası, mention sayısı.
 - **Kanal ağacı:** kategoriler katlanabilir, okunmamış kalın, mention sayısı sağda. Altta ses durumu çubuğu.
 - **Mesaj görünümü:** gruplanmış mesajlar (aynı yazar, < 7 dk), yanıt önizlemesi, tepkiler, ekler, embed'ler.
-- **Üye listesi:** isteğe bağlı (`Ctrl+M` aç/kapat), dar terminalde otomatik gizlenir.
+- **Üye listesi** (sağ panel, 20 sütun): sunucu kanalında gateway'in üye listesi (op 37 `channels`
+  aboneliği, `GUILD_MEMBER_LIST_UPDATE`); `ROLADI — N` / `Çevrimiçi — N` / `Çevrimdışı — N` başlıkları
+  altında üyeler, ad önceliği takma ad > global ad > kullanıcı adı, rengi en yüksek renkli rolden,
+  solda durum işareti (`●` çevrimiçi yeşil, boşta sarı, rahatsız etmeyin kırmızı; `○` çevrimdışı soluk).
+  Uzun/geniş karakterli adlar `…` ile kısaltılır. DM/grup DM'de kanalın alıcıları (işaretsiz). İsteğe bağlı:
+  `Alt+M` (`toggle_members`) ya da `:members` aç/kapat; açılış durumu `ui.show_member_list`; dar
+  terminalde otomatik gizlenir. İlk sürümde yalnızca ilk 100 öğe (kaydırma yok). Renkler tema
+  yuvaları `member_group`, `presence_online|idle|dnd|offline`.
 - **Durum çubuğu:** mod, bağlantı durumu/gecikme, yazıyor bilgisi, hatalar.
 
 Duyarlı düzen: < 100 sütun → üye listesi kapanır; < 70 sütun → kanal ağacı açılır pencereye döner.
@@ -57,7 +64,7 @@ Vim istemeyenler için config'de `keymap = "simple"` (her zaman yazma modu, ok t
 | `+` | Tepki ekle/kaldır (emoji veya `:kısa_ad:` istemi) |
 | `o` | Resimli mesajda tam ekran görüntüleyici; orada `o` harici açar (xdg-open), `←/→` (`h/l`) resimler arası, `Esc` kapatır. Resimsiz mesajda ilk bağlantıyı/eki harici açar |
 | `y` | Mesaj metnini kopyala |
-| `Ctrl+M` | Üye listesi aç/kapat |
+| `Alt+M` / `:members` | Üye listesi aç/kapat (`Ctrl+M` terminalde Enter ile aynı olduğundan kullanılamaz; `toggle_members` ile atanabilir) |
 | `Ctrl+Shift+M` / `Ctrl+Shift+D` | Mikrofon / kulaklık sessize al (kitty klavye protokolü gerekir; yoksa `:mute` / `:deaf`) |
 | `Enter` (ses kanalında) | Ses kanalına katıl |
 | `Ctrl+Space` (basılı tut) | Bas-konuş (`voice.mode = "ptt"`; kitty klavye protokolü gerekir) |
@@ -75,8 +82,7 @@ Vim istemeyenler için config'de `keymap = "simple"` (her zaman yazma modu, ok t
 Normal/SELECT modu ve genel kısayollar `config.toml` `[keys]` tablosundan değiştirilebilir (aşağıda).
 `Ctrl+C` (çıkış), INSERT/COMMAND metin düzenleme tuşları, hızlı geçiş/resim görüntüleyici/silme onayı
 pencerelerinin içindeki tuşlar ve ayarlar ekranının tuşları sabittir. Alt çubuktaki ipucu metinleri
-varsayılan tuşları gösterir. `Ctrl+M` (üye listesi aç/kapat) henüz uygulanmadı, bu yüzden atanabilir
-eylemlerde yok.
+varsayılan tuşları gösterir.
 
 ## Mesaj işleme
 
@@ -192,6 +198,7 @@ eylem adına göre alfabetik sıradır. Kapsamlar: *genel* (her modda), *NORMAL*
 | genel | `toggle_mute` | `ctrl+shift+m` | Mikrofonu sessize al |
 | genel | `toggle_deaf` | `ctrl+shift+d` | Kulaklığı sessize al |
 | genel | `push_to_talk` | `ctrl+space` | Bas-konuş (`voice.mode = "ptt"`; basma/bırakma olayları gerekir) |
+| genel | `toggle_members` | `alt+m` | Üye listesini aç/kapat |
 | NORMAL | `quit` | `q` | Çıkış |
 | NORMAL | `switcher` | `ctrl+k` | Hızlı geçiş |
 | NORMAL | `next_focus` / `prev_focus` | `tab` / `shift+tab` | Panel odağı |
@@ -249,6 +256,8 @@ thread'inde yapılmaz (açılışta ve `:theme` ile denetleyicide). Örnek: `the
 | `warning` | `yellow` | Bildirimler, yeniden bağlanma, silme onayı |
 | `success` | `green` | Bağlı durumu, ses bağlantısı |
 | `status_fg` / `status_bg` | `reset` | Durum çubuğu |
+| `member_group` | `reset` | Üye listesi grup başlıkları (soluk) |
+| `presence_online` / `presence_idle` / `presence_dnd` / `presence_offline` | `green` / `yellow` / `red` / `darkgray` | Üye listesi durum işareti |
 
 `timestamp`, `dim` ve `quote` yuvalarında `reset` "renk yok, soluk biçim" demektir; bir renk
 verilirse soluk biçim yerine o renk kullanılır. Seçili satır/mesaj vurgusu (ters renk) ve kalın/italik

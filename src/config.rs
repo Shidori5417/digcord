@@ -206,6 +206,7 @@ impl Config {
             },
             image_max_rows: self.ui.image_max_rows.clamp(1, 100),
             push_to_talk: self.voice.mode == VoiceMode::Ptt,
+            show_member_list: self.ui.show_member_list,
             theme,
             keys,
             settings: self.setting_items(),

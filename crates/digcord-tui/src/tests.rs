@@ -25,7 +25,8 @@ fn ready() -> Ready {
             "id": GUILD.to_string(), "large": false,
             "properties": {"name": "Test Sunucusu", "owner_id": "999"},
             // VIEW_CHANNEL + SEND_MESSAGES + ADD_REACTIONS + ATTACH_FILES
-            "roles": [{"id": GUILD.to_string(), "name": "@everyone", "permissions": "35904", "position": 0}],
+            "roles": [{"id": GUILD.to_string(), "name": "@everyone", "permissions": "35904", "position": 0},
+                       {"id": "7", "name": "Moderatör", "permissions": "0", "position": 1, "color": 16711680}],
             "channels": [
                 {"id": "10", "type": 4, "name": "Genel", "position": 0},
                 {"id": SOHBET.to_string(), "type": 0, "name": "sohbet", "parent_id": "10", "position": 0, "topic": "konu"},
@@ -1992,4 +1993,137 @@ fn sequential_shared_reads_are_fine() {
     drop(shared.read());
     let _ = shared.read().guilds().len();
     let _ = shared.read().guilds().len();
+}
+
+// ------------------------------------------------------------------ üye paneli
+
+/// Sentetik üye listesi: rol grubu (renkli), çevrimiçi ve çevrimdışı grupları.
+fn member_update() -> digcord_model::MemberListUpdate {
+    let member = |id: u64, name: &str, nick: Option<&str>, roles: &[&str], status: &str| {
+        serde_json::json!({"member": {
+            "user": {"id": id.to_string(), "username": format!("kul{id}"), "global_name": name},
+            "roles": roles, "nick": nick, "presence": {"status": status}}})
+    };
+    let d = serde_json::json!({
+        "id": "everyone", "guild_id": GUILD.to_string(), "member_count": 5, "online_count": 3,
+        "groups": [{"id": "7", "count": 1}, {"id": "online", "count": 2}, {"id": "offline", "count": 2}],
+        "ops": [{"op": "SYNC", "range": [0, 99], "items": [
+            {"group": {"id": "7"}},
+            member(300, "Mod Kişi", Some("Takma"), &["7"], "dnd"),
+            {"group": {"id": "online"}},
+            member(301, "Ayşe", None, &[], "online"),
+            member(302, "Boşta", None, &[], "idle"),
+            {"group": {"id": "offline"}},
+            member(303, "山田太郎山田太郎山田太郎山田太郎", None, &[], "offline"),
+            {"member": {"user": {"id": "304", "username": "sadece_kullanici"}, "roles": []}},
+        ]}]
+    });
+    digcord_model::MemberListUpdate::parse(&d.to_string()).expect("liste")
+}
+
+fn members_app() -> App {
+    let shared = shared_with(vec![], true);
+    shared
+        .state
+        .write()
+        .expect("kilit")
+        .apply_member_list(&member_update());
+    let mut app = test_app(shared);
+    open_sohbet(&mut app);
+    app
+}
+
+#[test]
+fn member_panel_snapshot() {
+    let app = members_app();
+    insta::assert_snapshot!(draw(&app, 100, 14));
+}
+
+#[test]
+fn member_panel_colors_and_markers() {
+    let app = members_app();
+    let screen = draw(&app, 100, 14);
+    let buf = screen.buffer();
+    // Panel x=80..100; iç alan x=81. Satır 1: rol başlığı, 2: renkli üye (takma ad).
+    let row = |y: u16| -> String { (80..100).map(|x| buf[(x, y)].symbol()).collect() };
+    assert!(row(1).contains("MODERATÖR — 1"), "{}", row(1));
+    assert!(row(2).contains("Takma"), "{}", row(2));
+    assert_eq!(buf[(83, 2)].fg, Color::Rgb(255, 0, 0));
+    // Rolsüz üye renksiz; işaret rengi duruma göre.
+    assert_eq!(buf[(83, 4)].fg, Color::Reset);
+    assert_eq!(buf[(81, 2)].fg, Color::Red);
+    assert_eq!(buf[(81, 4)].fg, Color::Green);
+    assert_eq!(buf[(81, 5)].fg, Color::Yellow);
+    assert!(row(7).contains("○"), "{}", row(7));
+    // Görünen ad: takma ad > global ad > kullanıcı adı.
+    assert!(row(8).contains("sadece_kullanici") || row(9).contains("sadece_kullanici"));
+}
+
+#[test]
+fn member_panel_truncates_wide_chars_to_panel_width() {
+    let app = members_app();
+    let screen = draw(&app, 100, 14);
+    let buf = screen.buffer();
+    // Sağ kenar çerçevesi (x=99) hiçbir satırda taşan içerikle bozulmamalı.
+    for y in 1..12 {
+        assert_eq!(buf[(99, y)].symbol(), "│", "satır {y}");
+    }
+    let all: String = (0..14)
+        .flat_map(|y| (80..100).map(move |x| (x, y)))
+        .map(|(x, y)| buf[(x, y)].symbol().to_owned())
+        .collect();
+    assert!(all.contains('…'), "uzun ad kısaltılmalı");
+    assert!(!all.contains("山田太郎山田太郎山田太郎山田太郎"));
+}
+
+#[test]
+fn member_panel_toggle_by_key_and_command() {
+    let mut app = members_app();
+    assert!(format!("{}", draw(&app, 100, 14)).contains("Üyeler"));
+    let alt_m = || {
+        UiEvent::Input(Event::Key(KeyEvent::new(
+            KeyCode::Char('m'),
+            KeyModifiers::ALT,
+        )))
+    };
+    assert_eq!(app.handle(alt_m()), Some(Action::MembersVisible(false)));
+    let hidden = format!("{}", draw(&app, 100, 14));
+    assert!(!hidden.contains("Üyeler"));
+    assert_eq!(app.handle(alt_m()), Some(Action::MembersVisible(true)));
+    assert_eq!(
+        run_command(&mut app, "members"),
+        [Action::MembersVisible(false)]
+    );
+    assert_eq!(
+        run_command(&mut app, "members"),
+        [Action::MembersVisible(true)]
+    );
+    // Yeniden atanabilir.
+    let (keys, warnings) = Keymap::from_overrides(&[("toggle_members".into(), vec!["f4".into()])]);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    app.keys = keys;
+    assert_eq!(
+        app.handle(key(KeyCode::F(4))),
+        Some(Action::MembersVisible(false))
+    );
+}
+
+#[test]
+fn member_panel_hidden_when_narrow_or_disabled() {
+    let mut app = members_app();
+    assert!(!format!("{}", draw(&app, 99, 14)).contains("Üyeler"));
+    app.show_members = false;
+    assert!(!format!("{}", draw(&app, 120, 14)).contains("Üyeler"));
+}
+
+#[test]
+fn member_panel_shows_dm_recipients() {
+    let mut app = test_app(shared_with(vec![], true));
+    press(&mut app, &[KeyCode::Enter, KeyCode::Enter]);
+    let screen = draw(&app, 100, 14);
+    let buf = screen.buffer();
+    let row = |y: u16| -> String { (80..100).map(|x| buf[(x, y)].symbol()).collect() };
+    assert!(row(1).contains("Üyeler — 1"), "{}", row(1));
+    assert!(row(2).contains("Arkadaş"), "{}", row(2));
+    insta::assert_snapshot!(draw(&app, 100, 8));
 }

@@ -102,7 +102,7 @@ pub struct Relationship {
     pub nickname: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct User {
     pub id: Snowflake,
     pub username: String,
@@ -139,7 +139,7 @@ pub struct Guild {
     pub roles: Vec<Role>,
     #[serde(default)]
     pub emojis: Vec<CustomEmoji>,
-    /// Büyük guild: op 37 aboneliği genişletilmiş biçimde gönderilir (PROTOCOL_NOTES §4.1).
+    /// Büyük guild (op 37 her guild için aynı tam biçimle gönderilir; PROTOCOL_NOTES §4.1).
     #[serde(default)]
     pub large: bool,
     /// Ses kanallarındaki kullanıcılar (`guild_id` alanı burada yok).

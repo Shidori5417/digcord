@@ -1,6 +1,7 @@
 //! Discord veri tipleri (Snowflake, Message, Channel, Guild, User...).
 
 mod client;
+mod member_list;
 mod message;
 mod permissions;
 mod ready;
@@ -9,6 +10,9 @@ mod snowflake;
 mod token;
 
 pub use client::{ClientProperties, DEFAULT_BUILD_NUMBER, DEFAULT_CHROME_MAJOR};
+pub use member_list::{
+    GroupCount, GroupId, ListItem, ListMember, ListOp, MemberListUpdate, Presence,
+};
 pub use message::{
     Attachment, Call, Embed, EmbedField, EmbedFooter, EmbedMedia, EmbedText, Message, MessageAck,
     MessageDelete, Reaction, ReactionEmoji, ReactionEvent, StickerItem, TypingStart, VoiceServer,
