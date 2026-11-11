@@ -1255,6 +1255,11 @@ fn thread_json(
 
 /// #sohbet (2 aktif + 1 arşivli thread), #kalabalik (5 thread), forum (thread'siz).
 fn threads_shared() -> Arc<Shared> {
+    threads_shared_with(&[])
+}
+
+/// [`threads_shared`] + ek kanallar (ör. ses kanalı).
+fn threads_shared_with(extra_channels: &[serde_json::Value]) -> Arc<Shared> {
     let mut r = serde_json::to_value(serde_json::json!({
         "v": 9,
         "user": {"id": ME.to_string(), "username": "ben", "global_name": "Ben"},
@@ -1291,6 +1296,9 @@ fn threads_shared() -> Arc<Shared> {
     .expect("json");
     // Okunma kaydı: kalabalık kanalın 43 numaralı thread'i okunmamış (son mesaj 43 > 1).
     r["v"] = serde_json::json!(9);
+    if let Some(chs) = r["guilds"][0]["channels"].as_array_mut() {
+        chs.extend_from_slice(extra_channels);
+    }
     let ready: Ready = serde_json::from_value(r).expect("ready");
     let shared = Arc::new(Shared::default());
     shared.state.write().expect("kilit").load_ready(&ready);
@@ -1934,4 +1942,54 @@ fn g_returns_from_detached_window_and_insert_is_blocked() {
         );
     }
     assert!(press(&mut app, &[KeyCode::Char('G')]).is_empty());
+}
+
+// ------------------------------------------------------------ kilitlenme koruması
+
+/// Çizim ve girdi yolları `Shared::read()`'i iç içe çağırmamalı (yazar bekliyorsa kilitlenir).
+/// Sunucu seçili, ses üyeleri, thread'ler ve açık kanal: `draw_channels` → `entries_in` yolu.
+#[test]
+fn draw_with_guild_voice_threads_and_open_channel_takes_one_read() {
+    let shared = threads_shared_with(&[serde_json::json!(
+        {"id": "13", "type": 2, "name": "ses", "parent_id": "10", "position": 3}
+    )]);
+    {
+        let mut st = shared.state.write().expect("kilit");
+        let vs: digcord_model::VoiceState = serde_json::from_value(serde_json::json!({
+            "guild_id": GUILD.to_string(), "channel_id": "13", "user_id": FRIEND.to_string(),
+            "session_id": "x"
+        }))
+        .expect("ses durumu");
+        st.voice_state_update(&vs);
+    }
+    let mut app = test_app(shared);
+    to_channels(&mut app);
+    // #sohbet'i aç (thread'li kanal), sonra Insert'te tamamlama + durum çubuğu da çizilsin.
+    press(&mut app, &[KeyCode::Char('j'), KeyCode::Enter]);
+    assert!(app.open.is_some());
+    draw(&app, 100, 20);
+    press(&mut app, &[KeyCode::Char('i'), KeyCode::Char('@')]);
+    draw(&app, 100, 20);
+    press(&mut app, &[KeyCode::Esc, KeyCode::Tab]);
+    // Kanal panelinden :threads / :archived ve Enter yolları.
+    run_command(&mut app, "threads");
+    run_command(&mut app, "archived");
+    draw(&app, 100, 20);
+}
+
+#[test]
+#[should_panic(expected = "iç içe Shared::read()")]
+fn nested_shared_read_panics_in_debug() {
+    let shared = Shared::default();
+    let _outer = shared.read();
+    let _inner = shared.read();
+}
+
+#[test]
+fn sequential_shared_reads_are_fine() {
+    let shared = Shared::default();
+    drop(shared.read());
+    drop(shared.read());
+    let _ = shared.read().guilds().len();
+    let _ = shared.read().guilds().len();
 }

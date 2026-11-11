@@ -4,6 +4,7 @@
 use std::time::{Duration, Instant};
 
 use digcord_model::{Permissions, ReactionEmoji, Snowflake};
+use digcord_store::State;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::editor::EditOutcome;
@@ -610,6 +611,11 @@ impl App {
 
     /// Geçerli kelimeye göre tamamlama adayları (INSERT'te `@`, `#`, `:`; tepki isteminde `:`).
     pub(crate) fn candidates(&self) -> Vec<Candidate> {
+        self.candidates_in(&self.shared.read())
+    }
+
+    /// [`App::candidates`]; tutulan okuma korumasıyla (çizim yolu).
+    pub(crate) fn candidates_in(&self, st: &State) -> Vec<Candidate> {
         let (word, _) = match self.mode {
             Mode::Insert => self.editor.current_word(),
             Mode::React => self.command.current_word(),
@@ -618,7 +624,6 @@ impl App {
         let Some(open) = self.open else {
             return Vec::new();
         };
-        let st = self.shared.read();
         let mut out = Vec::new();
         if let Some(prefix) = word.strip_prefix('@').filter(|p| !p.is_empty())
             && self.mode == Mode::Insert

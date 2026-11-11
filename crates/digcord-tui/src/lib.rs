@@ -26,6 +26,7 @@ pub use theme::{Theme, ThemeError};
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::io;
+use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, RwLock, RwLockReadGuard};
@@ -51,9 +52,41 @@ impl Shared {
         !self.dirty.swap(true, Ordering::AcqRel)
     }
 
-    fn read(&self) -> RwLockReadGuard<'_, State> {
+    /// Store'u okur. Aynı iş parçacığında iç içe ikinci `read()` ölümcül kilitlenmedir (std
+    /// `RwLock` yazar öncelikli: bekleyen yazar varken ikinci okuma sonsuza dek bekler); bu
+    /// yüzden debug derlemede panikler. Tutulan koruma varsa `*_in(&State)` varyantları kullanılır.
+    fn read(&self) -> ReadGuard<'_> {
+        #[cfg(debug_assertions)]
+        READ_DEPTH.with(|d| {
+            assert!(
+                d.get() == 0,
+                "iç içe Shared::read(): okuma koruması tutulurken ikinci okuma kilitlenme yapar"
+            );
+        });
+        READ_DEPTH.with(|d| d.set(d.get() + 1));
         // Zehirlenmiş kilit: yazar panikledi; son tutarlı durumu okumaya devam et.
-        self.state.read().unwrap_or_else(|e| e.into_inner())
+        ReadGuard(self.state.read().unwrap_or_else(|e| e.into_inner()))
+    }
+}
+
+thread_local! {
+    /// Bu iş parçacığının tuttuğu `Shared::read()` korumalarının sayısı.
+    static READ_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+/// `Shared::read()` koruması: `State`'e deref eder, bırakılınca iş parçacığı sayacını düşürür.
+pub(crate) struct ReadGuard<'a>(RwLockReadGuard<'a, State>);
+
+impl Deref for ReadGuard<'_> {
+    type Target = State;
+    fn deref(&self) -> &State {
+        &self.0
+    }
+}
+
+impl Drop for ReadGuard<'_> {
+    fn drop(&mut self) {
+        READ_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
     }
 }
 
@@ -852,7 +885,7 @@ impl App {
             }
         };
         let from_list = (self.focus == Focus::Channels)
-            .then(|| self.entries().get(self.chan_sel).map(|e| e.id))
+            .then(|| self.entries_in(&st).get(self.chan_sel).map(|e| e.id))
             .flatten()
             .and_then(pick);
         from_list.or_else(|| self.open.and_then(|o| pick(o.channel)))
@@ -861,35 +894,29 @@ impl App {
     /// Kanalı açar: şerit ve liste seçimini ona taşır, mesaj görünümünü sıfırlar.
     fn open_channel(&mut self, guild: Option<Snowflake>, channel: Snowflake) -> Action {
         let previous = self.open.map(|o| o.channel).filter(|c| *c != channel);
-        self.guild_sel = {
-            let st = self.shared.read();
-            guild
-                .and_then(|g| st.guilds().iter().position(|x| x.id == g))
-                .map_or(0, |i| i + 1)
-        };
-        if let Some(cat) = self
-            .shared
-            .read()
-            .channel(channel)
-            .and_then(|c| c.parent_id)
-        {
+        // `Arc` klonu: koruma `self`'i ödünç almasın (aşağıda `flip_threads` &mut ister).
+        let shared = Arc::clone(&self.shared);
+        let st = shared.read();
+        self.guild_sel = guild
+            .and_then(|g| st.guilds().iter().position(|x| x.id == g))
+            .map_or(0, |i| i + 1);
+        if let Some(cat) = st.channel(channel).and_then(|c| c.parent_id) {
             // Thread'de bu, üst kanalın kategorisi değil üst kanalın kendisidir (zararsız).
             self.collapsed.remove(&cat);
         }
         // Açılan thread'in listesi kapalıysa görünür kıl.
-        let hidden_parent = {
-            let st = self.shared.read();
-            st.thread_parent(channel)
-                .filter(|p| !self.threads_expanded(&st, *p))
-        };
+        let hidden_parent = st
+            .thread_parent(channel)
+            .filter(|p| !self.threads_expanded(&st, *p));
         if let Some(parent) = hidden_parent {
             self.flip_threads(parent);
         }
         self.chan_sel = self
-            .entries()
+            .entries_in(&st)
             .iter()
             .position(|e| e.id == channel)
             .unwrap_or(0);
+        drop(st);
         self.open = Some(Open { guild, channel });
         self.scroll = Scroll::default();
         self.focus = Focus::Messages;
@@ -925,9 +952,13 @@ impl App {
 
     /// Seçili sunucunun (veya DM'lerin) kanal paneli satırları.
     fn entries(&self) -> Vec<Entry> {
-        let st = self.shared.read();
+        self.entries_in(&self.shared.read())
+    }
+
+    /// [`App::entries`]; zaten tutulan okuma korumasıyla (iç içe okuma kilitlenir).
+    fn entries_in(&self, st: &State) -> Vec<Entry> {
         let now = unix_now_i64();
-        let Some(gid) = self.selected_guild(&st) else {
+        let Some(gid) = self.selected_guild(st) else {
             let mut out: Vec<Entry> = st
                 .dm_channels()
                 .iter()
@@ -1028,7 +1059,7 @@ impl App {
                         Vec::new()
                     };
                     let expanded =
-                        (forum || !threads.is_empty()) && self.threads_expanded(&st, item.id);
+                        (forum || !threads.is_empty()) && self.threads_expanded(st, item.id);
                     // Kapalı listede okunmamış/bahsetme üst satırda görünsün.
                     let (mut unread, mut mentions) =
                         (st.is_unread(item.id), st.mention_count(item.id));

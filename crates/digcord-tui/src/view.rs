@@ -371,7 +371,7 @@ fn draw_channels(app: &App, st: &State, frame: &mut Frame, area: Rect) {
             .map_or_else(|| " ? ".to_owned(), |g| format!(" {} ", g.name)),
         None => " Direkt Mesajlar ".to_owned(),
     };
-    let entries = app.entries();
+    let entries = app.entries_in(st);
     let inner_h = usize::from(area.height.saturating_sub(2)).max(1);
     // Seçim görünür kalsın.
     let mut offset = app.chan_offset.get();
@@ -675,7 +675,7 @@ fn draw_input(app: &App, st: &State, open: Open, frame: &mut Frame, area: Rect) 
         frame.set_cursor_position((x, top + row));
     }
 
-    let candidates = app.candidates();
+    let candidates = app.candidates_in(st);
     if !candidates.is_empty() {
         let n = u16::try_from(candidates.len()).unwrap_or(u16::MAX);
         let h = n.min(area.y.saturating_sub(1));
