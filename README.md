@@ -2,66 +2,51 @@
 
 > Discord için tamamen Rust ile yazılmış, hızlı ve hafif bir terminal (TUI) istemcisi.
 
-## Ne yapıyor?
+![Digcord TUI iskeleti](docs/screenshots/tui.png)
 
-Digcord, resmi Discord istemcisinin yerine terminalde çalışan bir istemcidir:
+## Durum
 
-- Sunucular, kanallar, kategoriler, thread'ler
-- Mesaj okuma / yazma / düzenleme / silme / yanıt / tepki (reaction)
-- DM ve grup DM'ler, arkadaş listesi
-- Okunmamış sayaçları, mention vurgusu, masaüstü bildirimleri
-- Terminal içinde resim, emoji ve sticker gösterimi (Kitty / Sixel / iTerm2 / yarım blok yedeği)
-- Sesli kanallara katılma (DAVE uçtan uca şifreleme ile)
+**Erken aşama (Aşama 0 — İskelet, v0.1.0).** Şu an çalışan kısım: Cargo workspace, ratatui ile boş üç panelli arayüz
+(Kanallar | Mesajlar | Üyeler + durum çubuğu), `q` / `Ctrl+C` ile çıkış, panic'te terminalin geri yüklenmesi,
+dosyaya loglama (token maskeleme) ve CI. Gateway, REST, giriş ve mesajlaşma **henüz yazılmadı**;
+`digcord-*` crate'lerinin çoğu boş. Aşamalar ve kabul kriterleri: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
-Gateway ve REST katmanı **sıfırdan** yazılır; `twilight`, `serenity` gibi Discord kütüphaneleri kullanılmaz.
-Genel amaçlı altyapı kütüphaneleri (tokio, rustls, WebSocket, HTTP, kripto) kullanılır.
+## Hedeflenen özellikler
 
-## ⚠️ Önemli uyarı
+- Sunucular, kanallar, thread'ler; mesaj okuma / yazma / düzenleme / silme / yanıt / tepki
+- DM, grup DM, arkadaş listesi, okunmamış sayaçları, masaüstü bildirimleri
+- Terminalde resim, emoji ve sticker (Kitty / Sixel / iTerm2 / yarım blok yedeği)
+- Sesli kanallar (DAVE uçtan uca şifreleme)
+- Gateway ve REST katmanı `twilight` / `serenity` kullanılmadan sıfırdan
 
-Digcord **kullanıcı token'ı** ile çalışır. Kullanıcı hesabıyla üçüncü taraf istemci kullanmak
-Discord Hizmet Koşulları'na aykırıdır ve **hesabın kalıcı olarak kapatılmasına** yol açabilir.
+## Derleme ve çalıştırma
 
-- Geliştirme ve testleri **ana hesabında değil, yan hesapta** yap.
-- İstemci, resmi istemciden ayırt edilemeyecek şekilde davranmaya çalışır ama bu bir garanti değildir.
-- Spam, otomasyon (self-bot) ve toplu işlem özellikleri bilinçli olarak **eklenmeyecek** — hem ban riskini artırır hem projenin amacı bu değil.
+Rust stable (1.88+, edition 2024) gerekir.
 
-## Hedef platform
+```bash
+cargo run --release    # boş arayüzü açar, q ile çık
+cargo test --workspace
+```
 
-- Birincil: Linux (CachyOS / Arch, KDE Plasma, PipeWire)
-- Terminal: Kitty, WezTerm, Konsole, foot, Alacritty (Alacritty'de resim yok → yarım blok yedeği)
-- İkincil (sonra): macOS, Windows
+Log dosyası: `~/.local/state/digcord/digcord.log`
+
+## ⚠️ Uyarı
+
+Digcord **kullanıcı token'ı** ile çalışacak şekilde tasarlanmıştır. Kullanıcı hesabıyla üçüncü taraf istemci kullanmak
+Discord Hizmet Koşulları'na aykırıdır ve **hesabın kapatılmasına** yol açabilir. Geliştirme ve testleri yan hesapta yap.
+Spam, self-bot ve toplu işlem özellikleri bilinçli olarak eklenmeyecek.
 
 ## Teknoloji
 
-| Alan | Seçim |
-|---|---|
-| Dil | Rust (stable, edition 2024) |
-| Async | tokio |
-| TUI | ratatui + crossterm |
-| Resim | ratatui-image (+ `image` crate) |
-| WebSocket | tokio-tungstenite + rustls |
-| HTTP | hyper (veya reqwest, rustls ile) |
-| Sıkıştırma | zlib-stream (flate2 + miniz_oxide, saf Rust) |
-| JSON | serde + serde_json (sıcak yollarda simd-json opsiyonel) |
-| Token saklama | keyring (Secret Service → KWallet) |
-| Bildirim | notify-rust |
-| Ses | cpal (G/Ç), opus, openmls + RustCrypto (DAVE) |
-| Yerel önbellek | rusqlite veya redb |
-| Log | tracing + tracing-appender (dosyaya, TUI'yi bozmadan) |
+Rust, tokio, ratatui + crossterm, ratatui-image, tokio-tungstenite + rustls, serde, keyring, notify-rust,
+cpal + opus + openmls (ses/DAVE), tracing. Ayrıntı: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
-Ayrıntılar: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+Birincil platform Linux (Kitty, WezTerm, Konsole, foot, Alacritty); macOS ve Windows sonra.
 
 ## Dokümanlar
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — workspace yapısı, veri akışı, katmanlar
-- [`docs/PROTOCOL_NOTES.md`](docs/PROTOCOL_NOTES.md) — gateway, REST, kullanıcı token'ı ayrıntıları, ses/DAVE
-- [`docs/TUI_DESIGN.md`](docs/TUI_DESIGN.md) — ekran düzeni, kısayollar, config
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) — aşamalar ve kabul kriterleri
-- [`CLAUDE.md`](CLAUDE.md) — kodlama ajanı için proje kuralları
-- [`PROMPT.md`](PROMPT.md) — başlangıç promptu
-- [`docs/GIT_WORKFLOW.md`](docs/GIT_WORKFLOW.md) — GitHub, branch, commit ve push kuralları
+[`ARCHITECTURE`](docs/ARCHITECTURE.md) · [`PROTOCOL_NOTES`](docs/PROTOCOL_NOTES.md) · [`TUI_DESIGN`](docs/TUI_DESIGN.md) · [`ROADMAP`](docs/ROADMAP.md) · [`GIT_WORKFLOW`](docs/GIT_WORKFLOW.md) · [`CLAUDE.md`](CLAUDE.md)
 
 ## Lisans
 
-**Tescilli — Tüm hakları saklıdır.** Kod açık kaynak değildir; kullanılamaz, kopyalanamaz,
-değiştirilemez, dağıtılamaz. Ayrıntılar: [`LICENSE`](LICENSE)
+**Tescilli — Tüm hakları saklıdır.** Kod açık kaynak değildir; ayrıntılar: [`LICENSE`](LICENSE)
