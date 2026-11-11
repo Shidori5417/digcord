@@ -15,6 +15,8 @@ const SOHBET: u64 = 11;
 const DM: u64 = 50;
 /// 2026-01-01T12:00:00Z civarı; id'den zaman damgası türetmek için.
 const BASE_MS: u64 = 1_767_268_800_000;
+/// Sabit saat göstergesi (UTC).
+const FIXED_NOW: &str = "2026-01-01T12:34:56Z";
 
 fn ready() -> Ready {
     serde_json::from_value(serde_json::json!({
@@ -76,6 +78,8 @@ fn shared_with(messages: Vec<Message>, complete: bool) -> Arc<Shared> {
 fn test_app(shared: Arc<Shared>) -> App {
     let mut app = App::new(shared);
     app.tz = jiff::tz::TimeZone::UTC;
+    // Durum çubuğundaki saat snapshot'ları bozmasın.
+    app.fixed_now = Some(FIXED_NOW.parse().expect("zaman"));
     app
 }
 
@@ -1024,13 +1028,13 @@ fn partly_visible_image_is_not_drawn() {
         msgs.push(msg(10 + i, 1, FRIEND, &format!("satır {i}")));
     }
     let app = image_app(msgs);
-    // Mesaj alanı 7 satır: alttaki 5 mesaj + resmin son 2 satırı.
+    // Başlık satırı + mesaj alanı 6 satır: alttaki 5 mesaj + resmin son satırı.
     let screen = draw(&app, 100, 12);
     assert!(
         app.images.take_wanted().is_empty(),
         "kısmen görünen resim istenmez"
     );
-    assert!(row_text(&screen, 1).contains("[resim]"));
+    assert!(row_text(&screen, 2).contains("[resim]"));
 }
 
 #[test]
@@ -2278,4 +2282,483 @@ fn member_panel_shows_dm_recipients() {
     assert!(row(1).contains("Üyeler — 1"), "{}", row(1));
     assert!(row(2).contains("Arkadaş"), "{}", row(2));
     insta::assert_snapshot!(draw(&app, 100, 8));
+}
+
+// ------------------------------------------------------------ yardım, bildirim, başlık
+
+fn screen_text(backend: &TestBackend) -> String {
+    format!("{backend}")
+}
+
+/// Yardım satırının düz metni (stiller atılmış).
+fn help_text(app: &App) -> Vec<String> {
+    help::lines(&app.keys, &app.theme)
+        .iter()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        })
+        .collect()
+}
+
+#[test]
+fn help_overlay_lists_overridden_keys_and_commands() {
+    let mut app = test_app(shared_with(vec![], true));
+    app.keys = overrides(&[("quit", "x"), ("insert_mode", "ctrl+i"), ("reply", "R")]);
+    assert!(press(&mut app, &[KeyCode::Char('?')]).is_empty());
+    assert_eq!(app.mode, compose::Mode::Help);
+    let text = help_text(&app);
+    let line = |name: &str| {
+        text.iter()
+            .find(|l| l.contains(&format!("[{name}]")))
+            .unwrap_or_else(|| panic!("{name} yok"))
+            .clone()
+    };
+    assert!(
+        line("quit").trim_start().starts_with("x "),
+        "{}",
+        line("quit")
+    );
+    assert!(!line("quit").contains("  q "));
+    assert!(line("insert_mode").contains("Ctrl+I"));
+    assert!(line("reply").trim_start().starts_with("R "));
+    // Varsayılan kalanlar ve kapsam başlıkları.
+    assert!(line("switcher").contains("Ctrl+K"));
+    assert!(line("next_unread").contains("Alt+↓"));
+    assert!(line("help").contains('?'));
+    for heading in [
+        "Genel",
+        "NORMAL",
+        "SEÇ",
+        "YAZ",
+        "Resim görüntüleyici",
+        "Arama / sabitlenenler",
+        "Ayarlar",
+        "Komutlar",
+    ] {
+        assert!(text.iter().any(|l| l.starts_with(heading)), "{heading}");
+    }
+    for cmd in [
+        ":upload",
+        ":search",
+        ":pins",
+        ":threads",
+        ":archived",
+        ":members",
+        ":settings",
+        ":theme",
+        ":devices",
+        ":leave",
+        ":mute",
+        ":deaf",
+        ":call",
+        ":vol",
+        ":help",
+        ":q",
+    ] {
+        assert!(
+            text.iter().any(|l| l.trim_start().starts_with(cmd)),
+            "{cmd}"
+        );
+    }
+    // Çizilince yeni tuş ekranda.
+    let screen = screen_text(&draw(&app, 100, 80));
+    assert!(
+        screen.contains("[quit]") && screen.contains("Ctrl+I"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn help_opens_scrolls_and_closes_back_to_previous_mode() {
+    let mut app = test_app(shared_with(vec![msg(1, 0, FRIEND, "x")], true));
+    open_sohbet(&mut app);
+    // :help komutu.
+    assert!(run_command(&mut app, "help").is_empty());
+    assert_eq!(app.mode, compose::Mode::Help);
+    let first = screen_text(&draw(&app, 80, 12));
+    assert!(
+        first.contains("Yardım") && first.contains("Kısayollar"),
+        "{first}"
+    );
+    press(
+        &mut app,
+        &[KeyCode::Char('j'), KeyCode::Char('j'), KeyCode::Char('j')],
+    );
+    assert_eq!(app.help_scroll, 3);
+    let scrolled = screen_text(&draw(&app, 80, 12));
+    assert_ne!(first, scrolled);
+    press(&mut app, &[KeyCode::Char('k')]);
+    assert_eq!(app.help_scroll, 2);
+    // Sonu aşmaz; son satır görünür.
+    press(&mut app, &[KeyCode::End]);
+    let end = screen_text(&draw(&app, 80, 12));
+    assert!(end.contains(":q"), "{end}");
+    press(&mut app, &[KeyCode::Char('j')]);
+    assert_eq!(app.help_scroll, app.help_max_scroll());
+    press(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.mode, compose::Mode::Normal);
+
+    // SEÇ modundan açılıp q ile aynı moda döner (seçim korunur).
+    press(&mut app, &[KeyCode::Char('v')]);
+    assert_eq!(app.mode, compose::Mode::Select);
+    let selected = app.selected;
+    press(&mut app, &[KeyCode::Char('?')]);
+    assert_eq!(app.mode, compose::Mode::Help);
+    press(&mut app, &[KeyCode::Char('q')]);
+    assert_eq!(app.mode, compose::Mode::Select);
+    assert_eq!(app.selected, selected);
+}
+
+#[test]
+fn help_key_is_rebindable_and_not_active_while_typing() {
+    let mut app = test_app(shared_with(vec![], true));
+    app.keys = overrides(&[("help", "f1")]);
+    press(&mut app, &[KeyCode::Char('?')]);
+    assert_eq!(app.mode, compose::Mode::Normal, "eski tuş artık açmaz");
+    press(&mut app, &[KeyCode::F(1)]);
+    assert_eq!(app.mode, compose::Mode::Help);
+    press(&mut app, &[KeyCode::Esc]);
+    // YAZ modunda `?` düz karakter.
+    let mut app = test_app(shared_with(vec![], true));
+    open_sohbet(&mut app);
+    type_text(&mut app, "i");
+    type_text(&mut app, "a?");
+    assert_eq!(app.mode, compose::Mode::Insert);
+    assert_eq!(app.editor.text(), "a?");
+}
+
+#[test]
+fn hint_line_reflects_overrides() {
+    let mut app = test_app(shared_with(vec![msg(1, 0, FRIEND, "x")], true));
+    open_sohbet(&mut app);
+    let default = screen_text(&draw(&app, 100, 16));
+    assert!(default.contains("i: yaz · v: seç · ?: yardım"), "{default}");
+    app.keys = overrides(&[
+        ("insert_mode", "a"),
+        ("select_mode", "ctrl+v"),
+        ("help", "f1"),
+    ]);
+    let custom = screen_text(&draw(&app, 100, 16));
+    assert!(
+        custom.contains("a: yaz · Ctrl+V: seç · F1: yardım"),
+        "{custom}"
+    );
+    assert!(!custom.contains("i: yaz"));
+    // SEÇ ipucu.
+    app.keys = overrides(&[("reply", "t"), ("delete", "x"), ("move_down", "n")]);
+    assert_eq!(
+        view::select_hint(&app.keys),
+        "n/k seç · t yanıt · e düzenle · xx sil · + tepki · y kopyala · ? yardım · Esc"
+    );
+    press(&mut app, &[KeyCode::Char('v')]);
+    assert_eq!(app.mode, compose::Mode::Select);
+    let select = screen_text(&draw(&app, 120, 16));
+    assert!(select.contains("n/k seç · t yanıt"), "{select}");
+}
+
+fn toast(app: &mut App, title: &str, kind: ToastKind) {
+    app.handle(UiEvent::Toast {
+        title: title.into(),
+        body: format!("{title} gövdesi"),
+        kind,
+    });
+}
+
+#[test]
+fn toasts_stack_newest_on_top_max_three_and_expire() {
+    let mut app = test_app(shared_with(vec![msg(1, 0, FRIEND, "x")], true));
+    open_sohbet(&mut app);
+    for t in ["bir", "iki", "uc", "dort"] {
+        toast(&mut app, t, ToastKind::Message);
+    }
+    let screen = draw(&app, 100, 20);
+    let text = screen_text(&screen);
+    assert!(!text.contains("bir gövdesi"), "en eskisi düşer:\n{text}");
+    let row_of = |needle: &str| -> u16 {
+        (0..20)
+            .find(|y| row_text(&screen, *y).contains(needle))
+            .unwrap_or_else(|| panic!("{needle} yok:\n{text}"))
+    };
+    assert!(
+        row_of("dort") < row_of("│uc") && row_of("│uc") < row_of("│iki"),
+        "{text}"
+    );
+    // Mesaj panelinin sağ üstünde (üye paneli x=80'den önce), başlık satırının altında.
+    assert!(row_of("dort") >= 2);
+    let line = row_text(&screen, row_of("dort"));
+    let col = line
+        .chars()
+        .collect::<Vec<_>>()
+        .windows(4)
+        .position(|w| w == ['d', 'o', 'r', 't'])
+        .unwrap_or(0);
+    assert!(col > 30 && col < 80, "{col}: {line}");
+
+    // Süre dolunca kaybolur (zaman açıkça verilir).
+    let later = std::time::Instant::now() + toast::LIFETIME + std::time::Duration::from_secs(1);
+    assert!(app.toasts.expire(later));
+    assert!(!screen_text(&draw(&app, 100, 20)).contains("dort gövdesi"));
+}
+
+#[test]
+fn toast_error_uses_error_color_and_snapshot() {
+    let mut app = test_app(shared_with(vec![msg(1, 0, FRIEND, "selam")], true));
+    open_sohbet(&mut app);
+    toast(&mut app, "Hata", ToastKind::Error);
+    app.handle(UiEvent::Toast {
+        title: "Arkadaş · #sohbet (Test Sunucusu)".into(),
+        body: "bu çok uzun bir mesaj gövdesi ve iki satıra bile sığmayacak kadar uzun yazılmış bir metin".into(),
+        kind: ToastKind::Message,
+    });
+    let screen = draw(&app, 100, 16);
+    let buf = screen.buffer();
+    // Hata kutusunun sol üst köşesi (alttaki, ikinci kutu) kırmızı çerçeveli.
+    let corner = (0..16)
+        .flat_map(|y| (0..100).map(move |x| (x, y)))
+        .find(|&(x, y)| buf[(x, y)].symbol() == "┌" && buf[(x, y)].fg == Color::Red)
+        .expect("kırmızı çerçeve");
+    assert!(corner.1 >= 2);
+    insta::assert_snapshot!("toasts_overlay", screen);
+}
+
+#[test]
+fn toasts_are_hidden_when_area_is_too_narrow() {
+    let mut app = test_app(Arc::new(Shared::default()));
+    toast(&mut app, "x", ToastKind::Info);
+    assert!(!screen_text(&draw(&app, 30, 10)).contains("gövdesi"));
+}
+
+#[test]
+fn run_loop_wakes_for_toasts_typing_and_clock_minute() {
+    let mut app = test_app(Arc::new(Shared::default()));
+    app.fixed_now = Some("2026-01-01T12:34:20Z".parse().expect("zaman"));
+    let now = std::time::Instant::now();
+    let secs = std::time::Duration::from_secs;
+    assert_eq!(app.next_wake(false, now), secs(40), "dakika sınırı");
+    assert_eq!(app.next_wake(true, now), secs(1), "yazıyor göstergesi");
+    app.toasts
+        .push("a".into(), String::new(), ToastKind::Info, now);
+    assert_eq!(app.next_wake(false, now), toast::LIFETIME);
+    // Süresi geçmiş bildirim döngüyü meşgul etmez (alt sınır) ama hemen uyandırır.
+    let later = now + toast::LIFETIME * 2;
+    assert_eq!(
+        app.next_wake(false, later),
+        std::time::Duration::from_millis(10)
+    );
+}
+
+fn status_row(app: &App, w: u16) -> String {
+    let screen = draw(app, w, 10);
+    row_text(&screen, 9)
+}
+
+#[test]
+fn status_bar_shows_latency_and_clock_and_drops_parts_when_narrow() {
+    let mut app = test_app(Arc::new(Shared::default()));
+    app.handle(UiEvent::Status(Status::Online {
+        user: "kul".into(),
+        guilds: 1,
+        channels: 2,
+    }));
+    app.handle(UiEvent::Latency(std::time::Duration::from_millis(42)));
+    let wide = status_row(&app, 80);
+    assert!(wide.ends_with("42 ms · 12:34 "), "{wide:?}");
+    assert!(wide.contains("Digcord · kul · bağlı"));
+    // Dar: önce gecikme düşer, saat kalır; çekirdek (kip + durum) korunur.
+    let mid = status_row(&app, 60);
+    assert!(mid.ends_with("12:34 ") && !mid.contains("ms"), "{mid:?}");
+    assert!(mid.contains("[NORMAL]"));
+    // Çok dar: saat de düşer, satır genişliği aşılmaz.
+    let tiny = status_row(&app, 20);
+    assert!(!tiny.contains("12:34") && !tiny.contains("ms"), "{tiny:?}");
+    assert_eq!(tiny.chars().count(), 20);
+    // Renk eşikleri.
+    let color_at = |ms: u64, app: &mut App| {
+        app.handle(UiEvent::Latency(std::time::Duration::from_millis(ms)));
+        let screen = draw(app, 80, 10);
+        let x = (0..80)
+            .find(|x| {
+                screen.buffer()[(*x, 9)].symbol() == "m"
+                    && screen.buffer()[(x + 1, 9)].symbol() == "s"
+            })
+            .expect("ms");
+        screen.buffer()[(x, 9)].fg
+    };
+    assert_eq!(color_at(80, &mut app), Color::Green);
+    assert_eq!(color_at(250, &mut app), Color::Yellow);
+    assert_eq!(color_at(900, &mut app), Color::Red);
+    // Bağlantı koptu: ölçüm gösterilmez.
+    app.handle(UiEvent::Status(Status::Reconnecting {
+        secs: 1,
+        reason: "x".into(),
+    }));
+    assert!(!status_row(&app, 80).contains("ms"));
+}
+
+#[test]
+fn status_clock_uses_local_timezone() {
+    let mut app = test_app(Arc::new(Shared::default()));
+    app.tz = jiff::tz::TimeZone::get("Europe/Istanbul").expect("tz");
+    assert!(status_row(&app, 60).ends_with("15:34 "));
+}
+
+fn header_row(app: &App, w: u16) -> String {
+    // Üye paneli gizli kalsın diye dar çizim; başlık mesaj panelinin ilk iç satırı.
+    let screen = draw(app, w, 14);
+    row_text(&screen, 1)
+}
+
+#[test]
+fn header_shows_name_topic_and_member_counts() {
+    let app = members_app();
+    let line = header_line_for(&app, 48);
+    assert!(line.starts_with("# sohbet — konu"), "{line:?}");
+    assert!(line.ends_with("● 3/5"), "{line:?}");
+    assert_eq!(line.chars().count(), 48);
+}
+
+/// Açık kanalın başlık satırı, düz metin.
+fn header_line_for(app: &App, width: u16) -> String {
+    let st = app.shared.read();
+    let open = app.open.expect("açık kanal");
+    view::header_line(app, &st, open, width)
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect()
+}
+
+#[test]
+fn header_priorities_and_narrow_widths() {
+    let mut app = members_app();
+    // Her şey: geçmiş + ses + üye + sabit.
+    app.scroll = Scroll {
+        anchor: Some(Snowflake(1)),
+        offset: 0,
+    };
+    app.pin_counts.insert(Snowflake(SOHBET), 3);
+    {
+        let mut st = app.shared.state.write().expect("kilit");
+        st.set_voice_call(Some(digcord_store::VoiceCall {
+            guild: Some(Snowflake(GUILD)),
+            channel: Snowflake(13),
+            phase: digcord_store::VoicePhase::Connected { e2ee: false },
+            self_mute: false,
+            self_deaf: false,
+        }));
+    }
+    let full = header_line_for(&app, 60);
+    for part in ["# sohbet", "📌 3", "● 3/5", "🔊", "[geçmiş]"] {
+        assert!(full.contains(part), "{part}: {full:?}");
+    }
+    // Daraldıkça önce sabit sayısı, sonra üye sayısı, sonra ses düşer; [geçmiş] en son.
+    let w = |n| header_line_for(&app, n);
+    assert!(
+        !w(32).contains("📌") && w(32).contains("● 3/5"),
+        "{:?}",
+        w(32)
+    );
+    assert!(
+        !w(24).contains("● 3/5") && w(24).contains("🔊"),
+        "{:?}",
+        w(24)
+    );
+    assert!(
+        !w(18).contains("🔊") && w(18).contains("[geçmiş]"),
+        "{:?}",
+        w(18)
+    );
+    // Hiçbir genişlikte taşmaz.
+    for n in 1..=70 {
+        let line = w(n);
+        assert!(
+            unicode_width::UnicodeWidthStr::width(line.as_str()) <= usize::from(n),
+            "{n}: {line:?}"
+        );
+    }
+    // Çok dar: sadece kısaltılmış ad.
+    assert!(
+        w(6).starts_with("# soh") || w(6).starts_with('#'),
+        "{:?}",
+        w(6)
+    );
+}
+
+#[test]
+fn header_without_counts_topic_or_in_dm() {
+    // Üye listesi yok → sayı yok; konu uzunsa kısalır.
+    let mut app = test_app(shared_with(vec![], true));
+    open_sohbet(&mut app);
+    let line = header_line_for(&app, 40);
+    assert_eq!(line.trim_end(), "# sohbet — konu");
+    assert!(!line.contains('●'));
+    // DM: @ + alıcı adı, üye sayısı/konu yok.
+    let mut app = test_app(shared_with(vec![], true));
+    press(&mut app, &[KeyCode::Enter, KeyCode::Enter]);
+    assert_eq!(header_line_for(&app, 30).trim_end(), "@ Arkadaş");
+    let screen = screen_text(&draw(&app, 100, 10));
+    assert!(screen.contains("@ Arkadaş"), "{screen}");
+    // DM'deki arama: ses simgesi aynı kanalda.
+    {
+        let mut st = app.shared.state.write().expect("kilit");
+        st.set_voice_call(Some(digcord_store::VoiceCall {
+            guild: None,
+            channel: Snowflake(DM),
+            phase: digcord_store::VoicePhase::Connected { e2ee: true },
+            self_mute: false,
+            self_deaf: false,
+        }));
+    }
+    assert!(header_line_for(&app, 30).contains("🔊"));
+}
+
+#[test]
+fn pins_result_is_remembered_for_the_header() {
+    let mut app = test_app(shared_with(vec![msg(1, 0, FRIEND, "x")], true));
+    open_sohbet(&mut app);
+    assert!(!header_line_for(&app, 60).contains("📌"));
+    let actions = run_command(&mut app, "pins");
+    let [Action::LoadPins { seq, .. }] = actions.as_slice() else {
+        panic!("{actions:?}");
+    };
+    app.handle(UiEvent::SearchResults {
+        seq: *seq,
+        total: 2,
+        hits: vec![
+            hit_in(SOHBET, 1, 0, FRIEND, "bir"),
+            hit_in(SOHBET, 2, 1, ME, "iki"),
+        ],
+    });
+    press(&mut app, &[KeyCode::Esc]);
+    assert!(header_line_for(&app, 60).contains("📌 2"));
+}
+
+#[test]
+fn header_row_is_drawn_inside_the_panel_and_short_panels_skip_it() {
+    let app = members_app();
+    let tall = header_row(&app, 100);
+    assert!(tall.contains("# sohbet — konu"), "{tall:?}");
+    // Çok kısa terminalde başlık yok; mesajlara yer kalır.
+    let short = screen_text(&draw(&app, 100, 7));
+    assert!(!short.contains("— konu"), "{short}");
+}
+
+#[test]
+fn help_overlay_snapshot() {
+    let mut app = test_app(Arc::new(Shared::default()));
+    press(&mut app, &[KeyCode::Char('?')]);
+    insta::assert_snapshot!("help_overlay", draw(&app, 90, 30));
+}
+
+#[test]
+fn drawing_header_status_toasts_and_help_takes_one_read() {
+    let mut app = members_app();
+    toast(&mut app, "x", ToastKind::Warning);
+    app.handle(UiEvent::Latency(std::time::Duration::from_millis(5)));
+    draw(&app, 120, 20);
+    press(&mut app, &[KeyCode::Char('?')]);
+    draw(&app, 120, 20);
 }

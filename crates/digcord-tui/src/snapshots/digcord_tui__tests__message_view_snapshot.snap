@@ -2,8 +2,8 @@
 source: crates/digcord-tui/src/tests.rs
 expression: "draw(&app, 100, 16)"
 ---
-"┌────┐┌ Test Sunucusu ───────┐┌ #sohbet — konu ────────────────────────────────┐┌ Üyeler ──────────┐"
-"│DM  ││▾ GENEL               ││             — kanalın başlangıcı —             ││                  │"
+"┌────┐┌ Test Sunucusu ───────┐┌────────────────────────────────────────────────┐┌ Üyeler ──────────┐"
+"│DM  ││▾ GENEL               ││# sohbet — konu                                 ││                  │"
 "│TS  ││  # sohbet            ││                ── 1 Ocak 2026 ──               ││                  │"
 "│    ││  # duyurular         ││arkadas  01.01.2026 12:00                       ││                  │"
 "│    ││  🔊 Ses              ││  selam herkese                                 ││                  │" Hidden by multi-width symbols: [(10, " ")]
@@ -14,7 +14,7 @@ expression: "draw(&app, 100, 16)"
 "│    ││                      ││                                                ││                  │"
 "│    ││                      ││arkadas  01.01.2026 12:20                       ││                  │"
 "│    ││                      ││  yedi dakikadan sonra yeni grup                ││                  │"
-"│    ││                      ││i: yaz · v: mesaj seç · :upload <yol>           ││                  │"
+"│    ││                      ││i: yaz · v: seç · ?: yardım · :upload <yol>     ││                  │"
 "│    ││                      ││>                                               ││                  │"
 "└────┘└──────────────────────┘└────────────────────────────────────────────────┘└──────────────────┘"
-" [NORMAL] Digcord · başlatılıyor…                                                                   "
+" [NORMAL] Digcord · başlatılıyor…                                                             12:34 "

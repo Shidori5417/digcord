@@ -14,7 +14,7 @@ const DOT: &str = "●";
 const DOT_OFFLINE: &str = "○";
 
 /// Genişliğe sığdırır (sığmazsa `…`); geniş karakterler hesaba katılır.
-fn fit(s: &str, width: usize) -> String {
+pub(crate) fn fit(s: &str, width: usize) -> String {
     let width_of = |c: char| c.width().unwrap_or(0);
     if s.chars().map(width_of).sum::<usize>() <= width {
         return s.to_owned();

@@ -73,6 +73,51 @@ impl KeyChord {
     pub(crate) fn of(key: &KeyEvent) -> Self {
         Self::new(key.code, key.modifiers)
     }
+
+    /// Yardım ekranı ve ipuçları için okunur biçim (`Ctrl+K`, `Alt+↓`, `G`, `Enter`...).
+    pub(crate) fn describe(&self) -> String {
+        let mut out = String::new();
+        for (name, m) in [
+            ("Ctrl+", KeyModifiers::CONTROL),
+            ("Alt+", KeyModifiers::ALT),
+            ("Super+", KeyModifiers::SUPER),
+        ] {
+            if self.mods.contains(m) {
+                out.push_str(name);
+            }
+        }
+        if self.mods.contains(KeyModifiers::SHIFT) {
+            out.push_str("Shift+");
+        }
+        let plain_char = self.mods.is_empty();
+        match self.code {
+            KeyCode::Char(' ') => out.push_str("Boşluk"),
+            // Ctrl/Alt ile harf büyük yazılır (Ctrl+K); düz harf olduğu gibi (q, G).
+            KeyCode::Char(c) if !plain_char => out.extend(c.to_uppercase()),
+            KeyCode::Char(c) => out.push(c),
+            KeyCode::Enter => out.push_str("Enter"),
+            KeyCode::Esc => out.push_str("Esc"),
+            KeyCode::Tab => out.push_str("Tab"),
+            KeyCode::BackTab => out.push_str("Shift+Tab"),
+            KeyCode::Backspace => out.push_str("Backspace"),
+            KeyCode::Delete => out.push_str("Delete"),
+            KeyCode::Insert => out.push_str("Insert"),
+            KeyCode::Home => out.push_str("Home"),
+            KeyCode::End => out.push_str("End"),
+            KeyCode::PageUp => out.push_str("PgUp"),
+            KeyCode::PageDown => out.push_str("PgDn"),
+            KeyCode::Up => out.push('↑'),
+            KeyCode::Down => out.push('↓'),
+            KeyCode::Left => out.push('←'),
+            KeyCode::Right => out.push('→'),
+            KeyCode::F(n) => {
+                out.push('F');
+                out.push_str(&n.to_string());
+            }
+            other => out.push_str(&format!("{other:?}")),
+        }
+        out
+    }
 }
 
 const MODIFIERS: &[(&str, KeyModifiers)] = &[
@@ -167,6 +212,7 @@ pub(crate) enum Act {
     // NORMAL + SELECT
     MoveDown,
     MoveUp,
+    Help,
     // SELECT
     Back,
     Reply,
@@ -226,6 +272,7 @@ const ACTIONS: &[Def] = &[
     def(Act::PrevUnread, "prev_unread", N, &["alt+up"]),
     def(Act::MoveDown, "move_down", NS, &["j", "down"]),
     def(Act::MoveUp, "move_up", NS, &["k", "up"]),
+    def(Act::Help, "help", NS, &["?"]),
     def(Act::Back, "back", S, &["esc"]),
     def(Act::Reply, "reply", S, &["r"]),
     def(Act::Edit, "edit", S, &["e"]),
@@ -320,6 +367,47 @@ impl Keymap {
 
     pub(crate) fn lookup(&self, scope: Scope, key: &KeyEvent) -> Option<Act> {
         self.binds.get(&(scope, KeyChord::of(key))).copied()
+    }
+
+    /// Eylemin bu kapsamdaki tuşları, okunur biçimde. Sıra deterministik: önce varsayılan
+    /// tuşlar (varsayılan sırayla), sonra `[keys]` ile atananlar (alfabetik).
+    pub(crate) fn keys_for(&self, scope: Scope, act: Act) -> Vec<String> {
+        let defaults: Vec<KeyChord> = ACTIONS
+            .iter()
+            .find(|d| d.act == act)
+            .map(|d| d.keys.iter().filter_map(|k| parse_key(k).ok()).collect())
+            .unwrap_or_default();
+        let mut found: Vec<(usize, String)> = self
+            .binds
+            .iter()
+            .filter(|((s, _), a)| *s == scope && **a == act)
+            .map(|((_, chord), _)| {
+                let rank = defaults
+                    .iter()
+                    .position(|d| d == chord)
+                    .unwrap_or(usize::MAX);
+                (rank, chord.describe())
+            })
+            .collect();
+        found.sort();
+        found.into_iter().map(|(_, k)| k).collect()
+    }
+
+    /// İpucu satırları için eylemin ilk tuşu (atanmamışsa `-`).
+    pub(crate) fn first_key(&self, scope: Scope, act: Act) -> String {
+        self.keys_for(scope, act)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| "-".to_owned())
+    }
+
+    /// Kapsamdaki eylemler (tanım sırasıyla): eylem, `[keys]` adı, tuşlar.
+    pub(crate) fn scope_rows(&self, scope: Scope) -> Vec<(Act, &'static str, Vec<String>)> {
+        ACTIONS
+            .iter()
+            .filter(|d| d.scopes.contains(&scope))
+            .map(|d| (d.act, d.name, self.keys_for(scope, d.act)))
+            .collect()
     }
 }
 
@@ -462,6 +550,29 @@ mod tests {
             map.lookup(Scope::Normal, &k(KeyCode::Down, KeyModifiers::ALT)),
             Some(Act::NextUnread)
         );
+    }
+
+    #[test]
+    fn describes_keys_and_lists_them_deterministically() {
+        assert_eq!(chord("ctrl+k").describe(), "Ctrl+K");
+        assert_eq!(chord("alt+down").describe(), "Alt+↓");
+        assert_eq!(chord("shift+tab").describe(), "Shift+Tab");
+        assert_eq!(chord("ctrl+shift+m").describe(), "Ctrl+Shift+M");
+        assert_eq!(chord("G").describe(), "G");
+        assert_eq!(chord("space").describe(), "Boşluk");
+        assert_eq!(chord("pgdown").describe(), "PgDn");
+        assert_eq!(chord("?").describe(), "?");
+        let map = Keymap::default();
+        assert_eq!(map.keys_for(Scope::Normal, Act::MoveDown), ["j", "↓"]);
+        assert_eq!(map.keys_for(Scope::Normal, Act::Help), ["?"]);
+        assert_eq!(map.keys_for(Scope::Select, Act::Help), ["?"]);
+        let (map, _) = Keymap::from_overrides(&ov(&[("move_down", &["n", "j", "ctrl+n"])]));
+        // Varsayılan tuş (j) önde, ardından atananlar alfabetik.
+        assert_eq!(
+            map.keys_for(Scope::Normal, Act::MoveDown),
+            ["j", "Ctrl+N", "n"]
+        );
+        assert_eq!(map.first_key(Scope::Normal, Act::MoveDown), "j");
     }
 
     #[test]

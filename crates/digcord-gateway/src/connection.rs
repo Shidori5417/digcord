@@ -54,6 +54,8 @@ pub enum Update {
     InvalidToken,
     /// Yeniden denenmeyecek hata. Döngü durdu.
     Fatal(String),
+    /// Gateway gecikmesi: heartbeat (op 1/op 40) gönderiminden HEARTBEAT_ACK'e (op 11) geçen süre.
+    Latency(Duration),
     Event(GatewayEvent),
 }
 
@@ -124,6 +126,31 @@ struct State {
     seq: Option<u64>,
     /// Pencere odakta mı; yeniden IDENTIFY'da da korunur.
     focused: bool,
+}
+
+/// ACK bekleyen heartbeat gönderim anları (gecikme ölçümü için).
+#[derive(Default)]
+struct BeatLog {
+    pending: std::collections::VecDeque<Instant>,
+}
+
+impl BeatLog {
+    /// Bekleyen vuruş sayısının üst sınırı (ACK hiç gelmeyen bağlantıda büyümesin).
+    const MAX: usize = 4;
+
+    fn sent(&mut self, at: Instant) {
+        if self.pending.len() == Self::MAX {
+            self.pending.pop_front();
+        }
+        self.pending.push_back(at);
+    }
+
+    /// ACK geldi: en eski bekleyen vuruşa göre gecikme (istenmeyen ACK'te `None`).
+    fn acked(&mut self, at: Instant) -> Option<Duration> {
+        self.pending
+            .pop_front()
+            .map(|sent| at.saturating_duration_since(sent))
+    }
 }
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -242,6 +269,8 @@ async fn session_loop(
     }
 
     let mut next_beat = Instant::now() + hb.first_delay();
+    // Gönderilip ACK'i beklenen vuruşların zamanı (ACK'ler gönderim sırasıyla gelir).
+    let mut beats = BeatLog::default();
     // READY/RESUMED gelene kadar komutlar gönderilmez.
     let mut live = false;
     loop {
@@ -249,7 +278,10 @@ async fn session_loop(
             _ = sleep_until(next_beat) => {
                 next_beat += hb.interval();
                 match hb.on_tick() {
-                    Beat::Send => ws.send(Message::text(protocol::heartbeat(state.seq, state.focused))).await?,
+                    Beat::Send => {
+                        ws.send(Message::text(protocol::heartbeat(state.seq, state.focused))).await?;
+                        beats.sent(Instant::now());
+                    }
                     Beat::Zombie => {
                         return Ok(Exit::Closed { action: CloseAction::Resume, reason: "heartbeat ACK gelmedi (zombi bağlantı)".into() });
                     }
@@ -264,6 +296,7 @@ async fn session_loop(
                         }
                         state.focused = focused;
                         hb.on_extra_sent();
+                        beats.sent(Instant::now());
                         protocol::heartbeat(state.seq, focused)
                     }
                     Command::SubscribeGuild { guild } => protocol::subscribe_guild(guild),
@@ -298,6 +331,7 @@ async fn session_loop(
                         ws.send(Message::text(protocol::heartbeat(state.seq, state.focused)))
                             .await?;
                         hb.on_extra_sent();
+                        beats.sent(Instant::now());
                         live = true;
                         let _ = updates.send(Update::Ready(ready)).await;
                     }
@@ -317,8 +351,14 @@ async fn session_loop(
                 ws.send(Message::text(protocol::heartbeat(state.seq, state.focused)))
                     .await?;
                 hb.on_extra_sent();
+                beats.sent(Instant::now());
             }
-            Event::HeartbeatAck => hb.on_ack(),
+            Event::HeartbeatAck => {
+                hb.on_ack();
+                if let Some(latency) = beats.acked(Instant::now()) {
+                    let _ = updates.send(Update::Latency(latency)).await;
+                }
+            }
             Event::Reconnect => {
                 return Ok(Exit::Closed {
                     action: CloseAction::Resume,
@@ -570,6 +610,85 @@ mod tests {
         timeout(Duration::from_secs(10), client)
             .await
             .expect("döngü bitmeli")
+            .expect("panik yok");
+    }
+
+    #[test]
+    fn beat_log_pairs_acks_in_order_and_ignores_unsolicited() {
+        let t0 = Instant::now();
+        let mut log = BeatLog::default();
+        assert_eq!(log.acked(t0), None, "vuruşsuz ACK yok sayılır");
+        log.sent(t0);
+        log.sent(t0 + Duration::from_millis(10));
+        assert_eq!(
+            log.acked(t0 + Duration::from_millis(40)),
+            Some(Duration::from_millis(40))
+        );
+        assert_eq!(
+            log.acked(t0 + Duration::from_millis(50)),
+            Some(Duration::from_millis(40))
+        );
+        assert_eq!(log.acked(t0 + Duration::from_millis(60)), None);
+        // Sınır: en eskisi atılır.
+        for i in 0..6 {
+            log.sent(t0 + Duration::from_millis(i));
+        }
+        assert_eq!(log.pending.len(), BeatLog::MAX);
+        assert_eq!(log.pending.front(), Some(&(t0 + Duration::from_millis(2))));
+    }
+
+    #[tokio::test]
+    async fn heartbeat_ack_reports_latency() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let url = format!("ws://{}", listener.local_addr().expect("adres"));
+        let mut config = Config::new(
+            Token::new("sahte-token").expect("token"),
+            ClientProperties::chrome_linux("tr-TR", 155, 1),
+        );
+        config.gateway_url = url.clone();
+        let (tx, mut rx) = mpsc::channel(16);
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let (_cmd_tx, cmd_rx) = mpsc::channel(4);
+        let client = tokio::spawn(run(config, tx, cmd_rx, stop_rx));
+
+        let mut peer = Peer::accept(&listener).await;
+        peer.send(HELLO_SLOW).await;
+        assert_eq!(peer.recv().await["op"], 2);
+        peer.send(&ready_json(&url)).await;
+        assert_eq!(peer.recv().await["op"], 4);
+        assert_eq!(peer.recv().await["op"], 41);
+        // READY sonrası op 40; ACK'i biraz geciktir ki ölçülen süre sıfır olmasın.
+        assert_eq!(peer.recv().await["op"], 40);
+        let delay = Duration::from_millis(60);
+        sleep(delay).await;
+        peer.send(r#"{"t":null,"s":null,"op":11,"d":null}"#).await;
+        let Update::Latency(latency) = expect_update(&mut rx, Duration::from_secs(10), |u| {
+            matches!(u, Update::Latency(_))
+        })
+        .await
+        else {
+            unreachable!("süzgeç Latency döndürür");
+        };
+        assert!(latency >= delay, "{latency:?} < {delay:?}");
+        assert!(latency < Duration::from_secs(5), "{latency:?}");
+        // İstenmeyen ikinci ACK gecikme üretmez.
+        peer.send(r#"{"t":null,"s":null,"op":11,"d":null}"#).await;
+        assert!(
+            timeout(Duration::from_millis(200), async {
+                loop {
+                    if let Some(Update::Latency(_)) = rx.recv().await {
+                        return;
+                    }
+                }
+            })
+            .await
+            .is_err()
+        );
+
+        stop_tx.send(true).expect("durdur");
+        timeout(Duration::from_secs(10), client)
+            .await
+            .expect("kapanmalı")
             .expect("panik yok");
     }
 

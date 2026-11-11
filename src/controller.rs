@@ -14,7 +14,7 @@ use digcord_model::{
     ReactionEmoji, Ready, SearchQuery, Snowflake, Token, channel_kind,
 };
 use digcord_store::{NotifyFilter, State, VoiceCall, VoicePhase};
-use digcord_tui::{Action, ImageJob, SettingValue, Shared, Status, UiEvent};
+use digcord_tui::{Action, ImageJob, SettingValue, Shared, Status, ToastKind, UiEvent};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
@@ -102,6 +102,8 @@ pub struct Settings {
     pub push_to_talk: bool,
     /// Üye paneli açık başlar (`ui.show_member_list`); TUI değiştirince `MembersVisible` gelir.
     pub show_member_list: bool,
+    /// Köşe bildirimleri (`ui.toasts`): yeni DM/anma ve hatalar.
+    pub toasts: bool,
     /// Ses çalmadan önce biriktirilen kare sayısı (20 ms).
     pub jitter_frames: usize,
     /// Ses algılama eşiği (RMS).
@@ -133,6 +135,7 @@ impl Settings {
             },
             push_to_talk: c.voice.mode == VoiceMode::Ptt,
             show_member_list: c.ui.show_member_list,
+            toasts: c.ui.toasts,
             jitter_frames: usize::try_from(c.voice.jitter_ms.div_ceil(20)).unwrap_or(3),
             vad_threshold: c.voice.vad_threshold,
             input_device: crate::config::Voice::device(&c.voice.input_device),
@@ -153,6 +156,7 @@ impl Settings {
             ("behavior.send_typing", SettingValue::Bool(b)) => self.send_typing = *b,
             ("behavior.send_read_receipts", SettingValue::Bool(b)) => self.send_read_receipts = *b,
             ("notifications.enabled", SettingValue::Bool(b)) => self.notify_enabled = *b,
+            ("ui.toasts", SettingValue::Bool(b)) => self.toasts = *b,
             ("voice.vad_threshold", SettingValue::Float(x)) => self.vad_threshold = *x as f32,
             ("notifications.on", SettingValue::List(names)) => {
                 self.notify_filter = crate::config::notify_filter(names);
@@ -246,6 +250,27 @@ impl Controller {
         self.send(UiEvent::Notice(text.into()));
     }
 
+    /// Hata: durum çubuğunda kalır, ayrıca (`ui.toasts` açıksa) köşe bildirimi olur.
+    fn error(&self, text: impl Into<String>) {
+        self.toast_notice(text.into(), ToastKind::Error, "Hata");
+    }
+
+    /// Uyarı: [`Controller::error`] gibi ama uyarı renginde.
+    fn warn(&self, text: impl Into<String>) {
+        self.toast_notice(text.into(), ToastKind::Warning, "Uyarı");
+    }
+
+    fn toast_notice(&self, text: String, kind: ToastKind, title: &str) {
+        if self.env.settings.toasts {
+            self.send(UiEvent::Toast {
+                title: title.to_owned(),
+                body: text.clone(),
+                kind,
+            });
+        }
+        self.send(UiEvent::Notice(text));
+    }
+
     /// Ağ işini ayrı task'ta çalıştırır; sonucu `done` ile denetleyicide işlenir.
     fn spawn<T: Send + 'static>(
         &self,
@@ -262,7 +287,7 @@ impl Controller {
     fn http(&self) -> Option<Arc<Http>> {
         let http = self.session.as_ref().map(|s| s.http.clone());
         if http.is_none() {
-            self.notice("Bağlı değil");
+            self.error("Bağlı değil");
         }
         http
     }
@@ -310,7 +335,7 @@ impl Controller {
                 Err(e) => {
                     tracing::warn!("mesaj gönderilemedi: {e}");
                     c.write(|st| st.mark_failed(&key));
-                    c.notice(format!("Gönderilemedi: {e}"));
+                    c.error(format!("Gönderilemedi: {e}"));
                 }
             },
         );
@@ -342,7 +367,7 @@ impl Controller {
             async move { http.edit_message(page, message, &content).await },
             |c, result| match result {
                 Ok(m) => c.write(|st| st.message_update(m)),
-                Err(e) => c.notice(format!("Düzenlenemedi: {e}")),
+                Err(e) => c.error(format!("Düzenlenemedi: {e}")),
             },
         );
     }
@@ -372,7 +397,7 @@ impl Controller {
                         guild_id: page.guild,
                     })
                 }),
-                Err(e) => c.notice(format!("Silinemedi: {e}")),
+                Err(e) => c.error(format!("Silinemedi: {e}")),
             },
         );
     }
@@ -390,7 +415,7 @@ impl Controller {
             // Sayaç gateway'in MESSAGE_REACTION_* yankısıyla güncellenir.
             |c, result| {
                 if let Err(e) = result {
-                    c.notice(format!("Tepki eklenemedi: {e}"));
+                    c.error(format!("Tepki eklenemedi: {e}"));
                 }
             },
         );
@@ -446,7 +471,7 @@ impl Controller {
                     c.write(|st| st.message_create(m));
                     c.notice("Dosya gönderildi");
                 }
-                Err(e) => c.notice(format!("Yüklenemedi: {e}")),
+                Err(e) => c.error(format!("Yüklenemedi: {e}")),
             },
         );
     }
@@ -526,7 +551,7 @@ impl Controller {
     /// op 4 ile katılır; oturum ve sunucu bilgisi gelince bağlantı başlar.
     fn join_voice(&mut self, guild: Option<Snowflake>, channel: Snowflake) {
         if self.session.is_none() {
-            self.notice("Bağlı değil");
+            self.error("Bağlı değil");
             return;
         }
         let (self_mute, self_deaf) = self
@@ -738,7 +763,7 @@ impl Controller {
                     }
                     Some(_) => {
                         self.leave_voice();
-                        self.notice(format!("Ses bağlantısı kapandı: {reason}"));
+                        self.warn(format!("Ses bağlantısı kapandı: {reason}"));
                     }
                     None => {}
                 }
@@ -766,9 +791,9 @@ impl Controller {
             },
             |c, result| match result {
                 Ok(Ok(status)) if status.success() => {}
-                Ok(Ok(status)) => c.notice(format!("Açılamadı: xdg-open {status}")),
-                Ok(Err(e)) => c.notice(format!("Açılamadı: {e}")),
-                Err(e) => c.notice(format!("Açılamadı: {e}")),
+                Ok(Ok(status)) => c.error(format!("Açılamadı: xdg-open {status}")),
+                Ok(Err(e)) => c.error(format!("Açılamadı: {e}")),
+                Err(e) => c.error(format!("Açılamadı: {e}")),
             },
         );
     }
@@ -778,8 +803,8 @@ impl Controller {
             async move { tokio::task::spawn_blocking(move || copy_to_clipboard(&text)).await },
             |c, result| match result {
                 Ok(Ok(())) => c.notice("Kopyalandı"),
-                Ok(Err(e)) => c.notice(format!("Kopyalanamadı: {e}")),
-                Err(e) => c.notice(format!("Kopyalanamadı: {e}")),
+                Ok(Err(e)) => c.error(format!("Kopyalanamadı: {e}")),
+                Err(e) => c.error(format!("Kopyalanamadı: {e}")),
             },
         );
     }
@@ -930,12 +955,16 @@ impl Controller {
         });
     }
 
-    /// Yeni mesaj için masaüstü bildirimi (açık+odaktaki kanal hariç).
+    /// Yeni mesaj için masaüstü bildirimi (açık+odaktaki kanal hariç) ve köşe bildirimi
+    /// (açık olmayan kanallar). İkisi de aynı sessize alma/bildirim ayarlarına uyar.
     fn maybe_notify(&self, msg: &Message) {
         let Some(filter) = self.env.settings.notify() else {
             return;
         };
-        if self.focused && self.open.is_some_and(|o| o.channel == msg.channel_id) {
+        let is_open = self.open.is_some_and(|o| o.channel == msg.channel_id);
+        let desktop = !(self.focused && is_open);
+        let toast = self.env.settings.toasts && !is_open;
+        if !desktop && !toast {
             return;
         }
         let now = i64::try_from(
@@ -965,21 +994,30 @@ impl Controller {
         let Some((summary, body)) = content else {
             return;
         };
-        tokio::task::spawn_blocking(move || {
-            let body = if body.is_empty() {
-                "(ek veya embed)".to_owned()
-            } else {
-                body
-            };
-            if let Err(e) = notify_rust::Notification::new()
-                .appname("Digcord")
-                .summary(&summary)
-                .body(&body)
-                .show()
-            {
-                tracing::debug!("bildirim gösterilemedi: {e}");
-            }
-        });
+        let body = if body.is_empty() {
+            "(ek veya embed)".to_owned()
+        } else {
+            body
+        };
+        if toast {
+            self.send(UiEvent::Toast {
+                title: summary.clone(),
+                body: body.clone(),
+                kind: ToastKind::Message,
+            });
+        }
+        if desktop {
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = notify_rust::Notification::new()
+                    .appname("Digcord")
+                    .summary(&summary)
+                    .body(&body)
+                    .show()
+                {
+                    tracing::debug!("bildirim gösterilemedi: {e}");
+                }
+            });
+        }
     }
 
     fn load_older(&mut self, channel: Snowflake) {
@@ -1039,7 +1077,7 @@ impl Controller {
                     }
                     Err(e) => {
                         tracing::warn!("thread listesi alınamadı: {e}");
-                        c.notice(format!("Thread'ler alınamadı: {e}"));
+                        c.error(format!("Thread'ler alınamadı: {e}"));
                     }
                 }
             },
@@ -1185,7 +1223,7 @@ impl Controller {
             }
             Err(e) => {
                 tracing::warn!("geçmiş alınamadı: {e}");
-                self.notice(format!("Geçmiş alınamadı: {e}"));
+                self.error(format!("Geçmiş alınamadı: {e}"));
                 if h.around.is_some() {
                     self.send(UiEvent::JumpFailed(format!("Mesaj getirilemedi: {e}")));
                 }
@@ -1241,6 +1279,7 @@ impl Controller {
                 self.session = None;
                 self.send(UiEvent::Status(Status::Failed(reason)));
             }
+            Update::Latency(d) => self.send(UiEvent::Latency(d)),
             Update::Event(event) => self.on_event(event),
         }
     }
@@ -1276,14 +1315,25 @@ impl Controller {
     /// Ayarları config.toml'a yazar (disk işi ayrı thread'de); sonucu bildirir.
     fn save_settings(&self, changes: Vec<(String, SettingValue)>) {
         let Some(path) = AppConfig::default_path() else {
-            self.notice("Yapılandırma dizini bulunamadı; kaydedilemedi");
+            self.error("Yapılandırma dizini bulunamadı; kaydedilemedi");
             return;
         };
         let ui = self.ui.clone();
+        let toasts = self.env.settings.toasts;
         tokio::task::spawn_blocking(move || {
             let text = match crate::config::save_settings(&path, &changes) {
                 Ok(()) => format!("Ayarlar kaydedildi: {}", path.display()),
-                Err(e) => format!("Ayarlar kaydedilemedi: {e:#}"),
+                Err(e) => {
+                    let text = format!("Ayarlar kaydedilemedi: {e:#}");
+                    if toasts {
+                        let _ = ui.send(UiEvent::Toast {
+                            title: "Hata".to_owned(),
+                            body: text.clone(),
+                            kind: ToastKind::Error,
+                        });
+                    }
+                    text
+                }
             };
             let _ = ui.send(UiEvent::Notice(text));
         });
@@ -1315,6 +1365,7 @@ impl Controller {
     /// Tema dosyasını okur (ayrı thread'de) ve sonucu TUI'ye yollar.
     fn load_theme(&self, name: String) {
         let ui = self.ui.clone();
+        let toasts = self.env.settings.toasts;
         tokio::task::spawn_blocking(move || match crate::theme::load(&name) {
             Ok((theme, warnings)) => {
                 let _ = ui.send(UiEvent::Theme {
@@ -1332,7 +1383,15 @@ impl Controller {
                 }
             }
             Err(e) => {
-                let _ = ui.send(UiEvent::Notice(format!("{e:#}")));
+                let text = format!("{e:#}");
+                if toasts {
+                    let _ = ui.send(UiEvent::Toast {
+                        title: "Hata".to_owned(),
+                        body: text.clone(),
+                        kind: ToastKind::Error,
+                    });
+                }
+                let _ = ui.send(UiEvent::Notice(text));
             }
         });
     }
@@ -1665,5 +1724,17 @@ mod tests {
         assert_eq!(locale_from_posix("C.UTF-8"), None);
         assert_eq!(locale_from_posix("POSIX"), None);
         assert_eq!(locale_from_posix(""), None);
+    }
+
+    #[test]
+    fn toasts_setting_comes_from_config_and_applies_live() {
+        let mut settings = Settings::from_config(&AppConfig::default());
+        assert!(settings.toasts, "varsayılan açık");
+        settings.apply("ui.toasts", &SettingValue::Bool(false));
+        assert!(!settings.toasts);
+        settings.apply("ui.toasts", &SettingValue::Bool(true));
+        assert!(settings.toasts);
+        let off = AppConfig::parse("[ui]\ntoasts = false\n").expect("geçerli");
+        assert!(!Settings::from_config(&off).toasts);
     }
 }

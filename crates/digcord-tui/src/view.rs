@@ -11,13 +11,19 @@ use ratatui::layout::{Constraint, Flex, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 use crate::compose::{self, Mode, Target};
+use crate::keymap::{Act, Scope};
 use crate::media::{Images, SlotState};
+use crate::members::fit;
 use crate::render::ImageFit;
 use crate::render::{self, Resolver};
 use crate::theme::Theme;
 use crate::{App, EntryKind, Focus, Open, Screen, Status};
+
+/// Mesaj panelinin iç yüksekliği bunun altındaysa başlık satırı çizilmez.
+const MIN_HEADER_PANEL_HEIGHT: u16 = 5;
 
 /// Giriş kutusunun en fazla satır sayısı (fazlası kaydırılır).
 const MAX_INPUT_ROWS: u16 = 8;
@@ -276,10 +282,23 @@ pub(crate) fn draw(app: &App, frame: &mut Frame) {
         );
         frame.render_widget(Paragraph::new(lines), inner);
     }
-    drop(st);
     frame.render_widget(
-        Paragraph::new(status_line(app)).style(app.theme.status()),
+        Paragraph::new(status_line(app, &st, status.width)).style(app.theme.status()),
         status,
+    );
+    drop(st);
+    // Bildirimler mesaj alanının sağ üstünde, başlık satırının altında.
+    let toast_area = messages.inner(Margin::new(1, 1));
+    crate::toast::draw(
+        &app.toasts,
+        &app.theme,
+        frame,
+        Rect::new(
+            toast_area.x,
+            toast_area.y.saturating_add(1),
+            toast_area.width,
+            toast_area.height.saturating_sub(1),
+        ),
     );
 
     if let Screen::Login { input, error } = &app.screen {
@@ -288,6 +307,8 @@ pub(crate) fn draw(app: &App, frame: &mut Frame) {
         crate::settings::draw(app, frame);
     } else if app.mode == Mode::Search {
         crate::search::draw(app, frame);
+    } else if app.mode == Mode::Help {
+        crate::help::draw(app, frame);
     } else if app.mode == Mode::Switcher {
         draw_switcher(app, frame);
     } else if let (Mode::Viewer, Some(v)) = (app.mode, &app.viewer) {
@@ -497,25 +518,18 @@ fn draw_messages(app: &App, st: &State, frame: &mut Frame, area: Rect) {
         );
         return;
     };
-    let mut title = match open.guild {
-        Some(_) => format!(" #{} ", st.channel_title(open.channel)),
-        None => format!(" @{} ", st.channel_title(open.channel)),
-    };
-    if let Some(topic) = st
-        .channel(open.channel)
-        .and_then(|c| c.topic.as_deref())
-        .filter(|t| !t.is_empty())
-    {
-        title.push_str("— ");
-        title.push_str(topic.lines().next().unwrap_or_default());
-        title.push(' ');
-    }
-    if app.scroll.anchor.is_some() {
-        title.push_str("[geçmiş] ");
-    }
-    let block = panel(title, focused, &app.theme);
+    let block = panel(String::new(), focused, &app.theme);
     let full = block.inner(area);
     frame.render_widget(block, area);
+    // Başlık satırı: kanal, konu ve sağda bilgiler. Çok kısa panelde mesajlara yer kalsın diye yok.
+    let full = if full.height >= MIN_HEADER_PANEL_HEIGHT {
+        let [head, rest] =
+            Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(full);
+        frame.render_widget(Paragraph::new(header_line(app, st, open, head.width)), head);
+        rest
+    } else {
+        full
+    };
     let input_h = input_height(app, st, open, full.width);
     let [inner, input] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(input_h)]).areas(full);
@@ -691,10 +705,8 @@ fn draw_input(app: &App, st: &State, open: Open, frame: &mut Frame, area: Rect) 
         (Mode::Insert, Target::New) => {
             "Enter: gönder · Alt+Enter: yeni satır · Esc: çık".to_owned()
         }
-        (Mode::Select, _) => {
-            "j/k seç · r yanıt · e düzenle · dd sil · + tepki · y kopyala · Esc".to_owned()
-        }
-        _ => "i: yaz · v: mesaj seç · :upload <yol>".to_owned(),
+        (Mode::Select, _) => select_hint(&app.keys),
+        _ => normal_hint(&app.keys),
     };
     frame.render_widget(
         Paragraph::new(Line::styled(label_text, app.theme.dim())),
@@ -756,7 +768,86 @@ fn draw_input(app: &App, st: &State, open: Open, frame: &mut Frame, area: Rect) 
     }
 }
 
-fn status_line(app: &App) -> Line<'static> {
+/// NORMAL modun alt ipucu; tuşlar canlı kısayol tablosundan gelir.
+pub(crate) fn normal_hint(keys: &crate::Keymap) -> String {
+    format!(
+        "{}: yaz · {}: seç · {}: yardım · :upload <yol>",
+        keys.first_key(Scope::Normal, Act::InsertMode),
+        keys.first_key(Scope::Normal, Act::SelectMode),
+        keys.first_key(Scope::Normal, Act::Help),
+    )
+}
+
+/// SEÇ modunun alt ipucu.
+pub(crate) fn select_hint(keys: &crate::Keymap) -> String {
+    let k = |act| keys.first_key(Scope::Select, act);
+    let (down, up, del) = (k(Act::MoveDown), k(Act::MoveUp), k(Act::Delete));
+    format!(
+        "{down}/{up} seç · {} yanıt · {} düzenle · {del}{del} sil · {} tepki · {} kopyala · {} yardım · {}",
+        k(Act::Reply),
+        k(Act::Edit),
+        k(Act::React),
+        k(Act::Copy),
+        k(Act::Help),
+        k(Act::Back),
+    )
+}
+
+fn spans_width(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(|s| s.content.width()).sum()
+}
+
+/// Span'ları `max` sütuna kısaltır; kesilirse sona `…` konur.
+fn clip_spans(spans: Vec<Span<'static>>, max: usize) -> Vec<Span<'static>> {
+    use unicode_width::UnicodeWidthChar;
+    if spans_width(&spans) <= max {
+        return spans;
+    }
+    let mut out = Vec::with_capacity(spans.len());
+    let mut left = max.saturating_sub(1);
+    for span in spans {
+        let mut text = String::new();
+        let mut done = false;
+        for c in span.content.chars() {
+            let w = c.width().unwrap_or(0);
+            if w > left {
+                done = true;
+                break;
+            }
+            left -= w;
+            text.push(c);
+        }
+        if done {
+            text.push('…');
+            out.push(Span::styled(text, span.style));
+            return out;
+        }
+        out.push(Span::styled(text, span.style));
+    }
+    out
+}
+
+/// Gecikme göstergesi: eşiklere göre renk.
+fn latency_span(theme: &Theme, d: std::time::Duration) -> Span<'static> {
+    let ms = d.as_millis();
+    let style = match ms {
+        0..150 => theme.success(),
+        150..400 => theme.warning(),
+        _ => theme.error(),
+    };
+    Span::styled(format!("{ms} ms"), style)
+}
+
+/// `HH:MM` (yerel saat dilimi).
+fn clock_text(app: &App) -> String {
+    app.now()
+        .to_zoned(app.tz.clone())
+        .strftime("%H:%M")
+        .to_string()
+}
+
+fn status_line(app: &App, st: &State, width: u16) -> Line<'static> {
+    let width = usize::from(width);
     let mode = if matches!(app.screen, Screen::Login { .. }) {
         " [GİRİŞ] "
     } else {
@@ -781,41 +872,157 @@ fn status_line(app: &App) -> Line<'static> {
         Status::Failed(_) => app.theme.error(),
         _ => Style::new(),
     };
-    let mut spans = vec![
+    // Çekirdek (kip + bağlantı durumu) her zaman önceliklidir; ses, bildirim ve "yazıyor" sığdığı
+    // kadar eklenir; sağdaki gecikme ve saat çekirdekle birlikte sığmazsa önce gecikme düşer.
+    let core = vec![
         Span::styled(mode, Style::new().add_modifier(Modifier::BOLD)),
         Span::styled(text, style),
     ];
-    if let Some(voice) = voice_status(app) {
-        spans.push(voice);
+    let mut extra = Vec::new();
+    if let Some(voice) = voice_status(app, st) {
+        extra.push(voice);
     }
     if let Mode::ConfirmDelete(_) = app.mode {
-        spans.push(Span::styled(
+        extra.push(Span::styled(
             "  Mesaj silinsin mi? (e/h)",
             app.theme.warning().add_modifier(Modifier::BOLD),
         ));
     } else if let Some(n) = &app.notice {
-        spans.push(Span::styled(format!("  {n}"), app.theme.warning()));
+        extra.push(Span::styled(format!("  {n}"), app.theme.warning()));
     } else if let Some(open) = app.open {
-        let names = app
-            .shared
-            .read()
-            .typing_names(open.channel, crate::unix_now());
+        let names = st.typing_names(open.channel, crate::unix_now());
         if !names.is_empty() {
             let who = match names.len() {
                 1 => format!("{} yazıyor…", names[0]),
                 2 => format!("{} ve {} yazıyor…", names[0], names[1]),
                 n => format!("{n} kişi yazıyor…"),
             };
-            spans.push(Span::styled(format!("  {who}"), app.theme.dim()));
+            extra.push(Span::styled(format!("  {who}"), app.theme.dim()));
+        }
+    }
+
+    let clock = Span::styled(clock_text(app), app.theme.dim());
+    let latency = app
+        .latency
+        .filter(|_| matches!(app.status, Status::Online { .. }))
+        .map(|d| latency_span(&app.theme, d));
+    let core_w = spans_width(&core);
+    // Sağ taraf adayları, en zengin olandan en yalına; çekirdek + 1 boşluk ile sığan ilki.
+    let mut candidates: Vec<Vec<Span<'static>>> = Vec::new();
+    if let Some(l) = latency {
+        candidates.push(vec![l, Span::raw(" · "), clock.clone(), Span::raw(" ")]);
+    }
+    candidates.push(vec![clock, Span::raw(" ")]);
+    let right = candidates
+        .into_iter()
+        .find(|r| core_w + 1 + spans_width(r) <= width)
+        .unwrap_or_default();
+    let right_w = spans_width(&right);
+
+    let mut left = core;
+    left.extend(extra);
+    let avail = width.saturating_sub(right_w + usize::from(right_w > 0));
+    let mut left = clip_spans(left, avail);
+    let pad = width.saturating_sub(spans_width(&left) + right_w);
+    left.push(Span::raw(" ".repeat(pad)));
+    left.extend(right);
+    Line::from(left)
+}
+
+/// Mesaj paneli başlık satırı: `# kanal — konu` solda; sağda (öncelik sırasıyla) `[geçmiş]`,
+/// ses simgesi, çevrimiçi/toplam üye, sabitlenen sayısı. Dar genişlikte en düşük öncelikli
+/// parçalar önce düşer; sonra konu, en son kanal adı kısalır.
+pub(crate) fn header_line(app: &App, st: &State, open: Open, width: u16) -> Line<'static> {
+    use digcord_model::channel_kind;
+    let width = usize::from(width);
+    let ch = st.channel(open.channel);
+    let icon = match ch.map(|c| c.kind) {
+        _ if open.guild.is_none() => "@",
+        Some(k) if channel_kind::is_thread(k) => "└",
+        Some(channel_kind::VOICE | channel_kind::STAGE) => "🔊",
+        Some(channel_kind::FORUM | channel_kind::MEDIA) => "≡",
+        _ => "#",
+    };
+    let name = format!("{icon} {}", st.channel_title(open.channel));
+    let topic = ch
+        .and_then(|c| c.topic.as_deref())
+        .and_then(|t| t.lines().next())
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
+
+    // (öncelik, metin, stil): küçük sayı önce düşer.
+    let theme = &app.theme;
+    let mut right: Vec<(u8, String, Style)> = Vec::new();
+    if let Some(n) = app.pin_counts.get(&open.channel) {
+        right.push((1, format!("📌 {n}"), theme.dim()));
+    }
+    if let Some(list) = open.guild.and_then(|g| st.member_list(g))
+        && list.member_count > 0
+    {
+        right.push((
+            2,
+            format!("● {}/{}", list.online_count, list.member_count),
+            theme.presence(digcord_model::Presence::Online),
+        ));
+    }
+    if st.voice_call().is_some_and(|c| {
+        c.guild == open.guild && (open.guild.is_some() || c.channel == open.channel)
+    }) {
+        right.push((3, "🔊".to_owned(), theme.success()));
+    }
+    if app.scroll.anchor.is_some() {
+        right.push((4, "[geçmiş]".to_owned(), theme.warning()));
+    }
+
+    let total = |r: &[(u8, String, Style)]| {
+        r.iter().map(|(_, t, _)| t.width()).sum::<usize>() + 2 * r.len().saturating_sub(1)
+    };
+    // Kanal adına en az bu kadar yer kalsın; yoksa en düşük öncelikli parça düşer.
+    let min_left = name.width().min(12);
+    while !right.is_empty() && min_left + 1 + total(&right) > width {
+        if let Some(i) = right
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, (p, _, _))| *p)
+            .map(|(i, _)| i)
+        {
+            right.remove(i);
+        }
+    }
+    let right_w = total(&right);
+    let avail = width.saturating_sub(right_w + usize::from(right_w > 0));
+
+    let mut spans = Vec::new();
+    let name_fit = fit(&name, avail);
+    let mut used = name_fit.width();
+    spans.push(Span::styled(
+        name_fit,
+        Style::new().add_modifier(Modifier::BOLD),
+    ));
+    if let Some(topic) = topic {
+        let room = avail.saturating_sub(used);
+        // " — " + en az birkaç harf yoksa konu hiç gösterilmez.
+        if room >= 3 + 4 {
+            let t = format!(" — {}", fit(topic, room - 3));
+            used += t.width();
+            spans.push(Span::styled(t, theme.dim()));
+        }
+    }
+    if right_w > 0 {
+        spans.push(Span::raw(" ".repeat(width.saturating_sub(used + right_w))));
+        for (i, (_, text, style)) in right.into_iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw("  "));
+            }
+            spans.push(Span::styled(text, style));
         }
     }
     Line::from(spans)
 }
 
 /// `  🔊 Ses · bağlı (uçtan uca) 🎤✕` — ses kanalındaysak.
-fn voice_status(app: &App) -> Option<Span<'static>> {
+fn voice_status(app: &App, st: &State) -> Option<Span<'static>> {
     use digcord_store::VoicePhase;
-    let st = app.shared.read();
     let call = st.voice_call()?;
     let (phase, style) = match call.phase {
         VoicePhase::Joining => ("katılınıyor…", app.theme.warning()),

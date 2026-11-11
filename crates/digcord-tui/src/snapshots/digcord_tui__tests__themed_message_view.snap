@@ -2,15 +2,15 @@
 source: crates/digcord-tui/src/tests.rs
 expression: screen
 ---
-"┌────┐┌ Test Sunucusu ───────┐┌ #sohbet — konu ────────────────────────────────┐"
-"│DM  ││▾ GENEL               ││                                                │"
+"┌────┐┌ Test Sunucusu ───────┐┌────────────────────────────────────────────────┐"
+"│DM  ││▾ GENEL               ││# sohbet — konu                                 │"
 "│TS  ││  # sohbet            ││                                                │"
 "│    ││  # duyurular         ││                                                │"
 "│    ││  🔊 Ses              ││             — kanalın başlangıcı —             │" Hidden by multi-width symbols: [(10, " ")]
 "│    ││                      ││                ── 1 Ocak 2026 ──               │"
 "│    ││                      ││arkadas  01.01.2026 12:00                       │"
 "│    ││                      ││  selam                                         │"
-"│    ││                      ││i: yaz · v: mesaj seç · :upload <yol>           │"
+"│    ││                      ││i: yaz · v: seç · ?: yardım · :upload <yol>     │"
 "│    ││                      ││>                                               │"
 "└────┘└──────────────────────┘└────────────────────────────────────────────────┘"
-" [NORMAL] Digcord · başlatılıyor…  Tema: koyu                                   "
+" [NORMAL] Digcord · başlatılıyor…  Tema: koyu                             12:34 "

@@ -16,7 +16,7 @@
 │  │                  │─────────────────────────────────────────│                │
 │  │ 🔊 Sohbet  🎤 🎧   │ > mesaj yaz...                          │                │
 └──┴──────────────────┴─────────────────────────────────────────┴────────────────┘
- [NORMAL]  Digcord · bağlı · 42 ms                              Ayşe yazıyor...
+ [NORMAL]  Digcord · bağlı · 12 sunucu          Ayşe yazıyor...      42 ms · 14:03
 ```
 
 - **Sunucu şeridi** (en sol, dar): DM + sunucu kısaltmaları/ikonları, okunmamış noktası, mention sayısı.
@@ -32,7 +32,24 @@
   `Alt+M` (`toggle_members`) ya da `:members` aç/kapat; açılış durumu `ui.show_member_list`; dar
   terminalde otomatik gizlenir. İlk sürümde yalnızca ilk 100 öğe (kaydırma yok). Renkler tema
   yuvaları `member_group`, `presence_online|idle|dnd|offline`.
-- **Durum çubuğu:** mod, bağlantı durumu/gecikme, yazıyor bilgisi, hatalar.
+- **Mesaj paneli başlığı** (panelin ilk iç satırı; panel çok kısaysa çizilmez): solda kanal simgesi ve
+  adı (`# sohbet`, thread `└`, ses `🔊`, forum `≡`, DM/grup DM `@ ad, ad`) ve soluk renkte konunun ilk satırı
+  (sığmazsa `…` ile kısalır); sağda, öncelik sırasıyla: `[geçmiş]` (yukarı kaydırılmışken), `🔊` (açık
+  ses oturumu bu sunucuda; DM'de bu kanalda), `● çevrimiçi/toplam` (gateway üye listesinden; liste henüz
+  gelmediyse yok), `📌 N` (yalnızca bu oturumda `:pins` çalıştırıldıysa bilinen sabit sayısı; ayrıca
+  getirilmez). Dar genişlikte önce en düşük öncelikli parça düşer, sonra konu, en son kanal adı kısalır.
+  DM'de alıcıların çevrimiçi durumu store'da tutulmadığı için gösterilmez.
+- **Bildirim kutuları (toast):** mesaj alanının sağ üstünde, başlık satırının altında üst üste, en yenisi
+  üstte, en çok 3; her biri ~4 sn sonra kendiliğinden kaybolur (döngü `recv_timeout` ile tam o anda
+  uyanır; boşta CPU harcamaz). Kaynaklar: açık olmayan kanaldaki yeni DM / anma (masaüstü bildirimiyle
+  aynı sessize alma ve `notifications.*` ayarları; kanal açıksa kutu çıkmaz) ve denetleyiciden gelen
+  hatalar/uyarılar (`gönderilemedi`, `yüklenemedi`, ayar kaydı vb.; durum çubuğunda da kalır). Kapatmak:
+  `ui.toasts = false` (`:settings`'ten anında). Olay: `UiEvent::Toast { title, body, kind }`. Renkler tema
+  yuvaları `toast_bg`, `toast_info` (hata/uyarı `error`/`warning`).
+- **Durum çubuğu:** solda mod, bağlantı durumu, ses oturumu, bildirim/yazıyor bilgisi; sağda gateway
+  gecikmesi (`42 ms`, heartbeat → ACK; < 150 yeşil, < 400 sarı, üstü kırmızı; yalnızca bağlıyken) ve
+  yerel saat `SS:DD` (dakika değişince kendiliğinden yenilenir). Dar genişlikte önce gecikme, sonra
+  saat düşer; sonra bildirim/ses metni `…` ile kısalır; mod ve bağlantı durumu en son.
 
 Duyarlı düzen: < 100 sütun → üye listesi kapanır; < 70 sütun → kanal ağacı açılır pencereye döner.
 
@@ -79,12 +96,25 @@ Vim istemeyenler için config'de `keymap = "simple"` (her zaman yazma modu, ok t
 | `:pins` | Açık kanalın sabitlenmiş mesajları (aynı sonuç ekranı) |
 | `:vol <ad> <0-200>` | Ses kanalındaki kişinin ses seviyesi (yüzde) |
 | `Alt+↑/↓` | Okunmamış önceki/sonraki kanal (sessizdekiler atlanır) |
+| `?` / `:help` | Yardım: tüm kısayollar ve komutlar (aşağıda) |
 | `q` / `:q` | Çıkış |
 
 Normal/SELECT modu ve genel kısayollar `config.toml` `[keys]` tablosundan değiştirilebilir (aşağıda).
 `Ctrl+C` (çıkış), INSERT/COMMAND metin düzenleme tuşları, hızlı geçiş/resim görüntüleyici/silme onayı
-pencerelerinin içindeki tuşlar ve ayarlar ekranının tuşları sabittir. Alt çubuktaki ipucu metinleri
-varsayılan tuşları gösterir.
+pencerelerinin içindeki tuşlar ve ayarlar ekranının tuşları sabittir. Mesaj panelinin altındaki ipucu
+satırı (`i: yaz · v: seç · ?: yardım · :upload <yol>` ve SEÇ modundaki karşılığı) canlı kısayol
+tablosundan üretilir: `[keys]` ile değişen tuşlar orada da görünür.
+
+### Yardım ekranı (`?`, `:help`)
+
+Tam ekran, `[YARDIM]` modu. Kısayollar **canlı `Keymap`'ten** üretilir (yani `[keys]` geçersiz
+kılmaları doğru görünür; atanmamış eylem `(atanmamış)` yazar): *Genel*, *NORMAL*, *SEÇ* tabloları
+(tuşlar, açıklama, köşeli parantezde `[keys]` eylem adı), ardından yeniden atanamayan tuşlar
+(*Sabit*, *YAZ*, *Resim görüntüleyici*, *Arama / sabitlenenler*, *Ayarlar*, *Yardım*) ve en altta
+komutlar (`:upload`, `:search`, `:pins`, `:threads`, `:archived`, `:members`, `:settings`, `:theme`,
+`:devices`, `:leave`, `:mute`, `:deaf`, `:call`, `:vol`, `:help`, `:q`). `j`/`k` (`↓`/`↑`) kaydır,
+`PgUp`/`PgDn` sayfa, `Home`/`End` başa/sona, `Esc`/`q` kapat; SEÇ modundan açılmışsa aynı mod ve seçim
+korunarak dönülür. YAZ modunda `?` düz karakterdir.
 
 ## Mesaj işleme
 
@@ -136,7 +166,9 @@ varsayılan tuşları gösterir.
 
 ## Bildirimler
 
-- Mention, DM ve "tüm mesajlar" bildirimi açık kanallarda masaüstü bildirimi (notify-rust → KDE).
+- Mention, DM ve "tüm mesajlar" bildirimi açık kanallarda masaüstü bildirimi (notify-rust → KDE);
+  ayrıca terminalde köşe bildirim kutusu (`ui.toasts`, yukarıda) — masaüstü bildiriminden farkı:
+  açık kanal için hiç çıkmaz (odak durumuna bakılmaz).
 - Sunucu/kanal sessize alma ayarlarına (READY'deki kullanıcı guild ayarları) uyulur.
 - Terminal odaktaysa ve ilgili kanal açıksa bildirim gönderilmez.
 - Opsiyonel terminal zili / pencere başlığında okunmamış sayısı.
@@ -146,7 +178,7 @@ varsayılan tuşları gösterir.
 - Kanal ağacında ses kanalındaki kullanıcılar; konuşan kişi yeşil, susturma simgeleri
   (`🎤✕`, `🎧✕`). ✅
 - Durum çubuğu: bağlı kanal, aşama (katılınıyor/bağlanıyor/bağlı), "uçtan uca" (DAVE),
-  mikrofon/kulaklık durumu. ✅ Gecikme gösterimi yok.
+  mikrofon/kulaklık durumu. ✅ Gecikme: yalnızca gateway (ses UDP gecikmesi yok).
 - Kullanıcı ses seviyesi `:vol` ile. ✅ Kaydırıcı ve yerel susturma yok (sonra).
 - Ses aygıtı ve VAD eşiği config'ten: `voice.input_device` / `voice.output_device` (cpal aygıt
   adı, tam eşleşme; boş ya da `default` = sistem varsayılanı; bulunamazsa uyarılıp varsayılana
@@ -158,7 +190,7 @@ varsayılan tuşları gösterir.
 
 `~/.config/digcord/config.toml`
 
-**Şu an desteklenenler:** `ui.theme`, `ui.show_member_list`, `ui.images`, `ui.image_max_rows`,
+**Şu an desteklenenler:** `ui.theme`, `ui.show_member_list`, `ui.toasts`, `ui.images`, `ui.image_max_rows`,
 `ui.code_highlight`, `ui.code_theme`,
 `voice.mode` (`"vad"`, `"ptt"`), `voice.jitter_ms`, `voice.vad_threshold` (0.001–0.5; aralık dışı
 uyarıyla düzeltilir), `voice.input_device`, `voice.output_device`, `behavior.send_typing`,
@@ -172,6 +204,7 @@ keymap = "vim"           # "vim" | "simple"
 theme = "default"        # temalar ~/.config/digcord/themes/*.toml
 timestamp_format = "%H:%M"
 show_member_list = true
+toasts = true            # köşe bildirimleri (yeni DM/anma, hatalar)
 images = "thumbnail"     # "off" | "thumbnail" | "full"
 image_max_rows = 10
 code_highlight = true     # kod bloklarını dile göre renklendir
@@ -245,6 +278,7 @@ eylem adına göre alfabetik sıradır. Kapsamlar: *genel* (her modda), *NORMAL*
 | SELECT | `copy` | `y` | Metni kopyala |
 | SELECT | `open_media` | `o` | Resmi/bağlantıyı aç |
 | SELECT | `retry` | `enter` | Başarısız mesajı yeniden gönder |
+| NORMAL+SELECT | `help` | `?` | Yardım ekranı (`:help` ile de) |
 
 ### Temalar
 
@@ -285,6 +319,8 @@ thread'inde yapılmaz (açılışta ve `:theme` ile denetleyicide). Örnek: `the
 | `success` | `green` | Bağlı durumu, ses bağlantısı |
 | `new_messages` | `red` | "Yeni mesajlar" çizgisi (kalın) |
 | `bot_badge` | `blue` | Bot yazarların `BOT` rozeti (kalın) |
+| `toast_bg` | `#1e1e28` | Bildirim kutusu arka planı |
+| `toast_info` | `cyan` | Mesaj/bilgi bildirimi çerçevesi ve başlığı (hata: `error`, uyarı: `warning`) |
 | `status_fg` / `status_bg` | `reset` | Durum çubuğu |
 | `member_group` | `reset` | Üye listesi grup başlıkları (soluk) |
 | `presence_online` / `presence_idle` / `presence_dnd` / `presence_offline` | `green` / `yellow` / `red` / `darkgray` | Üye listesi durum işareti |
@@ -299,7 +335,7 @@ gibi biçimler temadan bağımsızdır. Embed'in kendi rengi (sol kenar) Discord
   değerleriyle listeler. `j`/`k` gez, `Enter`/`Boşluk` açık-kapalı ya da sonraki seçenek, `+`/`-`
   (`←`/`→`) sayı ve seçenek, `s` kaydet, `Esc` kapat.
 - Satır sonundaki etiket: **anında geçerli** (`behavior.send_typing`, `behavior.send_read_receipts`,
-  `notifications.enabled`, `notifications.on`: denetleyiciye `Action` olarak gider) ya da
+  `notifications.enabled`, `notifications.on`, `ui.toasts`: denetleyiciye `Action` olarak gider) ya da
   **yeniden başlatınca geçerli** (diğerleri). `voice.vad_threshold` da anında geçerlidir (açık
   ses oturumuna atomik olarak yazılır). `ui.theme` salt okunurdur; `:theme <ad>` kullanılır.
   `voice.input_device`/`output_device` salt okunurdur (listeyi almak ses sürücüsünü yoklar, UI

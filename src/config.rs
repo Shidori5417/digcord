@@ -22,6 +22,7 @@ const KNOWN_SECTIONS: &[&str] = &["ui", "behavior", "notifications", "voice", "c
 const KNOWN_KEYS: &[&str] = &[
     "ui.theme",
     "ui.show_member_list",
+    "ui.toasts",
     "ui.images",
     "ui.image_max_rows",
     "ui.code_highlight",
@@ -100,6 +101,8 @@ pub struct Ui {
     /// Tema adı (`~/.config/digcord/themes/<ad>.toml`); `default` yerleşik.
     pub theme: String,
     pub show_member_list: bool,
+    /// Köşe bildirimleri (yeni DM/anma, hatalar).
+    pub toasts: bool,
     pub images: Images,
     /// Bir resmin en fazla satır yüksekliği.
     pub image_max_rows: u16,
@@ -174,6 +177,7 @@ impl Default for Ui {
         Self {
             theme: crate::theme::DEFAULT_NAME.to_owned(),
             show_member_list: true,
+            toasts: true,
             images: Images::Thumbnail,
             image_max_rows: 10,
             code_highlight: true,
@@ -269,6 +273,7 @@ impl Config {
                 Bool,
                 false,
             ),
+            SettingItem::new("ui.toasts", SettingValue::Bool(self.ui.toasts), Bool, true),
             SettingItem::new(
                 "ui.images",
                 text(self.ui.images.as_str()),
@@ -522,6 +527,7 @@ keymap = "vim"           # "vim" | "simple"
 theme = "default"        # temalar ~/.config/digcord/themes/*.toml
 timestamp_format = "%H:%M"
 show_member_list = true
+toasts = true            # köşe bildirimleri
 images = "thumbnail"     # "off" | "thumbnail" | "full"
 image_max_rows = 10
 code_highlight = true
@@ -563,6 +569,7 @@ build_number = 0          # 0 = otomatik/varsayılan
 [ui]
 theme = "light"
 show_member_list = false
+toasts = false
 images = "full"
 image_max_rows = 20
 code_highlight = false
@@ -592,6 +599,7 @@ chrome_major = 130
                 ui: Ui {
                     theme: "light".into(),
                     show_member_list: false,
+                    toasts: false,
                     images: Images::Full,
                     image_max_rows: 20,
                     code_highlight: false,

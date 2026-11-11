@@ -2,8 +2,8 @@
 source: crates/digcord-tui/src/tests.rs
 expression: "draw(&app, 100, 14)"
 ---
-"┌────┐┌ Test Sunucusu ───────┐┌ #sohbet — konu ────────────────────────────────┐┌ Üyeler ──────────┐"
-"│DM  ││▾ GENEL               ││                                                ││MODERATÖR — 1     │"
+"┌────┐┌ Test Sunucusu ───────┐┌────────────────────────────────────────────────┐┌ Üyeler ──────────┐"
+"│DM  ││▾ GENEL               ││# sohbet — konu                            ● 3/5││MODERATÖR — 1     │"
 "│TS  ││  # sohbet            ││                                                ││● Takma           │"
 "│    ││  # duyurular         ││                                                ││Çevrimiçi — 2     │"
 "│    ││  🔊 Ses              ││                                                ││● Ayşe            │" Hidden by multi-width symbols: [(10, " ")]
@@ -12,7 +12,7 @@ expression: "draw(&app, 100, 14)"
 "│    ││                      ││                                                ││○ 山田太郎山田太… │" Hidden by multi-width symbols: [(84, " "), (86, " "), (88, " "), (90, " "), (92, " "), (94, " "), (96, " ")]
 "│    ││                      ││                                                ││○ sadece_kullanici│"
 "│    ││                      ││             — kanalın başlangıcı —             ││                  │"
-"│    ││                      ││i: yaz · v: mesaj seç · :upload <yol>           ││                  │"
+"│    ││                      ││i: yaz · v: seç · ?: yardım · :upload <yol>     ││                  │"
 "│    ││                      ││>                                               ││                  │"
 "└────┘└──────────────────────┘└────────────────────────────────────────────────┘└──────────────────┘"
-" [NORMAL] Digcord · başlatılıyor…                                                                   "
+" [NORMAL] Digcord · başlatılıyor…                                                             12:34 "

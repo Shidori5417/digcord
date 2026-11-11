@@ -111,6 +111,10 @@ theme! {
     new_messages = Color::Red,
     /// Bot yazarların `BOT` rozeti.
     bot_badge = Color::Blue,
+    /// Bildirim kutusu (toast) arka planı.
+    toast_bg = Color::Rgb(30, 30, 40),
+    /// Bilgi/mesaj bildirimi çerçevesi (hata ve uyarı `error`/`warning` yuvalarını kullanır).
+    toast_info = Color::Cyan,
     /// Durum çubuğu metni.
     status_fg = Color::Reset,
     /// Durum çubuğu arka planı.
@@ -254,6 +258,12 @@ impl Theme {
         } else {
             self.border
         })
+    }
+    pub(crate) fn toast_bg(&self) -> Style {
+        Style::new().bg(self.toast_bg)
+    }
+    pub(crate) fn toast_info(&self) -> Style {
+        Self::fg(self.toast_info)
     }
     pub(crate) fn status(&self) -> Style {
         let mut s = Self::fg(self.status_fg);

@@ -2,11 +2,11 @@
 source: crates/digcord-tui/src/tests.rs
 expression: "draw(&app, 100, 8)"
 ---
-"┌────┐┌ Direkt Mesajlar ─────┐┌ @Arkadaş ──────────────────────────────────────┐┌ Üyeler ──────────┐"
-"│DM  ││@ Arkadaş             ││yükleniyor…                                     ││Üyeler — 1        │"
-"│TS  ││                      ││                                                ││  Arkadaş         │"
+"┌────┐┌ Direkt Mesajlar ─────┐┌────────────────────────────────────────────────┐┌ Üyeler ──────────┐"
+"│DM  ││@ Arkadaş             ││@ Arkadaş                                       ││Üyeler — 1        │"
+"│TS  ││                      ││yükleniyor…                                     ││  Arkadaş         │"
 "│    ││                      ││                                                ││                  │"
-"│    ││                      ││i: yaz · v: mesaj seç · :upload <yol>           ││                  │"
+"│    ││                      ││i: yaz · v: seç · ?: yardım · :upload <yol>     ││                  │"
 "│    ││                      ││>                                               ││                  │"
 "└────┘└──────────────────────┘└────────────────────────────────────────────────┘└──────────────────┘"
-" [NORMAL] Digcord · başlatılıyor…                                                                   "
+" [NORMAL] Digcord · başlatılıyor…                                                             12:34 "

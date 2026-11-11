@@ -34,6 +34,8 @@ pub(crate) enum Mode {
     Settings,
     /// `:search` / `:pins` tam ekran sonuç listesi.
     Search,
+    /// `?` / `:help` tam ekran yardım.
+    Help,
 }
 
 /// Yazılan metnin hedefi.
@@ -249,6 +251,7 @@ impl App {
         let d_pressed = std::mem::take(&mut self.pending_d);
         match self.keys.lookup(Scope::Select, &key) {
             Some(Act::Back) => self.mode = Mode::Normal,
+            Some(Act::Help) => self.open_help(Mode::Select),
             Some(Act::MoveDown) => self.move_selection(1),
             Some(Act::MoveUp) => self.move_selection(-1),
             Some(Act::Reply) => self.enter_insert(Target::Reply(sel)),
@@ -506,6 +509,10 @@ impl App {
             }
             "settings" => {
                 self.mode = Mode::Settings;
+                None
+            }
+            "help" | "h" | "?" => {
+                self.open_help(Mode::Normal);
                 None
             }
             "search" => self.search_command(rest),
@@ -836,6 +843,7 @@ pub(crate) fn mode_label(mode: Mode) -> &'static str {
         Mode::Viewer => " [RESİM] ",
         Mode::Settings => " [AYAR] ",
         Mode::Search => " [ARAMA] ",
+        Mode::Help => " [YARDIM] ",
     }
 }
 

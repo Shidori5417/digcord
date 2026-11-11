@@ -2,8 +2,8 @@
 source: crates/digcord-tui/src/tests.rs
 expression: "draw(&app, 100, 22)"
 ---
-"┌────┐┌ Test Sunucusu ───────┐┌ #sohbet — konu ────────────────────────────────┐┌ Üyeler ──────────┐"
-"│DM  ││▾ GENEL               ││                                                ││                  │"
+"┌────┐┌ Test Sunucusu ───────┐┌────────────────────────────────────────────────┐┌ Üyeler ──────────┐"
+"│DM  ││▾ GENEL               ││# sohbet — konu                                 ││                  │"
 "│TS  ││  # sohbet            ││             — kanalın başlangıcı —             ││                  │"
 "│    ││  # duyurular         ││                ── 1 Ocak 2026 ──               ││                  │"
 "│    ││  🔊 Ses              ││arkadas  01.01.2026 12:00                       ││                  │" Hidden by multi-width symbols: [(10, " ")]
@@ -20,7 +20,7 @@ expression: "draw(&app, 100, 22)"
 "│    ││                      ││╭─ ben: ilk @arkadas                            ││                  │"
 "│    ││                      ││arkadas  02.01.2026 12:03                       ││                  │"
 "│    ││                      ││  cevap @ben                                    ││                  │"
-"│    ││                      ││i: yaz · v: mesaj seç · :upload <yol>           ││                  │"
+"│    ││                      ││i: yaz · v: seç · ?: yardım · :upload <yol>     ││                  │"
 "│    ││                      ││>                                               ││                  │"
 "└────┘└──────────────────────┘└────────────────────────────────────────────────┘└──────────────────┘"
-" [NORMAL] Digcord · başlatılıyor…                                                                   "
+" [NORMAL] Digcord · başlatılıyor…                                                             12:34 "

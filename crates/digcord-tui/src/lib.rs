@@ -6,6 +6,7 @@
 mod compose;
 mod editor;
 mod fuzzy;
+mod help;
 mod highlight;
 mod keymap;
 mod markdown;
@@ -15,6 +16,7 @@ mod render;
 mod search;
 mod settings;
 mod theme;
+mod toast;
 mod view;
 mod viewer;
 
@@ -25,6 +27,7 @@ pub use media::{ImageDone, ImageJob, ImageMode, Options};
 pub use ratatui::style::Color;
 pub use settings::{SettingItem, SettingKind, SettingValue};
 pub use theme::{Theme, ThemeError};
+pub use toast::ToastKind;
 
 use std::cell::Cell;
 use std::collections::HashSet;
@@ -127,6 +130,14 @@ pub enum UiEvent {
     },
     /// `Action::JumpTo` mesajı getiremedi; bekleyen atlama iptal edilir.
     JumpFailed(String),
+    /// Mesaj alanının sağ üstünde birkaç saniye görünen bildirim (`ui.toasts`).
+    Toast {
+        title: String,
+        body: String,
+        kind: ToastKind,
+    },
+    /// Gateway gecikmesi (heartbeat → ACK); durum çubuğunda gösterilir.
+    Latency(std::time::Duration),
 }
 
 /// Bağlantı durumu (durum çubuğunda gösterilir).
@@ -493,6 +504,17 @@ pub struct App {
     /// mesajlar" çizgisi için; canlı okuma işaretinden bağımsız, kanal değişince ya da `G`/`End`
     /// ile silinir.
     new_marker: Option<(Snowflake, Snowflake)>,
+    /// Yardım ekranı (`Mode::Help`): kapanınca dönülecek mod, kaydırma, son çizimdeki yükseklik.
+    help_from: compose::Mode,
+    help_scroll: usize,
+    help_height: Cell<u16>,
+    toasts: toast::Toasts,
+    /// Son ölçülen gateway gecikmesi (bağlı değilken `None`).
+    latency: Option<std::time::Duration>,
+    /// Saat göstergesi için sabit an (yalnızca testler; `None`: gerçek saat).
+    fixed_now: Option<jiff::Timestamp>,
+    /// `:pins` ile öğrenilen sabitlenmiş mesaj sayıları (kanal başına; getirme yapılmaz).
+    pin_counts: std::collections::HashMap<Snowflake, usize>,
 }
 
 impl App {
@@ -535,7 +557,34 @@ impl App {
             show_members: true,
             code_theme: None,
             new_marker: None,
+            help_from: compose::Mode::Normal,
+            help_scroll: 0,
+            help_height: Cell::new(0),
+            toasts: toast::Toasts::default(),
+            latency: None,
+            fixed_now: None,
+            pin_counts: std::collections::HashMap::new(),
         }
+    }
+
+    /// Şimdiki an (saat göstergesi için); testler sabitleyebilir.
+    pub(crate) fn now(&self) -> jiff::Timestamp {
+        self.fixed_now.unwrap_or_else(jiff::Timestamp::now)
+    }
+
+    /// Döngünün en çok ne kadar uyuyabileceği: "yazıyor" göstergesi (1 sn), en yakın bildirimin
+    /// sona ermesi ve saatin dakika değişimi. Hiçbiri yoksa yine dakikada bir uyanır.
+    fn next_wake(&self, typing: bool, now: std::time::Instant) -> std::time::Duration {
+        let to_minute = 60 - self.now().as_second().rem_euclid(60) as u64;
+        let mut wake = std::time::Duration::from_secs(to_minute);
+        if typing {
+            wake = wake.min(std::time::Duration::from_secs(1));
+        }
+        if let Some(at) = self.toasts.next_expiry() {
+            wake = wake.min(at.saturating_duration_since(now));
+        }
+        // Çok kısa uykular döngüyü meşgul eder; ama süresi dolmuş bildirim hemen temizlenmeli.
+        wake.max(std::time::Duration::from_millis(10))
     }
 
     /// Üye panelini aç/kapat; denetleyiciye yeni durumu bildirir.
@@ -551,6 +600,7 @@ impl App {
         actions: &mut impl FnMut(Action),
     ) -> io::Result<()> {
         while !self.should_quit {
+            self.toasts.expire(std::time::Instant::now());
             terminal.draw(|frame| self.draw(frame))?;
             if let Some(a) = self.take_older_request() {
                 actions(a);
@@ -558,16 +608,12 @@ impl App {
             for job in self.images.take_wanted() {
                 actions(Action::LoadImage(job));
             }
-            // "Yazıyor" göstergesi süresi dolunca kaybolsun diye: biri yazıyorsa saniyede bir çiz.
-            let ev = if self.typing_visible() {
-                match events.recv_timeout(std::time::Duration::from_secs(1)) {
-                    Ok(ev) => ev,
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                }
-            } else {
-                let Ok(ev) = events.recv() else { break };
-                ev
+            // Zamanlı şeyler (yazıyor göstergesi, bildirim ömrü, saat) için uyanma süresi.
+            let wake = self.next_wake(self.typing_visible(), std::time::Instant::now());
+            let ev = match events.recv_timeout(wake) {
+                Ok(ev) => ev,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             };
             if let Some(action) = self.handle(ev) {
                 actions(action);
@@ -616,7 +662,19 @@ impl App {
             UiEvent::Input(Event::FocusLost) => Some(Action::Focus(false)),
             UiEvent::Input(_) => None,
             UiEvent::Status(status) => {
+                if !matches!(status, Status::Online { .. }) {
+                    self.latency = None;
+                }
                 self.status = status;
+                None
+            }
+            UiEvent::Latency(d) => {
+                self.latency = Some(d);
+                None
+            }
+            UiEvent::Toast { title, body, kind } => {
+                self.toasts
+                    .push(title, body, kind, std::time::Instant::now());
                 None
             }
             UiEvent::ShowLogin { error } => {
@@ -633,6 +691,9 @@ impl App {
             }
             UiEvent::SearchResults { seq, total, hits } => {
                 if let Some(v) = self.search.as_mut().filter(|v| v.seq() == seq) {
+                    if v.kind == search::Kind::Pins {
+                        self.pin_counts.insert(v.channel, hits.len());
+                    }
                     v.set_results(total, hits);
                 }
                 None
@@ -719,6 +780,7 @@ impl App {
             compose::Mode::Viewer => return self.viewer_key(key),
             compose::Mode::Settings => return self.settings_key(key),
             compose::Mode::Search => return self.search_key(key),
+            compose::Mode::Help => return self.help_key(key),
             compose::Mode::Normal => {}
         }
         let act = self.keys.lookup(Scope::Normal, &key)?;
@@ -728,6 +790,7 @@ impl App {
         let half_page = usize::from(self.msg_area.get().1 / 2).max(1);
         match act {
             Act::Quit => self.should_quit = true,
+            Act::Help => self.open_help(compose::Mode::Normal),
             Act::Switcher => {
                 self.command.clear();
                 self.comp_sel = 0;
@@ -1211,10 +1274,21 @@ impl App {
             offset -= h;
             idx -= 1;
         }
-        self.scroll = Scroll {
+        let mut next = Scroll {
             anchor: Some(msgs[idx].id),
             offset,
         };
+        // En üst konumun da üstüne geçildiyse en üstte kal (yoksa ardışık kaydırmalar
+        // en üst konumla bir önceki konum arasında gidip gelir).
+        let view_h = usize::from(self.msg_area.get().1);
+        let top = top_scroll(msgs, &res, width, view_h);
+        if let Some(top_id) = top.anchor {
+            let top_idx = view::anchor_index(msgs, Some(top_id));
+            if idx < top_idx || (idx == top_idx && offset > top.offset) {
+                next = top;
+            }
+        }
+        self.scroll = next;
     }
 
     /// Mesaj görünümünü `n` satır aşağı kaydırır; en alta ulaşınca yapışık moda döner.
