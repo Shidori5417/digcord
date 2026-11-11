@@ -160,6 +160,19 @@ korunarak dönülür. YAZ modunda `?` düz karakterdir.
   görünürken çizilir; kısmen görünürken yerinde `[resim]` yazar.
 - İndirme, çözme, ölçekleme ve terminal protokolüne kodlama arka planda; UI sadece hazır resmi
   basar. Hazır resimler bellekte LRU (96), ham dosyalar diskte.
+- **Avatarlar** (`ui.avatars`, grafik varsa): gruplanmamış her mesajın başlığı + ilk içerik satırının
+  soluna 4×2 hücrelik avatar. Açıkken *tüm* mesaj satırları (gruplananlar dahil) 5 sütun girintilenir;
+  satır sayısı değişmez (avatar başlık+ilk içerik satırını kaplar), yer `ImageSlot` olarak resimlerle
+  aynı yoldan çizilir (tamamen görünürse; yüklenirken/başarısızken boş). Grafik yoksa ya da ayar
+  kapalıysa düzen birebir eskisi gibidir. Metne 12 sütundan az kalacak darlıkta ve sistem
+  mesajlarında avatar yok. Sunucuya özel avatar biliniyorsa o, yoksa kullanıcı avatarı, yoksa
+  varsayılan avatar.
+- **Sunucu simgeleri** (`ui.server_icons`, grafik varsa): şerit 8 sütuna genişler; her sunucu 2 satır:
+  `[işaret][4×2 simge][rozet]` (işaret: seçili `▌`, açık `▎`; rozet: okunmamış `●`, anma sayısı).
+  Simge yüklenene dek / yoksa / yüklenemezse kimlikten türeyen renkli 2 harflik kısaltma kutusu.
+  Grafik yoksa şerit eskisi gibi tek satır etiket (2 harf, kimlikten renkli arka plan).
+- **Üye paneli**: avatar yok. Satır 1 hücre yüksekliğinde; 1×2 hücrelik resim okunamaz ve her üye
+  için ayrı kodlama/istek maliyeti getirir.
 - Hareketli GIF/WebP: sadece ilk kare. Video ekleri: önizleme yok, `o` ile harici açılır.
 - Embed: renkli sol kenar, sağlayıcı, yazar, başlık, açıklama (en fazla 12 satır), alanlar,
   alt bilgi ve (varsa) resim/küçük resim.
@@ -191,7 +204,7 @@ korunarak dönülür. YAZ modunda `?` düz karakterdir.
 `~/.config/digcord/config.toml`
 
 **Şu an desteklenenler:** `ui.theme`, `ui.show_member_list`, `ui.toasts`, `ui.images`, `ui.image_max_rows`,
-`ui.code_highlight`, `ui.code_theme`,
+`ui.code_highlight`, `ui.code_theme`, `ui.avatars`, `ui.server_icons`,
 `voice.mode` (`"vad"`, `"ptt"`), `voice.jitter_ms`, `voice.vad_threshold` (0.001–0.5; aralık dışı
 uyarıyla düzeltilir), `voice.input_device`, `voice.output_device`, `behavior.send_typing`,
 `behavior.send_read_receipts`, `notifications.enabled`, `notifications.on` (`"mention"`, `"dm"`,
@@ -209,6 +222,8 @@ images = "thumbnail"     # "off" | "thumbnail" | "full"
 image_max_rows = 10
 code_highlight = true     # kod bloklarını dile göre renklendir
 code_theme = "base16-ocean.dark"
+avatars = true            # mesaj başlıklarında avatar (grafik gerekir)
+server_icons = true       # sunucu şeridinde simge (grafik gerekir)
 
 [behavior]
 send_typing = true

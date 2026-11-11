@@ -3,6 +3,7 @@
 //! Sadece Discord CDN'ine istek atılır (`ALLOWED_HOSTS`); embed'lerdeki rastgele dış adreslere
 //! değil, Discord'un vekil (`proxy_url`) adreslerine gidilir. CDN isteklerinde token yoktur.
 
+pub mod cdn;
 mod lru;
 
 use std::path::{Path, PathBuf};

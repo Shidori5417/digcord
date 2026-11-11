@@ -73,7 +73,23 @@ pub trait Resolver {
     fn code_theme(&self) -> Option<&str> {
         None
     }
+    /// Mesaj başlıklarında avatar yeri ayrılsın mı (grafik var ve `ui.avatars` açık).
+    fn avatars(&self) -> bool {
+        false
+    }
+    /// Yazarın avatar adresi (sunucuya özel avatar önceliklidir); avatarlar kapalıysa `None`.
+    fn avatar_url(&self, _user: &User) -> Option<String> {
+        None
+    }
 }
+
+/// Avatar yerinin boyutu (hücre) ve metinle arasındaki boşluk.
+pub const AVATAR_COLS: u16 = 4;
+pub const AVATAR_ROWS: u16 = 2;
+/// Avatar açıkken tüm mesaj satırlarının soldan girintisi (avatar + 1 boşluk).
+pub const AVATAR_GUTTER: u16 = AVATAR_COLS + 1;
+/// Avatar için metne en az bu kadar sütun kalmalı; yoksa avatar çizilmez.
+const AVATAR_MIN_TEXT: usize = 12;
 
 /// Bir resmin terminaldeki boyutu ve o boyut için istenecek piksel boyutu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +111,8 @@ pub struct ImageSlot {
     pub rows: u16,
     /// İndirilecek adres (boyut parametreleri dahil).
     pub url: String,
+    /// Avatar yeri: yüklenirken/başarısızken not yazılmaz (boş kalır).
+    pub avatar: bool,
 }
 
 /// Bir mesajın satırları ve satırların arasına ayrılmış resim yerleri.
@@ -138,6 +156,43 @@ pub fn message_lines(
 /// [`message_lines`] ve resimlerin satırlar içindeki yerleri. Resim yerleri boş satırdır;
 /// resmi çağıran çizer.
 pub fn message_layout(msg: &Message, grouped: bool, r: &dyn Resolver, width: u16) -> Layout {
+    if !r.avatars()
+        || system_text(msg, r).is_some()
+        || usize::from(width) < usize::from(AVATAR_GUTTER) + AVATAR_MIN_TEXT
+    {
+        return layout_plain(msg, grouped, r, width);
+    }
+    // Tüm satırlar avatar sütununun sağında; gruplanmış mesajlar da hizalı kalır.
+    let mut layout = layout_plain(msg, grouped, r, width - AVATAR_GUTTER);
+    let pad = " ".repeat(usize::from(AVATAR_GUTTER));
+    for line in &mut layout.lines {
+        if line.width() > 0 {
+            line.spans.insert(0, Span::raw(pad.clone()));
+        }
+    }
+    for slot in &mut layout.images {
+        slot.col += AVATAR_GUTTER;
+    }
+    if !grouped {
+        // Başlık: boş ayırıcıdan (ve varsa yanıt satırından) sonra; avatar başlık + ilk içerik.
+        let header = 1 + usize::from(msg.referenced_message.is_some() || msg.kind == KIND_REPLY);
+        if let Some(url) = r.avatar_url(&msg.author)
+            && layout.lines.len() > header + 1
+        {
+            layout.images.push(ImageSlot {
+                line: header,
+                col: 0,
+                cols: AVATAR_COLS,
+                rows: AVATAR_ROWS,
+                url,
+                avatar: true,
+            });
+        }
+    }
+    layout
+}
+
+fn layout_plain(msg: &Message, grouped: bool, r: &dyn Resolver, width: u16) -> Layout {
     let width = usize::from(width).max(1);
     let t = r.theme();
     let mut out = Vec::new();
@@ -287,6 +342,7 @@ fn push_image(
         cols: fit.cols,
         rows: fit.rows,
         url: sized_url(src, fit.px_w, fit.px_h),
+        avatar: false,
     });
     out.extend(std::iter::repeat_n(Line::default(), usize::from(fit.rows)));
 }
@@ -336,6 +392,7 @@ fn jumbo_emoji(msg: &Message, r: &dyn Resolver, width: usize) -> Option<(usize, 
             rows: fit.rows,
             // Hareketli emojide de PNG: ilk kare (belgelenmiş CDN biçimi).
             url: format!("https://cdn.discordapp.com/emojis/{id}.png?size={EMOJI_PX}"),
+            avatar: false,
         })
         .collect();
     Some((ids.len().div_ceil(per_line) * rows, slots))
@@ -1632,6 +1689,7 @@ mod tests {
                 cols: 20,
                 rows: 6,
                 url: "https://media.discordapp.net/attachments/2/9/a.png?ex=1&is=2&hm=3&width=200&height=120".into(),
+                avatar: false,
             }]
         );
         // Resimler kapalıyken sadece etiket.
@@ -1798,6 +1856,106 @@ mod tests {
         assert_eq!(t[1], "  gönderiliyor…");
         let t = text(message_lines(&m, true, &Pending(true), 80));
         assert!(t[1].starts_with("  ✗ gönderilemedi"));
+    }
+
+    /// Avatarlar açık çözücü (başlık/gövde `SysRes` ile aynı).
+    struct AvRes;
+    impl Resolver for AvRes {
+        fn user_name(&self, _: u64) -> Option<String> {
+            None
+        }
+        fn channel_name(&self, _: u64) -> Option<String> {
+            None
+        }
+        fn role_name(&self, _: u64) -> Option<String> {
+            None
+        }
+        fn is_me(&self, _: u64) -> bool {
+            false
+        }
+        fn author_name(&self, user: &User) -> String {
+            user.username.clone()
+        }
+        fn clock(&self, _: u64) -> String {
+            "12:00".into()
+        }
+        fn timestamp(&self, _: i64, _: Option<char>) -> String {
+            String::new()
+        }
+        fn avatars(&self) -> bool {
+            true
+        }
+        fn avatar_url(&self, user: &User) -> Option<String> {
+            Some(format!("av/{}", user.id.0))
+        }
+    }
+
+    fn plain_msg(content: &str) -> Message {
+        serde_json::from_value(serde_json::json!({
+            "id": "1000000000000000000", "channel_id": "2",
+            "author": {"id": "4", "username": "ali"}, "content": content
+        }))
+        .expect("mesaj")
+    }
+
+    #[test]
+    fn avatar_slot_sits_on_header_and_first_content_line() {
+        let m = plain_msg("merhaba dünya");
+        let plain = message_layout(&m, false, &SysRes, 60);
+        let av = message_layout(&m, false, &AvRes, 60);
+        // Satır sayısı değişmez; avatar yalnızca bir yer ekler.
+        assert_eq!(av.lines.len(), plain.lines.len());
+        assert_eq!(
+            av.images,
+            [ImageSlot {
+                line: 1,
+                col: 0,
+                cols: AVATAR_COLS,
+                rows: AVATAR_ROWS,
+                url: "av/4".into(),
+                avatar: true,
+            }]
+        );
+        assert_fits(&av.lines, 60);
+        let t = texts(&av.lines);
+        assert_eq!(t[0], "");
+        assert!(t[1].starts_with("     ali"), "{t:?}");
+        assert!(t[2].starts_with("       merhaba"), "{t:?}");
+        // Avatar kapalıyken düzen aynen eskisi gibi.
+        assert!(plain.images.is_empty());
+        assert!(texts(&plain.lines)[1].starts_with("ali"));
+    }
+
+    #[test]
+    fn grouped_messages_are_indented_without_avatar_slot() {
+        let m = plain_msg("devam");
+        let av = message_layout(&m, true, &AvRes, 60);
+        assert!(av.images.is_empty());
+        assert_eq!(texts(&av.lines), ["       devam"]);
+    }
+
+    #[test]
+    fn avatar_slot_follows_reply_line_and_shifts_attachments() {
+        let m: Message = serde_json::from_value(serde_json::json!({
+            "id": "1000000000000000000", "channel_id": "2", "type": 19,
+            "author": {"id": "4", "username": "ali"}, "content": "cevap"
+        }))
+        .expect("mesaj");
+        let av = message_layout(&m, false, &AvRes, 60);
+        // Boş satır, yanıt satırı, başlık.
+        assert_eq!(av.images[0].line, 2);
+        assert!(texts(&av.lines)[1].starts_with("     ╭─"));
+    }
+
+    #[test]
+    fn avatar_skipped_on_narrow_width_and_system_messages() {
+        let m = plain_msg("x");
+        let narrow = message_layout(&m, false, &AvRes, 10);
+        assert!(narrow.images.is_empty());
+        assert_eq!(
+            texts(&narrow.lines),
+            texts(&message_layout(&m, false, &SysRes, 10).lines)
+        );
     }
 
     struct SysRes;

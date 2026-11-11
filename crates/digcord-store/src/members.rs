@@ -101,10 +101,16 @@ impl State {
             for item in items {
                 if let ListItem::Member(m) = item {
                     self.users.insert(m.user.id, m.user.clone());
+                    // Üye listesi öğesi sunucu avatarını taşımaz; bilineni koru.
+                    let avatar = self
+                        .members
+                        .get(&(update.guild_id, m.user.id))
+                        .and_then(|i| i.avatar.clone());
                     self.members.insert(
                         (update.guild_id, m.user.id),
                         MemberInfo {
                             nick: m.nick.clone(),
+                            avatar,
                             roles: m.roles.clone(),
                         },
                     );

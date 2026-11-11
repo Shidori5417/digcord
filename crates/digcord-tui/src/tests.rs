@@ -25,7 +25,7 @@ fn ready() -> Ready {
         "session_id": "s", "resume_gateway_url": "wss://x",
         "guilds": [{
             "id": GUILD.to_string(), "large": false,
-            "properties": {"name": "Test Sunucusu", "owner_id": "999"},
+            "properties": {"name": "Test Sunucusu", "owner_id": "999", "icon": "ikon"},
             // VIEW_CHANNEL + SEND_MESSAGES + ADD_REACTIONS + ATTACH_FILES
             "roles": [{"id": GUILD.to_string(), "name": "@everyone", "permissions": "35904", "position": 0},
                        {"id": "7", "name": "Moderatör", "permissions": "0", "position": 1, "color": 16711680}],
@@ -887,6 +887,7 @@ fn unread_mentions_shown_and_alt_down_jumps() {
             username: "ben".into(),
             global_name: None,
             bot: false,
+            avatar: None,
         }];
         st.message_create(m);
     }
@@ -969,6 +970,8 @@ fn image_app(msgs: Vec<Message>) -> App {
         Options {
             images: ImageMode::Thumbnail,
             image_max_rows: 4,
+            avatars: false,
+            server_icons: false,
             ..Options::default()
         },
     );
@@ -976,11 +979,26 @@ fn image_app(msgs: Vec<Message>) -> App {
     app
 }
 
+/// Avatar ve sunucu simgesi açık, yarım blok grafikli uygulama.
+fn avatar_app(msgs: Vec<Message>) -> App {
+    let mut app = test_app(shared_with(msgs, true));
+    app.images = media::Images::new(
+        Some(ratatui_image::picker::Picker::halfblocks()),
+        Options::default(),
+    );
+    open_sohbet(&mut app);
+    app
+}
+
 fn png_bytes() -> Vec<u8> {
     let mut png = std::io::Cursor::new(Vec::new());
-    image::DynamicImage::new_rgb8(160, 80)
-        .write_to(&mut png, image::ImageFormat::Png)
-        .expect("png");
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        160,
+        80,
+        image::Rgb([200, 30, 30]),
+    ))
+    .write_to(&mut png, image::ImageFormat::Png)
+    .expect("png");
     png.into_inner()
 }
 
@@ -2761,4 +2779,207 @@ fn drawing_header_status_toasts_and_help_takes_one_read() {
     draw(&app, 120, 20);
     press(&mut app, &[KeyCode::Char('?')]);
     draw(&app, 120, 20);
+}
+
+fn painted(backend: &TestBackend, x: u16, y: u16) -> bool {
+    let c = &backend.buffer()[(x, y)];
+    matches!(c.fg, Color::Rgb(..)) || matches!(c.bg, Color::Rgb(..))
+}
+
+fn cell_bg(backend: &TestBackend, x: u16, y: u16) -> ratatui::style::Color {
+    backend.buffer()[(x, y)].bg
+}
+
+#[test]
+fn strip_without_graphics_keeps_one_row_labels_with_color_box() {
+    let app = test_app(shared_with(vec![], true));
+    let screen = draw(&app, 100, 14);
+    assert_eq!(
+        row_text(&screen, 1).chars().take(6).collect::<String>(),
+        "│DM  │"
+    );
+    assert_eq!(
+        row_text(&screen, 2).chars().take(6).collect::<String>(),
+        "│TS  │"
+    );
+    // Kısaltma renkli kutuda; DM düz.
+    assert_eq!(cell_bg(&screen, 1, 2), Theme::guild_color(GUILD));
+    assert_ne!(cell_bg(&screen, 1, 1), Theme::guild_color(GUILD));
+}
+
+#[test]
+fn strip_with_icons_shows_initials_box_then_requests_and_draws_icon() {
+    let app = avatar_app(vec![]);
+    let screen = draw(&app, 100, 20);
+    // Şerit 8 sütun; sunucu 2 satır: [işaret][4 sütun kutu][rozet].
+    assert_eq!(
+        row_text(&screen, 1).chars().take(8).collect::<String>(),
+        "│  DM  │"
+    );
+    assert_eq!(
+        row_text(&screen, 3).chars().take(8).collect::<String>(),
+        "│▌ TS  │"
+    );
+    assert_eq!(cell_bg(&screen, 2, 3), Theme::guild_color(GUILD));
+    let jobs = app.images.take_wanted();
+    let urls: Vec<&str> = jobs.iter().map(|j| j.url()).collect();
+    assert!(
+        urls.contains(
+            &format!("https://cdn.discordapp.com/icons/{GUILD}/ikon.png?size=64").as_str()
+        ),
+        "{urls:?}"
+    );
+    // Aynı çizim ikinci kez istek üretmez.
+    draw(&app, 100, 20);
+    assert!(app.images.take_wanted().is_empty());
+    // Hazır olunca resim kutunun üstüne çizilir (yarım blok: ▀ hücreleri).
+    for job in jobs.into_iter().filter(|j| j.url().contains("/icons/")) {
+        let UiEvent::Image(done) = job.encode(&png_bytes()) else {
+            panic!("resim olayı bekleniyordu");
+        };
+        app.images.done(done);
+    }
+    let screen = draw(&app, 100, 20);
+    assert!(
+        !row_text(&screen, 3).contains("TS"),
+        "ikon kutunun üstüne çizilmeli"
+    );
+    assert!(painted(&screen, 3, 3), "ikon hücresi renkli olmalı");
+}
+
+#[test]
+fn strip_icons_disabled_by_option_or_missing_graphics() {
+    let mut app = test_app(shared_with(vec![], true));
+    app.images = media::Images::new(
+        Some(ratatui_image::picker::Picker::halfblocks()),
+        Options {
+            server_icons: false,
+            ..Options::default()
+        },
+    );
+    let screen = draw(&app, 100, 14);
+    assert_eq!(
+        row_text(&screen, 2).chars().take(6).collect::<String>(),
+        "│TS  │"
+    );
+}
+
+#[test]
+fn strip_with_icons_keeps_selection_visible_with_many_guilds() {
+    let shared = Arc::new(Shared::default());
+    {
+        let mut st = shared.state.write().expect("kilit");
+        let mut r = ready();
+        let proto = r.guilds.remove(0);
+        let _ = proto;
+        let guilds: Vec<serde_json::Value> = (1..=20u64)
+            .map(|n| {
+                serde_json::json!({
+                    "id": (1000 + n).to_string(), "large": false,
+                    "properties": {"name": format!("Sunucu {n}"), "owner_id": "999"},
+                    "roles": [], "channels": []
+                })
+            })
+            .collect();
+        r.guilds = serde_json::from_value(serde_json::Value::Array(guilds)).expect("guilds");
+        st.load_ready(&r);
+    }
+    let mut app = test_app(shared);
+    app.images = media::Images::new(
+        Some(ratatui_image::picker::Picker::halfblocks()),
+        Options::default(),
+    );
+    // 12 satır: iç 10 satır = 5 sunucu. 8. sunucuyu seç.
+    press(&mut app, &[KeyCode::Char('j'); 8]);
+    let screen = draw(&app, 100, 12);
+    let text: String = (0..12)
+        .map(|y| row_text(&screen, y))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("S8"), "{text}");
+    assert!(text.contains('▌'), "seçim işareti görünmeli\n{text}");
+    assert!(!text.contains("S1 "), "{text}");
+}
+
+#[test]
+fn messages_get_avatar_gutter_and_request_each_avatar_once() {
+    let msgs = vec![
+        msg(1, 0, FRIEND, "selam"),
+        msg(2, 1, FRIEND, "grup"),
+        msg(3, 30, ME, "tamam"),
+    ];
+    let app = avatar_app(msgs.clone());
+    let screen = draw(&app, 100, 24);
+    let all: Vec<String> = (0..24).map(|y| row_text(&screen, y)).collect();
+    let header = all
+        .iter()
+        .position(|l| l.contains("arkadas  01.01.2026"))
+        .expect("başlık");
+    // Şerit 8 + kanallar 24 + çerçeve 1 + avatar sütunu 5.
+    let before = all[header].split("arkadas").next().unwrap_or_default();
+    assert_eq!(before.chars().count(), 8 + 24 + 1 + 5, "{all:#?}");
+    assert!(all[header + 1].contains("     selam"), "{all:#?}");
+    // Gruplanan mesaj da aynı girintide.
+    assert!(all[header + 2].contains("     grup"), "{all:#?}");
+    let urls: Vec<String> = app
+        .images
+        .take_wanted()
+        .iter()
+        .map(|j| j.url().to_owned())
+        .collect();
+    // FRIEND ve ME için avatar (hash yok → varsayılan avatar), her biri bir kez.
+    let defaults: Vec<&String> = urls
+        .iter()
+        .filter(|u| u.contains("/embed/avatars/"))
+        .collect();
+    // İkisinin varsayılan indeksi aynı (küçük kimlikler) → tek istek.
+    assert_eq!(defaults.len(), 1, "{urls:?}");
+    assert!(
+        urls.iter()
+            .all(|u| u.starts_with("https://cdn.discordapp.com/"))
+    );
+}
+
+#[test]
+fn avatars_disabled_keep_exact_message_layout() {
+    let msgs = vec![msg(1, 0, FRIEND, "selam"), msg(2, 30, ME, "tamam")];
+    let mut off = avatar_app(msgs.clone());
+    off.images = media::Images::new(
+        Some(ratatui_image::picker::Picker::halfblocks()),
+        Options {
+            avatars: false,
+            server_icons: false,
+            ..Options::default()
+        },
+    );
+    let mut plain = test_app(shared_with(msgs, true));
+    open_sohbet(&mut plain);
+    assert_eq!(
+        format!("{}", draw(&off, 100, 16)),
+        format!("{}", draw(&plain, 100, 16))
+    );
+    assert!(off.images.take_wanted().is_empty());
+}
+
+#[test]
+fn avatar_drawn_over_gutter_when_ready_and_scrolling_stays_consistent() {
+    let msgs: Vec<Message> = (1..=12).map(|i| msg(i, i * 30, FRIEND, "satır")).collect();
+    let mut app = avatar_app(msgs);
+    // Kısa bir terminal: avatarlar kısmen görünürken çökmemeli, taşmamalı.
+    for h in [8u16, 9, 10, 13] {
+        let _ = draw(&app, 100, h);
+    }
+    let jobs = app.images.take_wanted();
+    assert!(!jobs.is_empty());
+    for job in jobs {
+        let UiEvent::Image(done) = job.encode(&png_bytes()) else {
+            panic!("resim olayı bekleniyordu");
+        };
+        app.images.done(done);
+    }
+    let screen = draw(&app, 100, 16);
+    // Avatar sütunu (şerit 8 + kanallar 24 + çerçeve 1 = x 33) bir yerde boyanmış olmalı.
+    assert!((0..16).any(|y| painted(&screen, 33, y)));
+    press(&mut app, &[KeyCode::PageUp]);
+    let _ = draw(&app, 100, 16);
 }

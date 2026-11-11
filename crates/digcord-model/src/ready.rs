@@ -110,6 +110,9 @@ pub struct User {
     /// Bot hesabı (`BOT` rozeti).
     #[serde(default)]
     pub bot: bool,
+    /// Avatar karması (`null`: varsayılan avatar). `a_` öneki: hareketli.
+    #[serde(default)]
+    pub avatar: Option<String>,
 }
 
 impl User {
@@ -125,6 +128,9 @@ pub struct Member {
     pub user_id: Option<Snowflake>,
     pub user: Option<User>,
     pub nick: Option<String>,
+    /// Sunucuya özel avatar karması.
+    #[serde(default)]
+    pub avatar: Option<String>,
     #[serde(default)]
     pub roles: Vec<Snowflake>,
 }
@@ -181,6 +187,9 @@ pub struct GuildMembersChunk {
 pub struct GuildProperties {
     pub name: String,
     pub owner_id: Option<Snowflake>,
+    /// Sunucu ikonu karması.
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -36,6 +36,8 @@ pub struct GuildInfo {
     pub id: Snowflake,
     pub name: String,
     pub large: bool,
+    /// Sunucu ikonu karması.
+    pub icon: Option<String>,
 }
 
 #[derive(Default)]
@@ -43,6 +45,7 @@ struct GuildData {
     available: bool,
     name: String,
     owner_id: Option<Snowflake>,
+    icon: Option<String>,
     large: bool,
     roles: Vec<Role>,
     my_roles: Vec<Snowflake>,
@@ -53,6 +56,8 @@ struct GuildData {
 
 struct MemberInfo {
     nick: Option<String>,
+    /// Sunucuya özel avatar karması.
+    avatar: Option<String>,
     roles: Vec<Snowflake>,
 }
 
@@ -192,6 +197,7 @@ impl State {
             if guild.unavailable {
                 data.name = old.name;
                 data.owner_id = old.owner_id;
+                data.icon = old.icon;
                 data.large = old.large;
                 data.roles = old.roles;
                 data.channel_ids = old.channel_ids;
@@ -212,6 +218,7 @@ impl State {
         if let Some(p) = &guild.properties {
             data.name = p.name.clone();
             data.owner_id = p.owner_id;
+            data.icon = p.icon.clone();
         }
         self.guilds.insert(guild.id, data);
         if !guild.unavailable {
@@ -280,6 +287,7 @@ impl State {
                 (chunk.guild_id, uid),
                 MemberInfo {
                     nick: m.nick.clone(),
+                    avatar: m.avatar.clone(),
                     roles: m.roles.clone(),
                 },
             );
@@ -540,6 +548,13 @@ impl State {
         found.into_iter().next()
     }
 
+    /// Üyenin sunucuya özel avatar karması (biliniyorsa).
+    pub fn member_avatar(&self, guild: Snowflake, user: Snowflake) -> Option<&str> {
+        self.members
+            .get(&(guild, user))
+            .and_then(|m| m.avatar.as_deref())
+    }
+
     pub fn user(&self, id: Snowflake) -> Option<&User> {
         self.users.get(&id)
     }
@@ -596,6 +611,7 @@ impl State {
                 (gid, msg.author.id),
                 MemberInfo {
                     nick: m.nick.clone(),
+                    avatar: m.avatar.clone(),
                     roles: m.roles.clone(),
                 },
             );
@@ -612,6 +628,7 @@ impl State {
                     id: *id,
                     name: g.name.clone(),
                     large: g.large,
+                    icon: g.icon.clone(),
                 })
             })
             .collect();

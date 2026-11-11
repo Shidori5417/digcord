@@ -50,6 +50,10 @@ pub struct Options {
     pub code_highlight: bool,
     /// Renklendirme teması (`ui.code_theme`; bkz. `highlight::THEMES`).
     pub code_theme: String,
+    /// Mesaj başlıklarında yazar avatarı (`ui.avatars`).
+    pub avatars: bool,
+    /// Sunucu şeridinde sunucu ikonu (`ui.server_icons`).
+    pub server_icons: bool,
     pub theme: crate::Theme,
     pub keys: crate::Keymap,
     /// Ayarlar ekranındaki satırlar (`:settings`).
@@ -65,6 +69,8 @@ impl Default for Options {
             show_member_list: true,
             code_highlight: true,
             code_theme: crate::highlight::DEFAULT_THEME.to_owned(),
+            avatars: true,
+            server_icons: true,
             theme: crate::Theme::default(),
             keys: crate::Keymap::default(),
             settings: Vec::new(),
@@ -173,6 +179,8 @@ pub(crate) struct Images {
     picker: Option<Picker>,
     mode: ImageMode,
     max_rows: u16,
+    avatars: bool,
+    server_icons: bool,
     ready: RefCell<Lru<ImageKey, Protocol>>,
     failed: RefCell<HashSet<ImageKey>>,
     /// İstenmiş, sonucu beklenen.
@@ -187,6 +195,8 @@ impl Images {
             picker: picker.filter(|_| opts.images != ImageMode::Off),
             mode: opts.images,
             max_rows: opts.image_max_rows.max(1),
+            avatars: opts.avatars,
+            server_icons: opts.server_icons,
             ready: RefCell::new(Lru::new(CACHE_ENTRIES)),
             failed: RefCell::new(HashSet::new()),
             requested: RefCell::new(HashSet::new()),
@@ -207,6 +217,16 @@ impl Images {
 
     pub(crate) fn enabled(&self) -> bool {
         self.picker.is_some()
+    }
+
+    /// Mesaj başlıklarında avatar çizilsin mi (grafik var ve `ui.avatars` açık).
+    pub(crate) fn avatars_enabled(&self) -> bool {
+        self.picker.is_some() && self.avatars
+    }
+
+    /// Sunucu şeridinde ikon çizilsin mi (grafik var ve `ui.server_icons` açık).
+    pub(crate) fn server_icons_enabled(&self) -> bool {
+        self.picker.is_some() && self.server_icons
     }
 
     /// Yarım blok yedeği mi (gerçek grafik protokolü yok).

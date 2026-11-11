@@ -101,7 +101,7 @@ pub enum GatewayEvent {
     MemberListUpdate(Box<MemberListUpdate>),
     ReactionAdd(ReactionEvent),
     ReactionRemove(ReactionEvent),
-    TypingStart(TypingStart),
+    TypingStart(Box<TypingStart>),
     /// Başka oturumda okundu işareti (alanlar doğrulanmadı).
     MessageAck(MessageAck),
     VoiceStateUpdate(Box<VoiceState>),
@@ -188,7 +188,7 @@ fn parse_event(t: &str, d: &str) -> Dispatch {
             }),
         "MESSAGE_REACTION_ADD" => de(t, d).map(E::ReactionAdd),
         "MESSAGE_REACTION_REMOVE" => de(t, d).map(E::ReactionRemove),
-        "TYPING_START" => de(t, d).map(E::TypingStart),
+        "TYPING_START" => de(t, d).map(|t| E::TypingStart(Box::new(t))),
         "MESSAGE_ACK" => de(t, d).map(E::MessageAck),
         "VOICE_STATE_UPDATE" => de(t, d).map(E::VoiceStateUpdate),
         "VOICE_SERVER_UPDATE" => de(t, d).map(E::VoiceServerUpdate),

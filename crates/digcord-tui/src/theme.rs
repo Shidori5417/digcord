@@ -219,6 +219,23 @@ impl Theme {
     pub(crate) fn channel(&self) -> Style {
         Self::fg(self.channel)
     }
+    /// Sunucu kısaltma kutusunun arka planı: kimlikten deterministik, temadan bağımsız.
+    pub(crate) fn guild_color(id: u64) -> Color {
+        const PALETTE: [Color; 8] = [
+            Color::Rgb(88, 101, 242),
+            Color::Rgb(46, 125, 90),
+            Color::Rgb(170, 70, 70),
+            Color::Rgb(160, 110, 30),
+            Color::Rgb(120, 70, 160),
+            Color::Rgb(30, 130, 150),
+            Color::Rgb(160, 70, 120),
+            Color::Rgb(90, 100, 110),
+        ];
+        // Snowflake'in alt bitleri sıralı; yüksek bitlerle karıştır (Fibonacci özeti).
+        let h = id.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 61;
+        PALETTE[usize::try_from(h).unwrap_or(0) % PALETTE.len()]
+    }
+
     pub(crate) fn unread(&self) -> Style {
         Self::fg(self.unread).add_modifier(Modifier::BOLD)
     }

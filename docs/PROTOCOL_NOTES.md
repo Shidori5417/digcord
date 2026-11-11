@@ -373,6 +373,14 @@ bucket mantığıyla yönetilir (`GET /guilds/:id/messages/search`).
   (resmi istemcinin CDN istek başlıkları kayıtla karşılaştırılmalı).
 - Özel emoji: `https://cdn.discordapp.com/emojis/{id}.png?size=48` (belgelenmiş "Image
   Formatting"; hareketli emojide PNG ilk kareyi verir).
+- Avatar/simge adresleri (belgelenmiş "Image Formatting", `digcord-media::cdn`; hepsi `.png` ve
+  `?size=64`, hareketli `a_` karmada da PNG ilk kare):
+  - kullanıcı: `https://cdn.discordapp.com/avatars/{user_id}/{hash}.png?size=64`
+  - varsayılan (karma `null`): `https://cdn.discordapp.com/embed/avatars/{(user_id >> 22) % 6}.png`
+  - sunucuya özel üye avatarı: `.../guilds/{guild_id}/users/{user_id}/avatars/{hash}.png?size=64`
+  - sunucu simgesi: `.../icons/{guild_id}/{hash}.png?size=64` (hash: READY `guilds[].properties.icon`)
+  Kullanıcı avatarı `user.avatar`, üye avatarı `member.avatar` alanından gelir. Üye listesi
+  (op 14/37) öğeleri sunucu avatarı taşımıyor sayılır; mesajdaki `member` ile gelen bilinir.
 - Ek ve embed önizlemesi: `proxy_url` + `width=W&height=H` (hedef piksel boyutu). Vekilin
   küçültülmüş resim döndürdüğü varsayılıyor. ⚠️ doğrulanmadı (resmi istemcinin önizleme
   isteğiyle karşılaştırılmalı; resmi istemci ayrıca `format=webp` vb. ekleyebilir).

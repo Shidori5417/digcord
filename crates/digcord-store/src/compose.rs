@@ -137,6 +137,7 @@ impl State {
                 (gid, ev.user_id),
                 crate::MemberInfo {
                     nick: m.nick.clone(),
+                    avatar: m.avatar.clone(),
                     roles: m.roles.clone(),
                 },
             );

@@ -27,6 +27,8 @@ const KNOWN_KEYS: &[&str] = &[
     "ui.image_max_rows",
     "ui.code_highlight",
     "ui.code_theme",
+    "ui.avatars",
+    "ui.server_icons",
     "behavior.send_typing",
     "behavior.send_read_receipts",
     "notifications.enabled",
@@ -110,6 +112,10 @@ pub struct Ui {
     pub code_highlight: bool,
     /// Renklendirme teması (`digcord_tui::CODE_THEMES`); bilinmeyen ad varsayılana düşer.
     pub code_theme: String,
+    /// Mesaj başlıklarında yazar avatarı (grafik destekli terminalde).
+    pub avatars: bool,
+    /// Sunucu şeridinde sunucu ikonları (grafik destekli terminalde).
+    pub server_icons: bool,
 }
 
 /// `ui.images`: resim gösterimi.
@@ -182,6 +188,8 @@ impl Default for Ui {
             image_max_rows: 10,
             code_highlight: true,
             code_theme: digcord_tui::DEFAULT_CODE_THEME.to_owned(),
+            avatars: true,
+            server_icons: true,
         }
     }
 }
@@ -221,6 +229,8 @@ impl Config {
             show_member_list: self.ui.show_member_list,
             code_highlight: self.ui.code_highlight,
             code_theme: self.ui.code_theme.clone(),
+            avatars: self.ui.avatars,
+            server_icons: self.ui.server_icons,
             theme,
             keys,
             settings: self.setting_items(),
@@ -300,6 +310,18 @@ impl Config {
                 "ui.code_theme",
                 text(&self.ui.code_theme),
                 texts(digcord_tui::CODE_THEMES),
+                false,
+            ),
+            SettingItem::new(
+                "ui.avatars",
+                SettingValue::Bool(self.ui.avatars),
+                Bool,
+                false,
+            ),
+            SettingItem::new(
+                "ui.server_icons",
+                SettingValue::Bool(self.ui.server_icons),
+                Bool,
                 false,
             ),
             SettingItem::new(
@@ -532,6 +554,8 @@ images = "thumbnail"     # "off" | "thumbnail" | "full"
 image_max_rows = 10
 code_highlight = true
 code_theme = "base16-ocean.dark"
+avatars = true          # mesaj başlıklarında avatar (grafik gerekir)
+server_icons = true      # sunucu şeridinde ikon (grafik gerekir)
 
 [behavior]
 send_typing = true
@@ -574,6 +598,8 @@ images = "full"
 image_max_rows = 20
 code_highlight = false
 code_theme = "InspiredGitHub"
+avatars = false
+server_icons = false
 
 [behavior]
 send_typing = false
@@ -604,6 +630,8 @@ chrome_major = 130
                     image_max_rows: 20,
                     code_highlight: false,
                     code_theme: "InspiredGitHub".into(),
+                    avatars: false,
+                    server_icons: false,
                 },
                 behavior: Behavior {
                     send_typing: false,
@@ -636,6 +664,18 @@ chrome_major = 130
             .0;
         assert_eq!(opts.images, digcord_tui::ImageMode::Off);
         assert_eq!(opts.image_max_rows, 1);
+    }
+
+    #[test]
+    fn avatar_options_default_on_and_parse() {
+        let d = Config::default();
+        assert!(d.ui.avatars && d.ui.server_icons);
+        let o = d.tui_options(digcord_tui::Theme::default()).0;
+        assert!(o.avatars && o.server_icons);
+        let c = Config::parse("[ui]\navatars = false\nserver_icons = false\n").expect("geçerli");
+        let o = c.tui_options(digcord_tui::Theme::default()).0;
+        assert!(!o.avatars && !o.server_icons);
+        assert!(Config::parse("[ui]\navatars = \"yes\"\n").is_err());
     }
 
     #[test]

@@ -8,7 +8,7 @@ use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Margin, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
@@ -115,6 +115,23 @@ impl Resolver for Res<'_> {
 
     fn image_fit(&self, w: u32, h: u32, max_cols: u16) -> Option<ImageFit> {
         self.images?.fit(w, h, max_cols)
+    }
+
+    fn avatars(&self) -> bool {
+        self.images.is_some_and(Images::avatars_enabled)
+    }
+
+    fn avatar_url(&self, user: &User) -> Option<String> {
+        if !self.avatars() {
+            return None;
+        }
+        let member = self
+            .guild
+            .and_then(|g| self.st.member_avatar(g, user.id).map(|h| (g, h)));
+        Some(match member {
+            Some((g, hash)) => digcord_media::cdn::member_avatar(g.0, user.id.0, hash),
+            None => digcord_media::cdn::user_avatar(user.id.0, user.avatar.as_deref()),
+        })
     }
 
     fn user_name(&self, id: u64) -> Option<String> {
@@ -254,7 +271,7 @@ pub(crate) fn draw(app: &App, frame: &mut Frame) {
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
     let show_members = app.show_members && main.width >= MEMBERS_MIN_WIDTH;
     let [strip, channels, messages, members] = Layout::horizontal([
-        Constraint::Length(STRIP_WIDTH),
+        Constraint::Length(strip_width(app)),
         Constraint::Length(CHANNELS_WIDTH),
         Constraint::Fill(1),
         Constraint::Length(if show_members { 20 } else { 0 }),
@@ -372,44 +389,155 @@ fn selected_style(focused: bool) -> Style {
     }
 }
 
-/// Sunucu adından en fazla 3 harflik kısaltma ("Rust Türkiye" → "RT").
+/// Sunucu adından en fazla 2 harflik kısaltma ("Rust Türkiye" → "RT").
 fn initials(name: &str) -> String {
     let s: String = name
         .split_whitespace()
         .filter_map(|w| w.chars().find(|c| c.is_alphanumeric()))
-        .take(3)
+        .take(2)
         .flat_map(char::to_uppercase)
         .collect();
     if s.is_empty() { "?".to_owned() } else { s }
 }
 
+/// Simge yeri açıkken şerit genişliği: işaret + 4 sütun simge + rozet sütunu + çerçeve.
+const STRIP_WIDTH_ICONS: u16 = 8;
+/// Şeritte bir sunucunun yüksekliği simge kipinde.
+const ICON_ROWS: u16 = 2;
+const ICON_COLS: u16 = 4;
+
+fn strip_width(app: &App) -> u16 {
+    if app.images.server_icons_enabled() {
+        STRIP_WIDTH_ICONS
+    } else {
+        STRIP_WIDTH
+    }
+}
+
+/// `text`'i `width` sütuna ortalar.
+fn centered_text(text: &str, width: usize) -> String {
+    let w = text.width();
+    let left = width.saturating_sub(w) / 2;
+    let right = width.saturating_sub(w + left);
+    format!("{}{text}{}", " ".repeat(left), " ".repeat(right))
+}
+
 fn draw_strip(app: &App, st: &State, frame: &mut Frame, area: Rect) {
     let focused = app.focus == Focus::Guilds && matches!(app.screen, Screen::Main);
     let open_guild = app.open.map(|o| o.guild);
-    let mut lines = Vec::with_capacity(st.guilds().len() + 1);
+    let icons = app.images.server_icons_enabled();
     let now = crate::unix_now_i64();
     let inner_w = usize::from(area.width.saturating_sub(2));
+    // Kısaltma kutusunun/etiketin stili: okunmamış kalın, açık sunucu vurgulu, seçili ters.
+    let style_of = |i: usize, guild: Option<Snowflake>, unread: bool, color: Option<Color>| {
+        let mut style = if unread {
+            app.theme.unread()
+        } else {
+            app.theme.dim()
+        };
+        if open_guild == Some(guild) {
+            style = style.patch(app.theme.current());
+        }
+        if i == app.guild_sel {
+            style = style.patch(selected_style(focused));
+        }
+        match color {
+            Some(c) => style.bg(c),
+            None => style,
+        }
+    };
+    let badge_text = |mentions: u32| {
+        if mentions > 99 {
+            "+".to_owned()
+        } else {
+            mentions.to_string()
+        }
+    };
+    let infos = st.guilds();
+    let (dm_unread, dm_mentions) = st.dm_unread();
+    let unread_of = |g: Snowflake| st.guild_unread(g, now);
+
+    if icons {
+        // Her sunucu 2 satır: [işaret][4 sütun simge/kutu][rozet]. Simge resmi sonradan üstüne
+        // çizilir; yüklenene dek (ya da simge yoksa) renkli kısaltma kutusu görünür.
+        let inner = Block::bordered().inner(area);
+        let visible = usize::from(inner.height / ICON_ROWS).max(1);
+        let total = infos.len() + 1;
+        let skip = app.guild_sel.saturating_sub(visible - 1).min(total - 1);
+        let mut lines: Vec<Line> = Vec::with_capacity(visible * 2);
+        let mut drawn: Vec<(usize, String)> = Vec::new();
+        for i in skip..total.min(skip + visible) {
+            let (guild, name, (unread, mentions), icon) = if i == 0 {
+                (None, "DM", (dm_unread, dm_mentions), None)
+            } else {
+                let g = &infos[i - 1];
+                (
+                    Some(g.id),
+                    g.name.as_str(),
+                    unread_of(g.id),
+                    g.icon.as_deref(),
+                )
+            };
+            let color = guild.map(|g| Theme::guild_color(g.0));
+            let mut box_style = style_of(i, guild, unread || mentions > 0, color);
+            if color.is_some() {
+                box_style = box_style.fg(Color::White);
+            }
+            let (marker, marker_style) = if i == app.guild_sel {
+                ("▌", selected_style(focused).patch(app.theme.current()))
+            } else if open_guild == Some(guild) {
+                ("▎", app.theme.current())
+            } else {
+                (" ", Style::new())
+            };
+            let short = if i == 0 {
+                "DM".to_owned()
+            } else {
+                initials(name)
+            };
+            let label = centered_text(&short, usize::from(ICON_COLS));
+            let dot = if unread || mentions > 0 { "●" } else { " " };
+            let badge = if mentions > 0 {
+                badge_text(mentions)
+            } else {
+                " ".to_owned()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(marker, marker_style),
+                Span::styled(label, box_style),
+                Span::styled(dot, app.theme.unread()),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled(marker, marker_style),
+                Span::styled(" ".repeat(usize::from(ICON_COLS)), box_style),
+                Span::styled(badge, app.theme.badge()),
+            ]));
+            if let (Some(g), Some(hash)) = (guild, icon) {
+                drawn.push((i - skip, digcord_media::cdn::guild_icon(g.0, hash)));
+            }
+        }
+        frame.render_widget(
+            Paragraph::new(lines).block(panel(String::new(), focused, &app.theme)),
+            area,
+        );
+        for (row, url) in drawn {
+            let y = inner.y + u16::try_from(row).unwrap_or(0) * ICON_ROWS;
+            let r = Rect::new(inner.x + 1, y, ICON_COLS.min(inner.width), ICON_ROWS);
+            if r.bottom() <= inner.bottom() {
+                app.images.draw(frame, r, &url, None);
+            }
+        }
+        return;
+    }
+
     let label =
         |i: usize, text: String, guild: Option<Snowflake>, (unread, mentions): (bool, u32)| {
-            let mut style = if unread || mentions > 0 {
-                app.theme.unread()
-            } else {
-                app.theme.dim()
-            };
-            if open_guild == Some(guild) {
-                style = style.patch(app.theme.current());
-            }
-            if i == app.guild_sel {
-                style = style.patch(selected_style(focused));
-            }
+            let color = guild.map(|g| Theme::guild_color(g.0));
+            let style = style_of(i, guild, unread || mentions > 0, color);
             let mut spans = vec![Span::styled(text.clone(), style)];
             if mentions > 0 {
                 let room = inner_w.saturating_sub(text.chars().count());
-                let count = if mentions > 99 {
-                    "+".to_owned()
-                } else {
-                    mentions.to_string()
-                };
+                let count = badge_text(mentions);
                 if room > count.len() {
                     spans.push(Span::raw(" ".repeat(room - count.len())));
                     spans.push(Span::styled(count, app.theme.badge()));
@@ -417,14 +545,10 @@ fn draw_strip(app: &App, st: &State, frame: &mut Frame, area: Rect) {
             }
             Line::from(spans)
         };
-    lines.push(label(0, "DM".to_owned(), None, st.dm_unread()));
-    for (i, g) in st.guilds().iter().enumerate() {
-        lines.push(label(
-            i + 1,
-            initials(&g.name),
-            Some(g.id),
-            st.guild_unread(g.id, now),
-        ));
+    let mut lines = Vec::with_capacity(infos.len() + 1);
+    lines.push(label(0, "DM".to_owned(), None, (dm_unread, dm_mentions)));
+    for (i, g) in infos.iter().enumerate() {
+        lines.push(label(i + 1, initials(&g.name), Some(g.id), unread_of(g.id)));
     }
     let inner_h = usize::from(area.height.saturating_sub(2));
     let skip = app.guild_sel.saturating_sub(inner_h.saturating_sub(1));
@@ -642,9 +766,13 @@ fn draw_slots(
             let area = Rect::new(col, y, cols, slot.rows);
             match app.images.draw(frame, area, &slot.url, Some(*origin)) {
                 SlotState::Drawn => continue,
+                // Avatar yüklenirken ya da yüklenemediyse boş kalır (4 sütuna not sığmaz).
+                SlotState::Loading | SlotState::Failed if slot.avatar => continue,
                 SlotState::Loading => (y, "yükleniyor…"),
                 SlotState::Failed => (y, "[resim yüklenemedi]"),
             }
+        } else if slot.avatar {
+            continue;
         } else {
             (inner.y, "[resim]")
         };
@@ -1086,7 +1214,7 @@ mod tests {
     #[test]
     fn initials_and_relative() {
         assert_eq!(initials("Rust Türkiye"), "RT");
-        assert_eq!(initials("çok güzel bir sunucu"), "ÇGB");
+        assert_eq!(initials("çok güzel bir sunucu"), "ÇG");
         assert_eq!(initials("  "), "?");
         assert_eq!(relative(0, 3_700), "1 saat önce");
         assert_eq!(relative(120, 0), "2 dakika sonra");
