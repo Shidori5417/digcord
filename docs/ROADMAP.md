@@ -93,6 +93,54 @@ reddedilmiyor, 30 dk kesintisiz çalışıyor, ses thread'i CPU'nun < %3'ünü k
   - [ ] Gerçek hesapla canlı ölçüm (bekliyor).
 - [x] Paketleme: AUR paketi (`digcord-git`) — `packaging/aur/digcord-git/PKGBUILD`; yerel `makepkg -si` ile. AUR'a yükleme bilinçli olarak yapılmadı (tescilli lisans, özel depo).
 
+## Aşama 8 — Hesap güvenliği 🚧 (sürüyor)
+Gözlem: 2026-11-10 ve sonrasında sesli sohbet sırasında Discord token'ı iptal edip şifre sıfırlatıyor. En olası sebep: tarayıcıdan kopyalanan token'ın aynı oturumu iki farklı "cihazdan" kullandırması (token hırsızlığı koruması). Sebep kanıtlanmadı.
+
+- 8.1 Teşhis günlüğü: yerel, token içermeyen olay günlüğü (gateway/ses açılış-kapanış kodları, IDENTIFY/RESUME sayıları, REST 4xx/429, captcha istendi, token iptali) ve `:diag` ekranı.
+- 8.2 QR ile giriş (Remote Auth): digcord kendi oturumunu alır, "Yetkili cihazlar"da ayrı cihaz görünür; tarayıcı oturumu paylaşılmaz. Önce resmi giriş sayfasındaki QR akışı kaydedilip doğrulanır. Captcha istenirse atlatılmaz; elle token'a geri dönülür.
+- 8.3 Davranış denetimi: yeniden bağlanmada jitter'lı geri çekilme, IDENTIFY sınırı, ses yeniden bağlanma döngüsü, CDN isteklerinde token gitmemesi, açılışta toplu REST yok, okundu bilgisi sadece görüntülenince.
+- 8.4 Kimlik tutarlılığı: istemci özellikleri tek gerçekçi profile sabit; build numarası eskiyince uyarı.
+- Bilinçli olarak yapılmayacaklar: TLS parmak izi taklidi, launch_signature/qos_token uydurma, captcha atlatma.
+
+**Kabul kriterleri:**
+- Yan hesapta QR oturumuyla 7 gün günlük kullanım (ses dahil), zorla sıfırlatma olmadan.
+- `:diag` günlüğü incelendi.
+
+## Aşama 9 — Ayarlar ve kişi ayarları
+- Sekmeli ayarlar (Görünüm, Davranış, Bildirimler, Ses, Kısayollar, Hesap), ayar arama, canlı tema önizleme, "tuşa bas-ata" kısayol düzenleyici + çakışma uyarısı, salt okunur Hesap sekmesi.
+- Kişi başı yerel ayarlar: kalıcı ses seviyesi, yerel takma ad, bildirim susturma; profil penceresinden erişim.
+- Discord notu (göster/düzenle; doğrulanmadı, kayıt gerekir).
+- Sunucu/kanal susturma: READY'deki ayarları uygulama; değiştirme kayıtla doğrulanınca.
+
+**Kabul kriterleri:**
+- Tüm sekmeler açılıyor; ayar arama ve canlı tema önizleme çalışıyor.
+- Kısayol düzenleyici çakışmayı uyarıyor; ayarlar yeniden başlatmada korunuyor.
+- Kişi başı ses seviyesi, takma ad ve susturma yeniden başlatmadan sonra kalıyor.
+- READY'deki sunucu/kanal susturma ayarları doğru gösteriliyor; değiştirme yalnız kayıt doğrulamasından sonra.
+
+## Aşama 10 — Sosyal ve gezinme
+- Arkadaş listesi (Çevrimiçi/Tümü/Bekleyen/Engelli), DM açma, isteği tek tek kabul/ret (toplu işlem yok).
+- Bahsetmeler kutusu (seçince mesaja atlar).
+- Kanal başına kalıcı taslak.
+- Ses paneli: katılımcılar, konuşan göstergesi, kişi başı ses.
+- Sunucu klasörleri (protobuf ayarlar; en son).
+
+**Kabul kriterleri:**
+- Arkadaş listesi dört filtrede doğru gösteriliyor; kabul/ret tek tek yapılıyor, toplu işlem yok.
+- Bahsetmeler kutusundan seçilen mesaja atlanıyor.
+- Kanal taslağı uygulama yeniden açılınca o kanalda geri geliyor.
+- Ses paneli katılımcıları ve konuşan göstergesini canlı sesle doğru gösteriyor.
+- Sunucu klasörleri, protobuf ayarları resmi istemci trafiğiyle doğrulanınca etkinleşiyor.
+
+## Aşama 11 — Kendi durumun
+- Durum (çevrimiçi/boşta/rahatsız etmeyin/görünmez) ve özel durum; op 3 ve ayar protokolü önce kayıtla doğrulanır.
+- Kapsam dışı: avatar/biyografi/kullanıcı adı düzenleme (hesap riski).
+
+**Kabul kriterleri:**
+- Op 3 ve ayar protokolü kayıtla doğrulanmadan durum değişikliği gönderilmiyor.
+- Durum ve özel durum değişiklikleri resmi istemcide de aynı görünüyor (yan hesap).
+- Avatar, biyografi ve kullanıcı adı düzenleme kodda yok.
+
 ## Sonraki opsiyonel aşamalar (ana yapının dışında)
 Bunlar proje bittikten sonra istenirse eklenecek; ana mimari bunları engellemeyecek şekilde
 (ör. `digcord-voice` içinde video/stream için genişletilebilir arayüzler) tasarlanır ama **uygulanmaz**:
