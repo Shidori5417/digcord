@@ -342,4 +342,46 @@ mod tests {
         assert!(dir.join("b").exists() && dir.join("c").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// CDN isteği kimlik taşımaz: `Authorization`, `X-Super-Properties`, çerez ve diğer
+    /// `x-discord-*` başlıkları gitmez; yalnızca User-Agent ve standart HTTP başlıkları gider.
+    #[tokio::test]
+    async fn cdn_request_carries_no_credentials() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("adres");
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.expect("accept");
+            let mut buf = vec![0u8; 8192];
+            let n = sock.read(&mut buf).await.expect("oku");
+            sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .expect("yaz");
+            String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase()
+        });
+        let fetcher = Fetcher::new("UA-test", None).expect("fetcher");
+        // İzin listesi `get`te uygulanır; başlıklar `download`da belirlenir.
+        let bytes = fetcher
+            .download(url(&format!("http://{addr}/a.png")))
+            .await
+            .expect("indir");
+        assert_eq!(bytes, b"ok");
+        let request = server.await.expect("sunucu");
+        assert!(request.contains("user-agent: ua-test"), "{request}");
+        for forbidden in [
+            "authorization",
+            "x-super-properties",
+            "x-discord",
+            "x-debug-options",
+            "x-installation-id",
+            "cookie",
+        ] {
+            assert!(
+                !request.contains(forbidden),
+                "{forbidden} gitmemeli:\n{request}"
+            );
+        }
+    }
 }

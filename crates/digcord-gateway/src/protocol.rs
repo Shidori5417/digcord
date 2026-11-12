@@ -467,6 +467,8 @@ pub struct Backoff {
 
 impl Backoff {
     const MAX: Duration = Duration::from_secs(60);
+    /// Bu kadar ayakta kalan oturum "sağlıklı" sayılır ve geri çekilmeyi sıfırlar.
+    const STABLE: Duration = Duration::from_secs(60);
 
     /// Sonraki bekleme: `min(60 sn, 1 sn × 2^n) × [0.5, 1.0)`.
     pub fn next_delay(&mut self) -> Duration {
@@ -477,6 +479,53 @@ impl Backoff {
 
     pub fn reset(&mut self) {
         self.attempt = 0;
+    }
+
+    /// Bir oturum `lived` süre ayakta kaldıktan sonra koptu. Sadece yeterince uzun süren
+    /// oturum geri çekilmeyi sıfırlar; READY'den hemen sonra kapanıp açılan bir döngü
+    /// (sunucu bağlantıyı kabul edip hemen kapatıyorsa) üstel olarak yavaşlar.
+    pub fn note_session(&mut self, lived: Duration) {
+        if lived >= Self::STABLE {
+            self.reset();
+        }
+    }
+}
+
+/// Art arda IDENTIFY sınırı: `WINDOW` içinde en fazla `MAX` kez. Sınır aşılacaksa
+/// ([`IdentifyGuard::wait`]) en eski IDENTIFY pencereden çıkana kadar beklenir. RESUME
+/// bu sınıra girmez.
+#[derive(Debug, Default)]
+pub struct IdentifyGuard {
+    sent: std::collections::VecDeque<std::time::Instant>,
+}
+
+impl IdentifyGuard {
+    pub const MAX: usize = 3;
+    pub const WINDOW: Duration = Duration::from_secs(600);
+
+    /// Şimdi IDENTIFY göndermek için beklenmesi gereken süre (`ZERO`: hemen gönderilebilir).
+    pub fn wait(&mut self, now: std::time::Instant) -> Duration {
+        while self
+            .sent
+            .front()
+            .is_some_and(|t| now.saturating_duration_since(*t) >= Self::WINDOW)
+        {
+            self.sent.pop_front();
+        }
+        if self.sent.len() < Self::MAX {
+            return Duration::ZERO;
+        }
+        // En eski kayıt pencereden çıkınca bir yer açılır.
+        self.sent.front().map_or(Duration::ZERO, |t| {
+            (*t + Self::WINDOW).saturating_duration_since(now)
+        })
+    }
+
+    pub fn record(&mut self, now: std::time::Instant) {
+        self.sent.push_back(now);
+        while self.sent.len() > Self::MAX {
+            self.sent.pop_front();
+        }
     }
 }
 
@@ -878,6 +927,41 @@ mod tests {
         assert!(late >= Duration::from_secs(30), "{late:?}");
         b.reset();
         assert!(b.next_delay() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn short_sessions_keep_backoff_growing() {
+        let mut b = Backoff::default();
+        for _ in 0..4 {
+            b.next_delay();
+            b.note_session(Duration::from_secs(2));
+        }
+        let d = b.next_delay();
+        assert!(
+            d >= Duration::from_secs(8),
+            "kısa oturum sıfırlamamalı: {d:?}"
+        );
+        b.note_session(Duration::from_secs(120));
+        assert!(
+            b.next_delay() < Duration::from_secs(1),
+            "uzun oturum sıfırlar"
+        );
+    }
+
+    #[test]
+    fn identify_guard_limits_bursts_and_recovers() {
+        let t0 = std::time::Instant::now();
+        let mut g = IdentifyGuard::default();
+        for i in 0..IdentifyGuard::MAX {
+            let now = t0 + Duration::from_secs(i as u64);
+            assert_eq!(g.wait(now), Duration::ZERO);
+            g.record(now);
+        }
+        // Dördüncüsü: en eski kayıt (t0) pencereden çıkana kadar.
+        let now = t0 + Duration::from_secs(10);
+        assert_eq!(g.wait(now), IdentifyGuard::WINDOW - Duration::from_secs(10));
+        // Pencere geçince yine serbest.
+        assert_eq!(g.wait(t0 + IdentifyGuard::WINDOW), Duration::ZERO);
     }
 
     #[test]

@@ -96,6 +96,7 @@ Vim istemeyenler için config'de `keymap = "simple"` (her zaman yazma modu, ok t
 | `:pins` | Açık kanalın sabitlenmiş mesajları (aynı sonuç ekranı) |
 | `:vol <ad> <0-200>` | Ses kanalındaki kişinin ses seviyesi (yüzde) |
 | `Alt+↑/↓` | Okunmamış önceki/sonraki kanal (sessizdekiler atlanır) |
+| `:diag` | Teşhis özeti: bugünkü IDENTIFY/RESUME sayısı, kapanma kodları, REST 4xx/429, captcha/token iptal ve son 200 olay (aşağıda) |
 | `?` / `:help` | Yardım: tüm kısayollar ve komutlar (aşağıda) |
 | `q` / `:q` | Çıkış |
 
@@ -105,6 +106,17 @@ pencerelerinin içindeki tuşlar ve ayarlar ekranının tuşları sabittir. Mesa
 satırı (`i: yaz · v: seç · ?: yardım · :upload <yol>` ve SEÇ modundaki karşılığı) canlı kısayol
 tablosundan üretilir: `[keys]` ile değişen tuşlar orada da görünür.
 
+### Teşhis ekranı (`:diag`)
+
+Tam ekran, `[TEŞHİS]` modu (yardım ekranıyla aynı desen: `j`/`k` `↓`/`↑` kaydır, `PgUp`/`PgDn` sayfa,
+`g`/`G` baş/son, fare tekerleği, `Esc`/`q` kapat; ek olarak `r` yeniler). Komut `Action::OpenDiag`
+gönderir; denetleyici `state_dir/digcord/diag.log` dosyasını **arka planda** okuyup özetler ve
+`UiEvent::Diag(satırlar)` ile döner (UI thread'i diske dokunmaz; gelene kadar "Yükleniyor…").
+`# ` ile başlayan satırlar başlık olarak çizilir. Üstte bugünün özeti (IDENTIFY/RESUME, READY/RESUMED,
+gateway ve ses kapanma kodu dağılımı, op 4 sayısı, REST 2xx/4xx/5xx/429, captcha, token iptal,
+IDENTIFY sınırı beklemesi), altta son olaylar (en yeni altta; ekran sona kaydırılmış açılır).
+Ekran `Shared::read()` kullanmaz. Günlüğün içeriği ve gizlilik kuralları: PROTOCOL_NOTES §8.
+
 ### Yardım ekranı (`?`, `:help`)
 
 Tam ekran, `[YARDIM]` modu. Kısayollar **canlı `Keymap`'ten** üretilir (yani `[keys]` geçersiz
@@ -112,7 +124,7 @@ kılmaları doğru görünür; atanmamış eylem `(atanmamış)` yazar): *Genel*
 (tuşlar, açıklama, köşeli parantezde `[keys]` eylem adı), ardından yeniden atanamayan tuşlar
 (*Sabit*, *YAZ*, *Resim görüntüleyici*, *Arama / sabitlenenler*, *Ayarlar*, *Yardım*) ve en altta
 komutlar (`:upload`, `:search`, `:pins`, `:threads`, `:archived`, `:members`, `:settings`, `:theme`,
-`:profile`, `:devices`, `:leave`, `:mute`, `:deaf`, `:call`, `:vol`, `:help`, `:q`). `j`/`k` (`↓`/`↑`) kaydır,
+`:profile`, `:devices`, `:diag`, `:leave`, `:mute`, `:deaf`, `:call`, `:vol`, `:help`, `:q`). `j`/`k` (`↓`/`↑`) kaydır,
 `PgUp`/`PgDn` sayfa, `Home`/`End` başa/sona, `Esc`/`q` kapat; SEÇ modundan açılmışsa aynı mod ve seçim
 korunarak dönülür. YAZ modunda `?` düz karakterdir.
 

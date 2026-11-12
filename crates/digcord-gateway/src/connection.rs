@@ -15,7 +15,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::protocol::{
     self, Backoff, Beat, CloseAction, Dispatch, Event, GATEWAY_QUERY, GATEWAY_URL, GatewayEvent,
-    Heartbeat,
+    Heartbeat, IdentifyGuard,
 };
 use crate::zlib::{ZlibError, ZlibStream};
 
@@ -126,6 +126,10 @@ struct State {
     seq: Option<u64>,
     /// Pencere odakta mı; yeniden IDENTIFY'da da korunur.
     focused: bool,
+    /// Son READY/RESUMED'ın zamanı (bağlantı ayakta kaldığı süreyi ölçmek için).
+    live_at: Option<Instant>,
+    /// Art arda IDENTIFY sınırı; yeniden IDENTIFY'da da korunur.
+    identifies: IdentifyGuard,
 }
 
 /// ACK bekleyen heartbeat gönderim anları (gecikme ölçümü için).
@@ -165,24 +169,50 @@ pub async fn run(
     let mut state = State::default();
     let mut backoff = Backoff::default();
     loop {
+        // RESUME tercih edilir; oturum yoksa IDENTIFY gönderilecek: sınırı aşacaksak bekle.
+        if state.session.is_none() {
+            let wait = state.identifies.wait(Instant::now().into_std());
+            if !wait.is_zero() {
+                tracing::warn!(?wait, "gateway: IDENTIFY sınırı, bekleniyor");
+                tracing::info!(
+                    target: crate::DIAG,
+                    kind = "gw_identify_throttled",
+                    wait_ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
+                );
+                let _ = updates
+                    .send(Update::Reconnecting {
+                        after: wait,
+                        reason: "art arda IDENTIFY sınırı".into(),
+                    })
+                    .await;
+                tokio::select! {
+                    _ = sleep(wait) => {}
+                    _ = shutdown.wait_for(|stop| *stop) => return,
+                }
+            }
+        }
         let _ = updates.send(Update::Connecting).await;
+        state.live_at = None;
         let exit = tokio::select! {
-            exit = connect_once(&config, &mut state, &mut backoff, &updates, &mut commands) => exit,
+            exit = connect_once(&config, &mut state, &updates, &mut commands) => exit,
             _ = shutdown.wait_for(|stop| *stop) => Exit::Shutdown,
         };
+        // Sadece uzun süre ayakta kalan oturum geri çekilmeyi sıfırlar (hızlı döngü olmasın).
+        if let Some(live) = state.live_at.take() {
+            backoff.note_session(live.elapsed());
+        }
         let reason = match exit {
             Exit::Shutdown => return,
             Exit::Closed { action, reason } => match action {
                 CloseAction::Resume => reason,
                 CloseAction::Reidentify => {
-                    state = State {
-                        focused: state.focused,
-                        ..State::default()
-                    };
+                    state.session = None;
+                    state.seq = None;
                     reason
                 }
                 CloseAction::InvalidToken => {
                     tracing::warn!("gateway: token geçersiz (4004)");
+                    tracing::info!(target: crate::DIAG, kind = "token_revoked", source = "gateway", code = 4004u64);
                     let _ = updates.send(Update::InvalidToken).await;
                     return;
                 }
@@ -195,6 +225,12 @@ pub async fn run(
         };
         let after = backoff.next_delay();
         tracing::info!(%reason, ?after, resume = state.session.is_some(), "gateway: yeniden bağlanılacak");
+        tracing::info!(
+            target: crate::DIAG,
+            kind = "gw_reconnect_wait",
+            wait_ms = u64::try_from(after.as_millis()).unwrap_or(u64::MAX),
+            resume = state.session.is_some(),
+        );
         let _ = updates.send(Update::Reconnecting { after, reason }).await;
         tokio::select! {
             _ = sleep(after) => {}
@@ -206,17 +242,22 @@ pub async fn run(
 async fn connect_once(
     config: &Config,
     state: &mut State,
-    backoff: &mut Backoff,
     updates: &mpsc::Sender<Update>,
     commands: &mut mpsc::Receiver<Command>,
 ) -> Exit {
-    match session_loop(config, state, backoff, updates, commands).await {
+    match session_loop(config, state, updates, commands).await {
         Ok(exit) => exit,
         Err(e) => {
             let code = match &e {
                 ConnError::Closed(code, _) => Some(*code),
                 _ => None,
             };
+            tracing::info!(
+                target: crate::DIAG,
+                kind = "gw_close",
+                code = code.map_or(0, u64::from),
+                reason = %e,
+            );
             Exit::Closed {
                 action: protocol::classify_close(code),
                 reason: e.to_string(),
@@ -228,7 +269,6 @@ async fn connect_once(
 async fn session_loop(
     config: &Config,
     state: &mut State,
-    backoff: &mut Backoff,
     updates: &mpsc::Sender<Update>,
     commands: &mut mpsc::Receiver<Command>,
 ) -> Result<Exit, ConnError> {
@@ -236,6 +276,7 @@ async fn session_loop(
         Some(s) => format!("{}{GATEWAY_QUERY}", s.resume_url.trim_end_matches('/')),
         None => config.gateway_url.clone(),
     };
+    tracing::info!(target: crate::DIAG, kind = "gw_connect", resume = state.session.is_some());
     let mut ws = connect(&url, &config.properties).await?;
     let mut zlib = ZlibStream::new();
 
@@ -245,6 +286,11 @@ async fn session_loop(
     let Some(Event::Hello { heartbeat_interval }) = hello else {
         return Err(ConnError::NoHello);
     };
+    tracing::info!(
+        target: crate::DIAG,
+        kind = "gw_hello",
+        interval_ms = u64::try_from(heartbeat_interval.as_millis()).unwrap_or(u64::MAX),
+    );
     let mut hb = Heartbeat::new(heartbeat_interval);
 
     let first = match (&state.session, state.seq) {
@@ -254,10 +300,15 @@ async fn session_loop(
         }
         (None, _) => {
             tracing::info!("gateway: identify gönderiliyor");
+            state.identifies.record(Instant::now().into_std());
             protocol::identify(&config.token, &config.properties)
         }
     };
     let is_identify = state.session.is_none();
+    tracing::info!(
+        target: crate::DIAG,
+        kind = if is_identify { "gw_identify" } else { "gw_resume" },
+    );
     ws.send(Message::text(first)).await?;
     if is_identify {
         // Resmi istemci sırası: IDENTIFY → op 4 → (op 3 yok: durum kullanıcı ayarlarından
@@ -283,6 +334,7 @@ async fn session_loop(
                         beats.sent(Instant::now());
                     }
                     Beat::Zombie => {
+                        tracing::info!(target: crate::DIAG, kind = "gw_zombie");
                         return Ok(Exit::Closed { action: CloseAction::Resume, reason: "heartbeat ACK gelmedi (zombi bağlantı)".into() });
                     }
                 }
@@ -305,6 +357,7 @@ async fn session_loop(
                     }
                     Command::RequestMembers { guild, user_ids } => protocol::request_members(guild, &user_ids),
                     Command::VoiceState { guild, channel, self_mute, self_deaf } => {
+                        tracing::info!(target: crate::DIAG, kind = "gw_op4", join = channel.is_some());
                         protocol::voice_state_update(guild, channel, self_mute, self_deaf)
                     }
                 };
@@ -326,7 +379,8 @@ async fn session_loop(
                             id: ready.session_id.clone(),
                             resume_url: ready.resume_gateway_url.clone(),
                         });
-                        backoff.reset();
+                        state.live_at = Some(Instant::now());
+                        tracing::info!(target: crate::DIAG, kind = "gw_ready");
                         // Web istemcisi READY'den hemen sonra bir op 40 gönderiyor (PROTOCOL_NOTES §3.1).
                         ws.send(Message::text(protocol::heartbeat(state.seq, state.focused)))
                             .await?;
@@ -337,7 +391,8 @@ async fn session_loop(
                     }
                     Dispatch::Resumed => {
                         tracing::info!("gateway: RESUMED");
-                        backoff.reset();
+                        state.live_at = Some(Instant::now());
+                        tracing::info!(target: crate::DIAG, kind = "gw_resumed");
                         live = true;
                         let _ = updates.send(Update::Resumed).await;
                     }
@@ -360,12 +415,14 @@ async fn session_loop(
                 }
             }
             Event::Reconnect => {
+                tracing::info!(target: crate::DIAG, kind = "gw_reconnect_request");
                 return Ok(Exit::Closed {
                     action: CloseAction::Resume,
                     reason: "sunucu yeniden bağlanma istedi (op 7)".into(),
                 });
             }
             Event::InvalidSession { resumable } => {
+                tracing::info!(target: crate::DIAG, kind = "gw_invalid_session", resumable);
                 let action = if resumable {
                     CloseAction::Resume
                 } else {
@@ -734,6 +791,105 @@ mod tests {
         // Yeniden IDENTIFY'da op 4 + op 41 tekrar gider; RESUME'da gitmez (yukarıda görüldü).
         assert_eq!(peer.recv().await["op"], 4);
         assert_eq!(peer.recv().await["op"], 41);
+
+        stop_tx.send(true).expect("durdur");
+        timeout(Duration::from_secs(600), client)
+            .await
+            .expect("kapanmalı")
+            .expect("panik yok");
+    }
+
+    /// READY'den hemen sonra kapanan sunucu: geri çekilme sıfırlanmaz, bekleme büyür.
+    #[tokio::test(start_paused = true)]
+    async fn rapid_close_after_ready_backs_off_exponentially() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let url = format!("ws://{}", listener.local_addr().expect("adres"));
+        let mut config = Config::new(
+            Token::new("sahte-token").expect("token"),
+            ClientProperties::chrome_linux("tr-TR", 155, 1),
+        );
+        config.gateway_url = url.clone();
+        let (tx, mut rx) = mpsc::channel(64);
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let (_cmd_tx, cmd_rx) = mpsc::channel(4);
+        let client = tokio::spawn(run(config, tx, cmd_rx, stop_rx));
+
+        let mut waits = Vec::new();
+        for round in 0..4 {
+            let mut peer = Peer::accept(&listener).await;
+            peer.send(HELLO_SLOW).await;
+            let first = peer.recv().await;
+            if round == 0 {
+                assert_eq!(first["op"], 2);
+                peer.send(&ready_json(&url)).await;
+            } else {
+                assert_eq!(first["op"], 6, "oturum varken RESUME tercih edilir");
+                peer.send(r#"{"t":"RESUMED","s":9,"op":0,"d":{}}"#).await;
+            }
+            // Oturum canlı hale gelsin, sonra hemen kapat.
+            expect_update(&mut rx, Duration::from_secs(600), |u| {
+                matches!(u, Update::Ready(_) | Update::Resumed)
+            })
+            .await;
+            peer.close(4000).await;
+            let Update::Reconnecting { after, .. } =
+                expect_update(&mut rx, Duration::from_secs(600), |u| {
+                    matches!(u, Update::Reconnecting { .. })
+                })
+                .await
+            else {
+                unreachable!("süzgeç Reconnecting döndürür");
+            };
+            waits.push(after);
+        }
+        assert!(waits[0] < Duration::from_secs(1), "{waits:?}");
+        assert!(waits[3] >= Duration::from_secs(4), "{waits:?}");
+
+        stop_tx.send(true).expect("durdur");
+        timeout(Duration::from_secs(600), client)
+            .await
+            .expect("kapanmalı")
+            .expect("panik yok");
+    }
+
+    /// Sunucu oturumu sürekli reddederse (4009) en fazla `IdentifyGuard::MAX` IDENTIFY gider,
+    /// sonrası pencere dolana kadar beklenir.
+    #[tokio::test(start_paused = true)]
+    async fn identify_storm_is_throttled() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let mut config = Config::new(
+            Token::new("sahte-token").expect("token"),
+            ClientProperties::chrome_linux("tr-TR", 155, 1),
+        );
+        config.gateway_url = format!("ws://{}", listener.local_addr().expect("adres"));
+        let (tx, mut rx) = mpsc::channel(64);
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let (_cmd_tx, cmd_rx) = mpsc::channel(4);
+        let client = tokio::spawn(run(config, tx, cmd_rx, stop_rx));
+
+        for _ in 0..IdentifyGuard::MAX {
+            let mut peer = Peer::accept(&listener).await;
+            peer.send(HELLO_SLOW).await;
+            assert_eq!(peer.recv().await["op"], 2);
+            peer.close(4009).await;
+        }
+        // Dördüncü IDENTIFY için sınır beklemesi bildirilir.
+        let Update::Reconnecting { after, .. } = expect_update(
+            &mut rx,
+            Duration::from_secs(60),
+            |u| matches!(u, Update::Reconnecting { reason, .. } if reason.contains("IDENTIFY")),
+        )
+        .await
+        else {
+            unreachable!("süzgeç Reconnecting döndürür");
+        };
+        assert!(after > Duration::from_secs(60), "{after:?}");
+        // Pencere dolunca dördüncü IDENTIFY gelir.
+        let started = Instant::now();
+        let mut peer = Peer::accept(&listener).await;
+        peer.send(HELLO_SLOW).await;
+        assert_eq!(peer.recv().await["op"], 2);
+        assert!(started.elapsed() > Duration::from_secs(60));
 
         stop_tx.send(true).expect("durdur");
         timeout(Duration::from_secs(600), client)

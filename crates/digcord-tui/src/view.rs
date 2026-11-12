@@ -331,6 +331,8 @@ pub(crate) fn draw(app: &App, frame: &mut Frame) {
         crate::search::draw(app, frame);
     } else if app.mode == Mode::Help {
         crate::help::draw(app, frame);
+    } else if app.mode == Mode::Diag {
+        crate::diag::draw(app, frame);
     } else if app.mode == Mode::Switcher {
         draw_switcher(app, frame);
     } else if app.mode == Mode::Profile {

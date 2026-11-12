@@ -117,6 +117,14 @@ const FIXED: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "Teşhis (:diag)",
+        &[
+            ("j k ↓ ↑ PgDn PgUp g G", "kaydır"),
+            ("r", "yenile"),
+            ("Esc q", "kapat"),
+        ],
+    ),
+    (
         "Yardım (bu ekran)",
         &[("j k ↓ ↑ PgDn PgUp", "kaydır"), ("Esc q", "kapat")],
     ),
@@ -135,6 +143,10 @@ const COMMANDS: &[(&str, &str)] = &[
     (":archived", "arşivli thread'leri yükle"),
     (":members", "üye panelini aç / kapat"),
     (":settings", "ayarlar ekranı"),
+    (
+        ":diag",
+        "teşhis özeti (IDENTIFY/RESUME, kapanma kodları, REST hataları)",
+    ),
     (":theme <ad>", "tema yükle (default: yerleşik)"),
     (":devices", "ses giriş / çıkış aygıtlarını listele"),
     (":leave", "ses kanalından ayrıl"),

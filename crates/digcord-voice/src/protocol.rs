@@ -410,12 +410,14 @@ pub mod close {
             code,
             AUTHENTICATION_FAILED
                 | SESSION_INVALID
+                | SESSION_TIMEOUT
                 | SERVER_NOT_FOUND
                 | UNKNOWN_PROTOCOL
                 | DISCONNECTED
                 | UNKNOWN_ENCRYPTION_MODE
                 | E2EE_REQUIRED
                 | BAD_REQUEST
+                | RATE_LIMITED
                 | CALL_TERMINATED
         )
     }
@@ -544,7 +546,11 @@ mod tests {
     fn close_codes() {
         assert!(!close::resumable(close::E2EE_REQUIRED));
         assert!(!close::resumable(close::DISCONNECTED));
+        // 4021: hız sınırı; hemen yeniden bağlanmak durumu kötüleştirir (PROTOCOL_NOTES §7.1).
+        assert!(!close::resumable(close::RATE_LIMITED));
         assert!(close::resumable(close::SERVER_CRASHED));
-        assert!(close::resumable(close::SESSION_TIMEOUT));
+        // 4006/4009: oturum bitti; resume değil, ana gateway'den yeniden katılma.
+        assert!(!close::resumable(close::SESSION_TIMEOUT));
+        assert!(!close::resumable(close::SESSION_INVALID));
     }
 }

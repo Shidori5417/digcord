@@ -119,8 +119,22 @@ struct State {
     keepalive: u32,
 }
 
+/// Bu kadar ayakta kalan bağlantı sağlıklı sayılır ve resume sayacını sıfırlar.
+const STABLE: Duration = Duration::from_secs(60);
+
 /// Bağlantı döngüsü; `shutdown` ya da `commands` kapanınca döner.
 pub async fn run(
+    config: Config,
+    events: mpsc::Sender<Event>,
+    commands: mpsc::Receiver<Command>,
+    shutdown: watch::Receiver<bool>,
+) {
+    tracing::info!(target: crate::DIAG, kind = "voice_session_start");
+    run_inner(config, events, commands, shutdown).await;
+    tracing::info!(target: crate::DIAG, kind = "voice_session_end");
+}
+
+async fn run_inner(
     config: Config,
     events: mpsc::Sender<Event>,
     mut commands: mpsc::Receiver<Command>,
@@ -154,11 +168,16 @@ pub async fn run(
     };
     let mut resumes = 0;
     loop {
+        let started = Instant::now();
         let result = connect_once(&config, &mut st, &events, &mut commands, &mut shutdown).await;
         let err = match result {
             Ok(Exit::Stop) => return,
             Err(e) => e,
         };
+        // Uzun süre sağlıklı kalmış bağlantının sonraki kopuşu yeni bir seri sayılır.
+        if st.ready && started.elapsed() >= STABLE {
+            resumes = 0;
+        }
         let (resumable, rejoin) = match &err {
             ConnError::Closed(code, _) if *code >= 4000 => (
                 st.ready && close::resumable(*code),
@@ -167,6 +186,18 @@ pub async fn run(
             _ => (st.ready, false),
         };
         tracing::info!(resumable, "ses bağlantısı koptu: {err}");
+        tracing::info!(
+            target: crate::DIAG,
+            kind = "voice_close",
+            code = match &err {
+                ConnError::Closed(code, _) => u64::from(*code),
+                _ => 0,
+            },
+            resumable,
+            rejoin,
+            resumes = u64::from(resumes),
+            reason = %err,
+        );
         if !resumable || resumes >= MAX_RESUMES {
             let _ = events
                 .send(Event::Closed {
@@ -177,7 +208,12 @@ pub async fn run(
             return;
         }
         resumes += 1;
-        tokio::time::sleep(Duration::from_millis(500 * u64::from(resumes))).await;
+        // Doğrusal artan bekleme + rastgele pay (sunucu kapanınca herkes aynı anda dönmesin).
+        let wait = Duration::from_millis(500 * u64::from(resumes) + fastrand::u64(0..500));
+        tokio::select! {
+            () = tokio::time::sleep(wait) => {}
+            _ = shutdown.wait_for(|stop| *stop) => return,
+        }
     }
 }
 
@@ -224,6 +260,7 @@ async fn connect_once(
         .url_override
         .clone()
         .unwrap_or_else(|| config.info.url());
+    tracing::info!(target: crate::DIAG, kind = "voice_connect", resume = st.ready);
     let mut ws = connect(&url, &config.user_agent).await?;
 
     // Hello.
@@ -253,6 +290,10 @@ async fn connect_once(
         protocol::identify(&config.info)
     };
     ws.send(Message::text(hello)).await?;
+    tracing::info!(
+        target: crate::DIAG,
+        kind = if st.ready { "voice_resume" } else { "voice_identify" },
+    );
 
     let start = Instant::now();
     let mut heartbeat = interval_at(start + interval, interval);
@@ -281,6 +322,7 @@ async fn connect_once(
                     }
                     Message::Binary(bytes) => {
                         if let Some((seq, op, payload)) = manager::split_server_binary(&bytes) {
+                            tracing::info!(target: crate::DIAG, kind = "voice_dave", op = u64::from(op));
                             st.seq_ack = Some(u64::from(seq));
                             let out = st.dave.binary(op, payload, std::time::Instant::now());
                             send_all(&mut ws, out).await?;
@@ -370,7 +412,9 @@ async fn on_wire(
                 .map_err(|_| ConnError::Protocol("geçersiz ses sunucusu adresi".into()))?;
             let udp = UdpSocket::bind("0.0.0.0:0").await?;
             udp.connect(server).await?;
-            let (my_ip, my_port) = discover(&udp, ssrc).await?;
+            let discovered = discover(&udp, ssrc).await;
+            tracing::info!(target: crate::DIAG, kind = "voice_udp_discovery", ok = discovered.is_ok());
+            let (my_ip, my_port) = discovered?;
             st.udp = Some(Arc::new(udp));
             ws.send(Message::text(protocol::select_protocol(
                 &my_ip,
@@ -391,6 +435,11 @@ async fn on_wire(
             st.transport = Some(
                 Transport::new(mode, &secret_key)
                     .map_err(|e| ConnError::Protocol(e.to_string()))?,
+            );
+            tracing::info!(
+                target: crate::DIAG,
+                kind = "voice_session_description",
+                dave_version = u64::from(dave_protocol_version),
             );
             let out = st.dave.session_description(dave_protocol_version);
             send_all(ws, out).await?;
@@ -423,18 +472,31 @@ async fn on_wire(
             transition_id,
             protocol_version,
         } => {
+            tracing::info!(
+                target: crate::DIAG,
+                kind = "voice_dave",
+                op = 21u64,
+                dave_version = u64::from(protocol_version),
+            );
             let out = st
                 .dave
                 .prepare_transition(transition_id, protocol_version, now);
             send_all(ws, out).await?;
         }
         Wire::DaveExecuteTransition { transition_id } => {
+            tracing::info!(target: crate::DIAG, kind = "voice_dave", op = 22u64);
             st.dave.execute_transition(transition_id, now);
         }
         Wire::DavePrepareEpoch {
             epoch,
             protocol_version,
         } => {
+            tracing::info!(
+                target: crate::DIAG,
+                kind = "voice_dave",
+                op = 24u64,
+                dave_version = u64::from(protocol_version),
+            );
             let out = st.dave.prepare_epoch(epoch, protocol_version);
             send_all(ws, out).await?;
         }
@@ -665,5 +727,66 @@ mod tests {
             .await
             .expect("sunucu kapanmadı")
             .expect("sunucu");
+    }
+
+    /// Kapanma kodu → tepki: tek bağlantı denemesi, `rejoin` yalnızca 4006/4009'da.
+    #[tokio::test]
+    async fn close_codes_end_connection_without_reconnect_loop() {
+        for (code, rejoin) in [(4006u16, true), (4009, true), (4021, false), (4014, false)] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("tcp");
+            let ws_addr = listener.local_addr().expect("adres");
+            let server = tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.expect("kabul");
+                let mut ws = tokio_tungstenite::accept_async(tcp).await.expect("ws");
+                ws.send(Message::text(
+                    r#"{"op":8,"d":{"v":8,"heartbeat_interval":30000}}"#,
+                ))
+                .await
+                .expect("hello");
+                let _identify = ws.next().await.expect("mesaj").expect("ws");
+                let _ = ws
+                    .close(Some(CloseFrame {
+                        code: CloseCode::from(code),
+                        reason: "test".into(),
+                    }))
+                    .await;
+                // İkinci bağlantı denenirse test başarısız olur (zaman aşımı yok = deneme yok).
+                timeout(Duration::from_millis(800), listener.accept())
+                    .await
+                    .is_ok()
+            });
+            let (ev_tx, mut ev_rx) = mpsc::channel(16);
+            let (_cmd_tx, cmd_rx) = mpsc::channel(16);
+            let (_stop_tx, stop_rx) = watch::channel(false);
+            tokio::spawn(run(
+                Config {
+                    info: SessionInfo {
+                        server_id: 1,
+                        user_id: 2,
+                        session_id: "s".into(),
+                        token: "t".into(),
+                        endpoint: "unused".into(),
+                    },
+                    channel_id: 3,
+                    user_agent: "test".into(),
+                    url_override: Some(format!("ws://{ws_addr}")),
+                },
+                ev_tx,
+                cmd_rx,
+                stop_rx,
+            ));
+            let ev = timeout(Duration::from_secs(5), ev_rx.recv())
+                .await
+                .expect("olay zaman aşımı")
+                .expect("olay");
+            assert!(
+                matches!(&ev, Event::Closed { rejoin: r, .. } if *r == rejoin),
+                "{code}: {ev:?}"
+            );
+            assert!(
+                !server.await.expect("sunucu"),
+                "{code}: yeniden bağlanmamalı"
+            );
+        }
     }
 }

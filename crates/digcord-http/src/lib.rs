@@ -6,6 +6,10 @@
 
 pub mod ratelimit;
 
+/// Teşhis olaylarının `tracing` hedefi (token içermeyen, alanları açıkça seçilmiş olaylar);
+/// uygulama bunları `diag.log`'a yazar. Bkz. PROTOCOL_NOTES §8.
+pub const DIAG: &str = "diag";
+
 use std::fmt::Write as _;
 use std::time::Duration;
 
@@ -583,16 +587,96 @@ impl Http {
                         + RETRY_PAD;
                     let global = limits.global || parsed.is_some_and(|b| b.global);
                     tracing::warn!(%route, ?wait, global, "http: 429");
+                    tracing::info!(
+                        target: crate::DIAG,
+                        kind = "rest_429",
+                        method = method.as_str(),
+                        route = %diag_route(method.as_str(), path),
+                        retry_after_ms = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
+                        global,
+                    );
                     self.limiter
                         .record_429(&route, wait, global, Instant::now());
                 }
-                StatusCode::UNAUTHORIZED => return Err(HttpError::Unauthorized),
-                s if !s.is_success() => return Err(HttpError::Status(s.as_u16())),
-                _ => return Ok(resp),
+                StatusCode::UNAUTHORIZED => {
+                    let route = diag_route(method.as_str(), path);
+                    tracing::info!(target: crate::DIAG, kind = "rest_err", method = method.as_str(), route = %route, status = 401u64);
+                    if authed {
+                        tracing::info!(target: crate::DIAG, kind = "token_revoked", source = "rest", route = %route, status = 401u64);
+                    }
+                    return Err(HttpError::Unauthorized);
+                }
+                s if !s.is_success() => {
+                    // Gövdeden yalnızca captcha istendi mi bilgisi alınır; içerik yazılmaz.
+                    let captcha = error_asks_captcha(resp).await;
+                    tracing::info!(
+                        target: crate::DIAG,
+                        kind = "rest_err",
+                        method = method.as_str(),
+                        route = %diag_route(method.as_str(), path),
+                        status = u64::from(s.as_u16()),
+                        captcha,
+                    );
+                    if captcha {
+                        tracing::info!(target: crate::DIAG, kind = "captcha", route = %diag_route(method.as_str(), path), status = u64::from(s.as_u16()));
+                    }
+                    return Err(HttpError::Status(s.as_u16()));
+                }
+                _ => {
+                    tracing::info!(
+                        target: crate::DIAG,
+                        kind = "rest_ok",
+                        method = method.as_str(),
+                        route = %diag_route(method.as_str(), path),
+                    );
+                    return Ok(resp);
+                }
             }
         }
         Err(HttpError::RateLimited)
     }
+}
+
+/// Teşhis günlüğü için rota şablonu: `METHOD /yol/{id}`. Sorgu atılır; sayısal kimlikler
+/// `{id}`, tepki emojisi `{emoji}`, tanıdık olmayan (küçük harf/rakam dışı, uzun) parçalar
+/// `{x}` olur. Böylece kanal/kullanıcı kimlikleri ve davet kodları günlüğe girmez.
+pub fn diag_route(method: &str, path: &str) -> String {
+    let path = path.split('?').next().unwrap_or("");
+    let mut out = String::with_capacity(method.len() + path.len() + 8);
+    out.push_str(method);
+    out.push(' ');
+    let mut prev = "";
+    for seg in path.split('/').filter(|s| !s.is_empty()) {
+        out.push('/');
+        if prev == "reactions" {
+            out.push_str("{emoji}");
+        } else if seg.bytes().all(|b| b.is_ascii_digit()) {
+            out.push_str("{id}");
+        } else if seg.len() <= 24
+            && seg
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || matches!(b, b'-' | b'_' | b'@'))
+        {
+            out.push_str(seg);
+        } else {
+            out.push_str("{x}");
+        }
+        prev = seg;
+    }
+    out
+}
+
+/// Hata yanıtının gövdesinde `captcha_key`/`captcha_sitekey` var mı (en fazla 64 KiB okunur).
+async fn error_asks_captcha(mut resp: reqwest::Response) -> bool {
+    let mut body = Vec::new();
+    while body.len() < 64 * 1024 {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => body.extend_from_slice(&chunk),
+            _ => break,
+        }
+    }
+    let text = String::from_utf8_lossy(&body);
+    text.contains("captcha_key") || text.contains("captcha_sitekey")
 }
 
 /// `/experiments` yanıtından `installation` değeri; başlığa ve dosyaya güvenle konabilecek
@@ -1437,5 +1521,43 @@ mod tests {
         assert!(reqs[0].contains("&guild_id=9 "));
         assert!(lower(&reqs[0]).contains("referer: https://discord.com/channels/9\r\n"));
         assert!(lower(&reqs[1]).contains("referer: https://discord.com/channels/@me\r\n"));
+    }
+
+    #[test]
+    fn diag_route_masks_ids_and_query() {
+        assert_eq!(
+            diag_route(
+                "GET",
+                "/channels/123456789012345678/messages?before=99&limit=10"
+            ),
+            "GET /channels/{id}/messages"
+        );
+        assert_eq!(
+            diag_route("PUT", "/channels/1/messages/2/reactions/%F0%9F%91%8D/@me"),
+            "PUT /channels/{id}/messages/{id}/reactions/{emoji}/@me"
+        );
+        assert_eq!(
+            diag_route("POST", "/invites/AbC123xyz"),
+            "POST /invites/{x}"
+        );
+        assert_eq!(
+            diag_route("GET", "/guilds/5/messages/search?content=gizli+kelime"),
+            "GET /guilds/{id}/messages/search"
+        );
+    }
+
+    #[tokio::test]
+    async fn error_with_captcha_body_is_detected() {
+        let (base, _) = server(vec![reply(
+            "400 Bad Request",
+            "",
+            r#"{"captcha_key":["captcha-required"],"captcha_sitekey":"x"}"#,
+        )])
+        .await;
+        let resp = reqwest::get(format!("{base}/x")).await.expect("istek");
+        assert!(error_asks_captcha(resp).await);
+        let (base, _) = server(vec![reply("403 Forbidden", "", r#"{"code":50001}"#)]).await;
+        let resp = reqwest::get(format!("{base}/x")).await.expect("istek");
+        assert!(!error_asks_captcha(resp).await);
     }
 }

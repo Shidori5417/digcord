@@ -4,6 +4,7 @@
 //! paylaşılan store'u ([`Shared`]) sadece okur.
 
 mod compose;
+mod diag;
 mod editor;
 mod fuzzy;
 mod help;
@@ -113,6 +114,8 @@ pub enum UiEvent {
     Notice(String),
     /// Bir resim işi bitti.
     Image(ImageDone),
+    /// `Action::OpenDiag` yanıtı: `:diag` ekranının satırları (`# ` ile başlayanlar başlık).
+    Diag(Vec<String>),
     /// `:theme <ad>` ile istenen tema yüklendi.
     Theme {
         name: String,
@@ -296,6 +299,10 @@ pub enum Action {
     SaveSettings(Vec<(String, SettingValue)>),
     /// `:theme <ad>`: tema dosyasını oku; sonuç [`UiEvent::Theme`].
     LoadTheme(String),
+    /// `:diag`: teşhis günlüğünün özetini ve son `recent` olayı iste; sonuç [`UiEvent::Diag`].
+    OpenDiag {
+        recent: usize,
+    },
     Quit,
 }
 
@@ -547,6 +554,12 @@ pub struct App {
     help_from: compose::Mode,
     help_scroll: usize,
     help_height: Cell<u16>,
+    /// `:diag` ekranı (`Mode::Diag`): kapanınca dönülecek mod, satırlar (`None`: yükleniyor),
+    /// kaydırma, son çizimdeki yükseklik.
+    diag_from: compose::Mode,
+    diag_lines: Option<Vec<String>>,
+    diag_scroll: usize,
+    diag_height: Cell<u16>,
     toasts: toast::Toasts,
     /// Son ölçülen gateway gecikmesi (bağlı değilken `None`).
     latency: Option<std::time::Duration>,
@@ -609,6 +622,10 @@ impl App {
             help_from: compose::Mode::Normal,
             help_scroll: 0,
             help_height: Cell::new(0),
+            diag_from: compose::Mode::Normal,
+            diag_lines: None,
+            diag_scroll: 0,
+            diag_height: Cell::new(0),
             toasts: toast::Toasts::default(),
             latency: None,
             fixed_now: None,
@@ -721,6 +738,10 @@ impl App {
                     self.latency = None;
                 }
                 self.status = status;
+                None
+            }
+            UiEvent::Diag(lines) => {
+                self.diag_loaded(lines);
                 None
             }
             UiEvent::Latency(d) => {
@@ -845,6 +866,7 @@ impl App {
             compose::Mode::Settings => return self.settings_key(key),
             compose::Mode::Search => return self.search_key(key),
             compose::Mode::Help => return self.help_key(key),
+            compose::Mode::Diag => return self.diag_key(key),
             compose::Mode::Profile => return self.profile_key(key),
             compose::Mode::Normal => {}
         }

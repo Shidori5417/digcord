@@ -2765,6 +2765,49 @@ fn header_row_is_drawn_inside_the_panel_and_short_panels_skip_it() {
 }
 
 #[test]
+fn diag_command_opens_overlay_loads_lines_scrolls_and_closes() {
+    let mut app = test_app(shared_with(vec![msg(1, 0, FRIEND, "x")], true));
+    open_sohbet(&mut app);
+    assert_eq!(
+        run_command(&mut app, "diag"),
+        vec![Action::OpenDiag {
+            recent: diag::RECENT_EVENTS
+        }]
+    );
+    assert_eq!(app.mode, compose::Mode::Diag);
+    assert!(screen_text(&draw(&app, 80, 12)).contains("Yükleniyor"));
+    let mut lines = vec![
+        "# Özet (bugün)".to_owned(),
+        "IDENTIFY: 2   RESUME: 1".to_owned(),
+    ];
+    lines.extend((0..40).map(|i| format!("11-12 10:00:{i:02} gw_close code=4000")));
+    app.handle(UiEvent::Diag(lines));
+    // En yeni olay altta: sona kaydırılmış açılır.
+    let screen = screen_text(&draw(&app, 80, 12));
+    assert!(screen.contains("10:00:39"), "{screen}");
+    assert!(!screen.contains("IDENTIFY"), "{screen}");
+    press(&mut app, &[KeyCode::Home]);
+    let top = screen_text(&draw(&app, 80, 12));
+    assert!(top.contains("Özet") && top.contains("IDENTIFY: 2"), "{top}");
+    press(&mut app, &[KeyCode::Char('j')]);
+    assert_eq!(app.diag_scroll, 1);
+    press(&mut app, &[KeyCode::End, KeyCode::Char('j')]);
+    assert_eq!(app.diag_scroll, app.diag_max_scroll());
+    // Yenile: yeniden istek, satırlar "yükleniyor"a döner.
+    assert_eq!(
+        press(&mut app, &[KeyCode::Char('r')]),
+        vec![Action::OpenDiag {
+            recent: diag::RECENT_EVENTS
+        }]
+    );
+    press(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.mode, compose::Mode::Normal);
+    // Kapalıyken gelen satırlar yok sayılır.
+    app.handle(UiEvent::Diag(vec!["geç".into()]));
+    assert_eq!(app.mode, compose::Mode::Normal);
+}
+
+#[test]
 fn help_overlay_snapshot() {
     let mut app = test_app(Arc::new(Shared::default()));
     press(&mut app, &[KeyCode::Char('?')]);

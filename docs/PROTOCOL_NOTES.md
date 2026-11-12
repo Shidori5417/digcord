@@ -472,9 +472,60 @@ bağımlılık değil), discord.js voice (Apache-2.0). Ayrıntılı byte düzenl
 - **Geçişler:** op 21/22/23/24 ve 31 kurtarma (geçersiz commit/welcome → op 31 + yeni anahtar
   paketi). Eski epoch anahtarları 10 sn geçerli; tekrar penceresi 1000.
 - **Kapanış:** 4006/4009 → ana gateway'den yeniden katılma (bir kez); 4014/4017/4021/4022 ve
-  diğer resume edilemezler → bağlantı biter; diğerleri → resume (en fazla 5).
+  diğer resume edilemezler → bağlantı biter; diğerleri → resume (en fazla 5). *(2026-11-12: kod
+  bu satırdan sapıyordu — 4009 ve 4021 resume ediliyordu; düzeltildi, bkz. §8.2. Kapanış kodu →
+  tepki eşlemesinin kendisi belgelerden/açık kaynak referanslardan alındı, resmi istemciyle
+  karşılaştırılmadı ⚠️ doğrulanmadı.)*
 - **Test durumu:** çevrimdışı birim/entegrasyon testleri (iki istemcinin tam DAVE akışı, sahte
   sunucuyla WS+UDP). **Canlı bağlantı hiç denenmedi**; kabul testi bekliyor.
+
+## 8. Teşhis günlüğü ve davranış denetimi (Aşama 8.1 / 8.3, 2026-11-12)
+
+Bağlam: kullanıcı, sesli sohbet sırasında token'ın iptal edildiğini gözlemledi (gateway kapanması
+4003 → 4004). **Sebep kanıtlanmadı.** Bu bölüm sebebi bulmak için veri toplamayı ve istemcinin
+kendi davranışını denetlemeyi anlatır; tespitten kaçınma (TLS parmak izi taklidi, `launch_signature`
+/ `qos_token` uydurma, captcha atlatma) **yapılmaz**.
+
+### 8.1 `diag.log`
+
+- Yol: `state_dir/digcord/diag.log` (Linux: `~/.local/state/digcord/diag.log`), dosya 0600, satır
+  başına bir JSON nesnesi: `{"ts":"2026-11-12T10:00:00.123Z","kind":"gw_close","code":4000,...}`.
+  Boyut 1 MB'ı aşınca dosyanın eski yarısı (satır sınırında) atılır. Yazım ayrı bir thread'de;
+  kuyruk doluysa olay atılır (emit eden beklemez). Okuma/özet: TUI `:diag` (TUI_DESIGN).
+- Olaylar `tracing` ile `target: "diag"` altında, alanları tek tek seçilerek gönderilir; token,
+  Authorization, çerez, mesaj içeriği, kullanıcı adı, ses uç noktası/IP/port **hiçbir olayda yok**.
+  Yazan katman ek olarak yasaklı alan adlarını (`token`, `authorization`, `cookie`, `content`,
+  `username`, `session_id`, `endpoint`, `ip`, `port`, `url`...) atar, değerlerdeki token benzeri
+  dizeleri `[TOKEN]` yapar, 160 karakterden uzununu keser (birim test: `diag::tests`).
+- `kind` değerleri. Gateway: `app_start`, `app_exit`, `gw_connect{resume}`, `gw_hello{interval_ms}`,
+  `gw_identify`, `gw_resume`, `gw_ready`, `gw_resumed`, `gw_invalid_session{resumable}`,
+  `gw_reconnect_request` (op 7), `gw_zombie`, `gw_close{code,reason}` (`code` 0: kodsuz kopma),
+  `gw_reconnect_wait{wait_ms,resume}`, `gw_identify_throttled{wait_ms}`, `gw_op4{join}`.
+  Ses: `voice_session_start/end`, `voice_connect{resume}`, `voice_identify`, `voice_resume`,
+  `voice_udp_discovery{ok}` (IP/port yok), `voice_session_description{dave_version}`,
+  `voice_dave{op,dave_version?}` (sadece op numarası/sürüm, anahtar yok), `voice_close{code,
+  resumable,rejoin,resumes,reason}`. REST: `rest_err{method,route,status,captcha}` (2xx dışı),
+  `rest_429{route,retry_after_ms,global}`, `captcha{route,status}` (yanıt gövdesinde
+  `captcha_key`/`captcha_sitekey` varsa; gövde yazılmaz), `rest_counts{counts}` (2xx istekler
+  rota şablonu başına sayılır, 10 dakikada bir ve çıkışta yazılır). Hesap: `token_revoked{source,
+  code|status}` (gateway 4004 ya da REST 401).
+- REST rota şablonu `digcord_http::diag_route`: sorgu atılır, sayısal kimlikler `{id}`, tepki
+  emojisi `{emoji}`, tanımsız/uzun parçalar `{x}`.
+- Varsayım (⚠️ doğrulanmadı): 4003→4004 gözlemi gateway'in IDENTIFY'dan önce komut gönderildiğini
+  ya da oturumun sunucu tarafında iptal edildiğini gösterebilir; günlük bunu ayırt etmek için
+  sıra bilgisini (`gw_identify`, `gw_op4`, `gw_close`) zaman damgalarıyla verir.
+
+### 8.2 Davranış denetimi — bulgular ve değişiklikler
+
+| # | Madde | Durum |
+|---|---|---|
+| 1 | Gateway yeniden bağlanma | Üstel geri çekilme + jitter vardı; **ama READY'de sıfırlanıyordu** (sunucu READY sonrası hemen kapatırsa hep 0,5–1 sn'de döngü). Düzeltildi: geri çekilme yalnız ≥ 60 sn ayakta kalan oturumdan sonra sıfırlanır (`Backoff::note_session`). Ses: doğrusal bekleme vardı, jitter yoktu → 0–500 ms rastgele pay eklendi; ≥ 60 sn sağlıklı bağlantı resume sayacını sıfırlar. |
+| 2 | IDENTIFY fırtınası | RESUME zaten tercih ediliyordu (oturum varsa); `Reidentify` yalnız 4003/4007/4009 ve geçersiz oturum (op 9, `d:false`) için. Sınır yoktu → **eklendi**: 10 dk'da en çok 3 IDENTIFY (`IdentifyGuard`); aşılırsa pencere dolana kadar beklenir, `Reconnecting` bildirilir, `gw_identify_throttled` yazılır. RESUME sınıra girmez. |
+| 3 | Ses / op 4 | op 4 yalnız katılma, ayrılma ve mikrofon/kulaklık değişiminde bir kez gider; ses bağlantısı düşünce otomatik op 4 döngüsü **yok** (yeniden katılma en fazla bir kez, `voice_rejoined`). Ana gateway yeniden IDENTIFY edince başlangıç op 4'ü kanalsızdır (resmi istemci sırası, §3.2) → ses oturumu sunucuda biter, istemci "ayrıldın" der. Kapanma kodları: kod, §7.1 satırından sapıyordu — **4009 resume ediliyordu** (belge/§7.1: yeniden katıl) ve **4021 (hız sınırı) resume ediliyordu** (hemen yeniden bağlanmak durumu kötüleştirir). İkisi düzeltildi; 4006/4009 → bir kez yeniden katıl, 4014/4017/4020/4021/4022 ve diğerleri → vazgeç, 4015 ve kodsuz kopma → resume (≤ 5). Bu eşleme belgelerden alındı, resmi istemciyle ⚠️ doğrulanmadı. |
+| 4 | CDN istekleri | `Fetcher` istemcisinde yalnızca User-Agent var; Authorization/super-properties/çerez gitmiyor (kodda zaten böyleydi). Kalıcı test eklendi (`cdn_request_carries_no_credentials`). |
+| 5 | Açılışta toplu REST | Patlama **yok**: başlangıçta yalnız (ilk açılışta) `GET /experiments`; kanal geçmişi yalnız kullanıcı kanal açınca (kanal başına tek istek, `loading` kümesi çift isteği engeller); üye listesi/abonelikler gateway üzerinden; CDN istekleri en çok 4 eşzamanlı. Değişiklik yok. |
+| 6 | ack / typing | Okundu yalnız pencere odakta, kanal açık ve en yeni mesajlara bakılırken (`mark_seen`; `send_read_receipts` ayarı) ve kanal başına ≥ 3 sn aralıkla gidiyor; yazıyor yalnız YAZ modunda, düzenleme dışı, boş olmayan girişte ve ≥ 8 sn aralıkla. Değişiklik yok. |
+| 7 | Heartbeat | İlk vuruş `interval × rastgele(0..1)`, ACK gelmeden sonraki vuruşta zombi → kapat + RESUME; testler var (`heartbeat_detects_zombie`, `extra_beat_needs_ack_too`, `missing_ack_is_zombie_and_reidentify_after_4009`). Değişiklik yok. Ses heartbeat'inde ilk vuruş jitter'sız (belgede yok, discord.js de eklemiyor); 3 kaçırılan ACK sonrası zombi. |
 
 ## Kaynaklar (doğrulanacak)
 

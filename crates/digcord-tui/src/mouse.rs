@@ -147,7 +147,8 @@ impl App {
             | Mode::React
             | Mode::ConfirmDelete(_)
             | Mode::Viewer
-            | Mode::Help => None,
+            | Mode::Help
+            | Mode::Diag => None,
         }
     }
 
@@ -239,6 +240,13 @@ impl App {
                     .help_scroll
                     .saturating_add_signed(step)
                     .min(self.help_max_scroll());
+            }
+            Mode::Diag => {
+                let step = WHEEL_LINES.cast_signed() * sign;
+                self.diag_scroll = self
+                    .diag_scroll
+                    .saturating_add_signed(step)
+                    .min(self.diag_max_scroll());
             }
             Mode::Profile => self.profile_scroll(WHEEL_LINES.cast_signed() * sign),
             Mode::Normal | Mode::Select | Mode::Insert => self.wheel_main(x, y, down),

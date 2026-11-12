@@ -38,6 +38,8 @@ pub(crate) enum Mode {
     Help,
     /// Kullanıcı profili penceresi.
     Profile,
+    /// `:diag` tam ekran teşhis özeti.
+    Diag,
 }
 
 /// Yazılan metnin hedefi.
@@ -514,6 +516,7 @@ impl App {
                 self.mode = Mode::Settings;
                 None
             }
+            "diag" => Some(self.open_diag(Mode::Normal)),
             "help" | "h" | "?" => {
                 self.open_help(Mode::Normal);
                 None
@@ -849,6 +852,7 @@ pub(crate) fn mode_label(mode: Mode) -> &'static str {
         Mode::Search => " [ARAMA] ",
         Mode::Help => " [YARDIM] ",
         Mode::Profile => " [PROFİL] ",
+        Mode::Diag => " [TEŞHİS] ",
     }
 }
 

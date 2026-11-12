@@ -1458,6 +1458,18 @@ impl Controller {
         });
     }
 
+    /// `:diag`: teşhis günlüğünü okuyup özetler (ayrı thread'de) ve TUI'ye yollar.
+    fn open_diag(&self, recent: usize) {
+        let ui = self.ui.clone();
+        tokio::task::spawn_blocking(move || {
+            let lines = match crate::diag::default_path() {
+                Some(path) => crate::diag::report(&path, recent),
+                None => vec!["Durum dizini bulunamadı; teşhis günlüğü yok.".into()],
+            };
+            let _ = ui.send(UiEvent::Diag(lines));
+        });
+    }
+
     /// Tema dosyasını okur (ayrı thread'de) ve sonucu TUI'ye yollar.
     fn load_theme(&self, name: String) {
         let ui = self.ui.clone();
@@ -1625,6 +1637,7 @@ impl Controller {
             Action::ListDevices => self.list_devices(),
             Action::SaveSettings(changes) => self.save_settings(changes),
             Action::LoadTheme(name) => self.load_theme(name),
+            Action::OpenDiag { recent } => self.open_diag(recent),
             Action::Quit => return false,
         }
         true

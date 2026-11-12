@@ -10,13 +10,21 @@ use std::io::{self, Write};
 use anyhow::Context;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use tracing_subscriber::filter::{FilterExt as _, LevelFilter, filter_fn};
 use tracing_subscriber::fmt::MakeWriter;
+use tracing_subscriber::prelude::*;
 
 const MASK: &str = "[TOKEN]";
 
-/// Log altyapısını kurar. Dönen guard `main` sonuna kadar tutulmalı;
-/// düşürülünce bekleyen log satırları dosyaya yazılır.
-pub fn init() -> anyhow::Result<WorkerGuard> {
+/// `init`in döndürdüğü guard'lar: düşürülünce bekleyen log ve teşhis satırları yazılır.
+pub struct Guards {
+    _log: WorkerGuard,
+    _diag: Option<crate::diag::DiagGuard>,
+}
+
+/// Log altyapısını kurar (`digcord.log` + token içermeyen `diag.log`). Dönen guard'lar
+/// `main` sonuna kadar tutulmalı.
+pub fn init() -> anyhow::Result<Guards> {
     let dir = dirs::state_dir()
         .context("XDG state dizini bulunamadı")?
         .join("digcord");
@@ -34,11 +42,27 @@ pub fn init() -> anyhow::Result<WorkerGuard> {
     } else {
         tracing::Level::INFO
     };
-    tracing_subscriber::fmt()
+    // Teşhis olayları (`target: "diag"`) sadece diag.log'a gider; açılamazsa uygulama sürer.
+    let (diag_layer, diag_guard) = match crate::diag::default_path().map(crate::diag::init) {
+        Some(Ok((layer, guard))) => (Some(layer), Some(guard)),
+        _ => (None, None),
+    };
+    let fmt_layer = tracing_subscriber::fmt::layer()
         .with_writer(MaskingMakeWriter(writer))
-        .with_max_level(level)
+        .with_filter(
+            LevelFilter::from_level(level).and(filter_fn(|m| m.target() != crate::diag::TARGET)),
+        );
+    tracing_subscriber::registry()
+        .with(fmt_layer)
+        .with(diag_layer)
         .init();
-    Ok(guard)
+    if diag_guard.is_none() {
+        tracing::warn!("teşhis günlüğü (diag.log) açılamadı; devam ediliyor");
+    }
+    Ok(Guards {
+        _log: guard,
+        _diag: diag_guard,
+    })
 }
 
 /// Ürettiği her yazıcıyı [`MaskingWriter`] ile saran `MakeWriter`.

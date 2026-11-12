@@ -1,5 +1,6 @@
 mod config;
 mod controller;
+mod diag;
 mod installation;
 mod keystore;
 mod logging;
@@ -10,6 +11,7 @@ use std::time::Duration;
 
 fn main() -> anyhow::Result<()> {
     let _log_guard = logging::init()?;
+    tracing::info!(target: digcord_gateway::DIAG, kind = "app_start", version = env!("CARGO_PKG_VERSION"));
     // TUI kendi (terminali geri yükleyen) hook'unu bundan sonra kurar; sıra önemli.
     install_panic_logging();
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "digcord başlıyor");
@@ -75,6 +77,7 @@ fn main() -> anyhow::Result<()> {
     });
     runtime.shutdown_timeout(Duration::from_secs(1));
 
+    tracing::info!(target: digcord_gateway::DIAG, kind = "app_exit");
     result?;
     tracing::info!("digcord kapandı");
     Ok(())
