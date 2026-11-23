@@ -1,5 +1,8 @@
 # Digcord
 
+[![CI](https://github.com/Shidori5417/digcord/actions/workflows/ci.yml/badge.svg)](https://github.com/Shidori5417/digcord/actions/workflows/ci.yml)
+[![Lisans: Tescilli](https://img.shields.io/badge/lisans-Tescilli-lightgrey.svg)](LICENSE)
+
 > Discord için tamamen Rust ile yazılmış, hızlı ve hafif bir terminal (TUI) istemcisi.
 
 ![Digcord TUI iskeleti](docs/screenshots/tui.png)
