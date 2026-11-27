@@ -31,7 +31,7 @@ cargo run --release    # boş arayüzü açar, q ile çık
 cargo test --workspace
 ```
 
-Log dosyası: `~/.local/state/digcord/digcord.log`
+Log dosyası: Linux'ta `~/.local/state/digcord/digcord.log` (`state_dir` yoksa işletim sisteminin yerel veri dizinindeki `digcord/digcord.log`)
 
 ## ⚠️ Uyarı
 
