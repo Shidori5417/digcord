@@ -4,15 +4,15 @@ Her aşama bir öncekinin üzerine kurulur. Bir aşama, **kabul kriterlerinin ta
 Testler yan hesapta, kendi açtığın test sunucusunda yapılır.
 
 ## Aşama 0 — İskelet ✅ (v0.1.0)
-- [x] Git deposu + **private** GitHub deposu (bkz. `GIT_WORKFLOW.md`), dokümanlar ilk commit olarak push'lanmış.
+- [x] Git deposu + GitHub deposu (başta private açıldı, şimdi public) (bkz. `GIT_WORKFLOW.md`), dokümanlar ilk commit olarak push'lanmış.
 - [x] Cargo workspace, crate'ler boş ama derleniyor; `cargo clippy --all-targets -- -D warnings` temiz.
-- [x] Tüm crate'lerde `license-file = "LICENSE"` ve `publish = false`.
+- [x] Tüm crate'lerde lisans bilgisi (şimdi `license = "MIT"`) ve `publish = false`.
 - [x] tracing → dosyaya log (`~/.local/state/digcord/digcord.log`), token maskeleme.
 - [x] ratatui iskeleti: boş üç panel, `q` ile çıkış, panic'te terminal geri yükleniyor.
 - [x] CI: fmt + clippy + test (GitHub Actions).
 
 **Kabul:** `cargo run` boş arayüzü açıyor, çıkış ve panic sonrası terminal bozulmuyor;
-GitHub'da depo private görünüyor, CI yeşil, `v0.1.0` etiketi atılmış.
+GitHub deposu oluşturulmuş, CI yeşil, `v0.1.0` etiketi atılmış.
 
 ## Aşama 1 — Gateway + giriş
 - Token giriş ekranı + keyring'e kaydetme/okuma.

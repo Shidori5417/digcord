@@ -1,7 +1,7 @@
 # Digcord
 
 [![CI](https://github.com/Shidori5417/digcord/actions/workflows/ci.yml/badge.svg)](https://github.com/Shidori5417/digcord/actions/workflows/ci.yml)
-[![Lisans: Tescilli](https://img.shields.io/badge/lisans-Tescilli-lightgrey.svg)](LICENSE)
+[![Lisans: MIT](https://img.shields.io/badge/lisans-MIT-blue.svg)](LICENSE)
 
 > Discord için tamamen Rust ile yazılmış, hızlı ve hafif bir terminal (TUI) istemcisi.
 
@@ -52,4 +52,4 @@ Birincil platform Linux (Kitty, WezTerm, Konsole, foot, Alacritty); macOS ve Win
 
 ## Lisans
 
-**Tescilli — Tüm hakları saklıdır.** Kod açık kaynak değildir; ayrıntılar: [`LICENSE`](LICENSE)
+[MIT](LICENSE) — açık kaynak.
