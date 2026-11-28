@@ -1,11 +1,13 @@
 //! Dosyaya log yazma ve token maskeleme.
 //!
-//! Log `~/.local/state/digcord/digcord.log` dosyasına, ayrı bir thread üzerinden
+//! Log `~/.local/state/digcord/digcord.log` (`dirs::state_dir()`, yoksa
+//! `dirs::data_local_dir()`) dosyasına, ayrı bir thread üzerinden
 //! (`tracing_appender::non_blocking`) yazılır; UI thread'i diske beklemez.
 //! Yazılan her satırdaki token benzeri dizeler `[TOKEN]` ile değiştirilir.
 
 use std::borrow::Cow;
 use std::io::{self, Write};
+use std::path::PathBuf;
 
 use anyhow::Context;
 use tracing_appender::non_blocking::WorkerGuard;
@@ -14,12 +16,20 @@ use tracing_subscriber::fmt::MakeWriter;
 
 const MASK: &str = "[TOKEN]";
 
+fn resolve_log_dir(
+    state_dir: Option<PathBuf>,
+    data_local_dir: Option<PathBuf>,
+) -> anyhow::Result<PathBuf> {
+    state_dir
+        .or(data_local_dir)
+        .map(|base| base.join("digcord"))
+        .context("log dizini belirlenemedi (state_dir ve data_local_dir bulunamadı)")
+}
+
 /// Log altyapısını kurar. Dönen guard `main` sonuna kadar tutulmalı;
 /// düşürülünce bekleyen log satırları dosyaya yazılır.
 pub fn init() -> anyhow::Result<WorkerGuard> {
-    let dir = dirs::state_dir()
-        .context("XDG state dizini bulunamadı")?
-        .join("digcord");
+    let dir = resolve_log_dir(dirs::state_dir(), dirs::data_local_dir())?;
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("log dizini oluşturulamadı: {}", dir.display()))?;
     let appender = RollingFileAppender::builder()
@@ -186,5 +196,20 @@ mod tests {
         let out = String::from_utf8(buf.0.lock().expect("test kilidi").clone()).expect("utf8");
         assert!(!out.contains(FAKE), "{out}");
         assert_eq!(out.matches(MASK).count(), 2, "{out}");
+    }
+
+    #[test]
+    fn log_dir_falls_back_to_data_local_dir() {
+        let state = Some(PathBuf::from("/tmp/state"));
+        let local = Some(PathBuf::from("/tmp/local"));
+        assert_eq!(
+            resolve_log_dir(state, local.clone()).expect("state_dir tercih edilir"),
+            PathBuf::from("/tmp/state/digcord")
+        );
+        assert_eq!(
+            resolve_log_dir(None, local).expect("data_local_dir yedek"),
+            PathBuf::from("/tmp/local/digcord")
+        );
+        assert!(resolve_log_dir(None, None).is_err());
     }
 }
