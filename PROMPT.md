@@ -16,7 +16,8 @@ Bu klasördeki `CLAUDE.md`, `README.md` ve `docs/` altındaki tüm dosyaları ba
 - Hedef: Linux (CachyOS, KDE Plasma, PipeWire). Performans öncelikli.
 - Video, ekran paylaşımı ve etkinlikler ana kapsamda değil; sadece mimari ileride eklenebilir kalsın.
 
-- Lisans tescilli (`LICENSE`, tüm hakları saklıdır); GPL/AGPL bağımlılık ekleme.
+- Lisans MIT (`LICENSE`); GPL/AGPL bağımlılık ekleme.
+  _(Not: Bu başlangıç talimatıdır; proje sonradan tescilliden MIT'e geçti ve depo public oldu.)_
 - Proje adım adım ilerleyecek ve her adım GitHub'a commit + push edilecek (`docs/GIT_WORKFLOW.md`).
 
 Şimdi **sadece Aşama 0**'ı yapacağız (`docs/ROADMAP.md`):

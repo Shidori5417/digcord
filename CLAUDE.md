@@ -41,7 +41,7 @@ Gateway, REST ve ses katmanı **sıfırdan**; twilight/serenity/songbird gibi Di
 
 ## Git ve GitHub
 Ayrıntılar: `docs/GIT_WORKFLOW.md`. Özet:
-- Depo **private**. Görünürlüğü asla kendin değiştirme.
+- Depo **public**. Görünürlüğü asla kendin değiştirme.
 - Her aşama kendi branch'inde (`asama-N-...`). `main`'e sadece kabul kriterleri sağlanınca birleşir.
 - Her çalışan küçük adımdan sonra commit: fmt + clippy + test temiz olmalı.
 - Commit mesajı Conventional Commits, açıklama Türkçe: `feat(gateway): ...`.
@@ -50,10 +50,10 @@ Ayrıntılar: `docs/GIT_WORKFLOW.md`. Özet:
 - Token, `.env` ve `/captures/` asla commit'lenmez; `git add` öncesi `git status` ile kontrol et.
 
 ## Lisans
-- Proje **tescilli** (`LICENSE`): tüm hakları saklıdır, açık kaynak değil.
-- Her crate'in `Cargo.toml`'unda: `license-file = "LICENSE"` (workspace'ten miras) ve `publish = false`.
-- Açık kaynak lisanslı kodu kopyala-yapıştır yapma; bağımlılık olarak kullan. GPL/AGPL
-  bağımlılık ekleme (tescilli projeyle uyumsuz) — MIT/Apache/BSD/ISC/Zlib uygun.
+- Proje **MIT** lisanslı (`LICENSE`), açık kaynak.
+- Her crate'in `Cargo.toml`'unda: `license = "MIT"` (workspace'ten miras) ve `publish = false`.
+- Başka projelerden kod kopyalanırsa lisansına ve atıf şartına uy; tercihen bağımlılık olarak kullan.
+  GPL/AGPL bağımlılık ekleme (MIT dağıtımını kısıtlar) — MIT/Apache/BSD/ISC/Zlib uygun.
 
 ## Çalışma şekli
 - Bir aşamaya başlamadan önce kısa plan yaz, kullanıcının onayını al.

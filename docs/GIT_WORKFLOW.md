@@ -1,7 +1,7 @@
 # Git ve GitHub İş Akışı
 
 Proje adım adım ilerler; her anlamlı adım commit'lenir ve GitHub'a push'lanır.
-Depo **gizli (private)** tutulur.
+Depo **public** ve MIT lisanslıdır (başlangıçta private açılmıştı).
 
 ## İlk kurulum (bir kez)
 
@@ -88,12 +88,11 @@ Aşama N → `v0.(N+1).0`. Ses aşaması sonrası ilk kararlı hedef `v1.0.0`.
 - Gerçek kullanıcı adı, ID veya mesaj içeren test dosyaları
 
 Yanlışlıkla token commit'lenirse: **önce token'ı geçersiz kıl** (Discord'da şifre değiştir →
-tüm oturumlar düşer), sonra geçmişten temizle (`git filter-repo`). Gizli depo olması bunu
-gereksiz kılmaz.
+tüm oturumlar düşer), sonra geçmişten temizle (`git filter-repo`). Depo public olduğu için
+sızan token'ı herkes görebilir; bu adımı atlama.
 
-## Gizlilik kontrolü
+## Görünürlük ve güvenlik kontrolü
 
-- Depo private kalmalı; görünürlüğü değiştirmeden önce `LICENSE`'ı tekrar düşün.
-- Collaborator eklenirse bile lisans gereği kodu kullanma/geliştirme hakkı olmaz;
-  yine de sadece güvendiğin kişileri ekle.
+- Depo public: commit'lenen her şey herkese açıktır. Token, `.env`, `/captures/` asla commit'lenmez.
+- Kod MIT lisanslıdır; collaborator olarak sadece güvendiğin kişileri ekle.
 - `Cargo.toml` içinde `publish = false` → yanlışlıkla crates.io'ya yüklenmez.
